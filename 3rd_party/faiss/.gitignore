@@ -16,4 +16,13 @@
 /c_api/gpu/bin/
 /tests/test
 /tests/gtest/
-faiss/python/swigfaiss_avx2.swig
+/faiss/python/swigfaiss_avx2.swig
+
+**/CMakeFiles
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/Makefile
+/cmake/faiss-config.cmake
+/cmake/faiss-config-version.cmake
+/build
+/faiss/python/contrib
