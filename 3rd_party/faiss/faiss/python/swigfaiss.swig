@@ -82,6 +82,7 @@ typedef uint64_t size_t;
 #include <faiss/MultiTenantIndexIVFFlatBF.h>
 #include <faiss/MultiTenantIndexIVFFlatSep.h>
 #include <faiss/MultiTenantIndexIVFHierarchical.h>
+#include <faiss/HybridCurator.h>
 #include <faiss/hnswlib/hnswlib.h>
 #include <faiss/MultiTenantIndexHNSW.h>
 #include <faiss/IndexIVFIndependentQuantizer.h>
@@ -469,6 +470,7 @@ void gpu_sync_all_devices()
 %include  <faiss/MultiTenantIndexIVFFlatBF.h>
 %include  <faiss/MultiTenantIndexIVFFlatSep.h>
 %include  <faiss/MultiTenantIndexIVFHierarchical.h>
+%include  <faiss/HybridCurator.h>
 %include  <faiss/hnswlib/hnswlib.h>
 %include  <faiss/MultiTenantIndexHNSW.h>
 

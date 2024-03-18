@@ -32,6 +32,7 @@ set(FAISS_SRC
   MultiTenantIndexIVFFlatSep.cpp
   MultiTenantIndexIVFHierarchical.cpp
   MultiTenantIndexHNSW.cpp
+  HybridCurator.cpp
   IndexIVFPQ.cpp
   IndexIVFFastScan.cpp
   IndexIVFAdditiveQuantizerFastScan.cpp
@@ -132,6 +133,7 @@ set(FAISS_HEADERS
   MultiTenantIndexIVFFlatSep.h
   MultiTenantIndexIVFHierarchical.h
   MultiTenantIndexHNSW.h
+  HybridCurator.h
   IndexIVFPQ.h
   IndexIVFFastScan.h
   IndexIVFAdditiveQuantizerFastScan.h
