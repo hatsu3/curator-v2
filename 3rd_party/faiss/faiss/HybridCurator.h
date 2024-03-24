@@ -10,6 +10,7 @@
 #include <faiss/Index.h>
 #include <faiss/IndexFlat.h>
 #include <faiss/MetricType.h>
+#include <faiss/MultiTenantIndex.h>
 #include <faiss/impl/FaissAssert.h>
 #include <faiss/impl/HNSW.h>
 #include <faiss/utils/Heap.h>
@@ -20,11 +21,8 @@ struct VisitedTable;
 struct DistanceComputer;
 
 struct Level0HNSW {
-    // only store logical pointers to the vectors
-    using storage_idx_t = int32_t;
-
     // pair of (distance, id) used during search
-    typedef std::pair<float, storage_idx_t> Node;
+    typedef std::pair<float, idx_t> Node;
 
     // sort pairs of (id, distance) from nearest to fathest
     struct NodeDistCloser {
@@ -47,7 +45,7 @@ struct Level0HNSW {
     };
 
     // neighbors[M*i:M*(i+1)] is the list of neighbors of vector i
-    std::vector<storage_idx_t> neighbors;
+    std::vector<idx_t> neighbors;
 
     // number of neighbors at the base level
     int nbNeighbors = 32;
@@ -69,8 +67,8 @@ struct Level0HNSW {
 
     void add_links_starting_from(
             DistanceComputer& ptdis,
-            storage_idx_t pt_id,
-            storage_idx_t nearest,
+            idx_t pt_id,
+            idx_t nearest,
             float d_nearest,
             omp_lock_t* locks,
             VisitedTable& vt);
@@ -78,7 +76,7 @@ struct Level0HNSW {
     void add_with_locks(
             DistanceComputer& ptdis,
             int pt_id,
-            storage_idx_t entry_pt,
+            idx_t entry_pt,
             std::vector<omp_lock_t>& locks,
             VisitedTable& vt);
 
@@ -87,20 +85,19 @@ struct Level0HNSW {
             int k,
             idx_t* I,
             float* D,
-            storage_idx_t entry_pt,
+            idx_t entry_pt,
             VisitedTable& vt) const;
 };
 
 struct HierarchicalZoneMap {
-    using storage_idx_t = Level0HNSW::storage_idx_t;
+    using buffer_t = std::vector<idx_t>;
+    using node_id_t = std::vector<int8_t>;
 
     struct TreeNode {
-        using buffer_t = std::vector<storage_idx_t>;
-
         /* information about the tree structure */
 
         // use the path from the root to the node as the node id
-        std::vector<int8_t> node_id;
+        node_id_t node_id;
 
         // physical pointer to the parent node and children nodes
         TreeNode* parent = nullptr;
@@ -126,9 +123,8 @@ struct HierarchicalZoneMap {
 
         /* leaf nodes */
 
-        // leaf nodes stores logical pointers to the vectors within the cluster
+        // buffers in leaf nodes have no capacity limit
         bool is_leaf;
-        std::vector<storage_idx_t> points;
 
         explicit TreeNode(
                 size_t d,
@@ -150,6 +146,12 @@ struct HierarchicalZoneMap {
     // parameters for the tree structure
     size_t branch_factor;
 
+    // backlink from vectors to containing leaf nodes
+    std::unordered_map<idx_t, TreeNode*> vec2leaf;
+
+    // number of nodes in the tree
+    size_t size{0};
+
    private:
     // prevent swig from generating a setter for this attribuet
     std::unique_ptr<TreeNode> tree_root = nullptr;
@@ -168,10 +170,99 @@ struct HierarchicalZoneMap {
 
     // update the tree structure and the aggregate data structures
     // to reflect the addition of a new vector to the index
-    void insert(const float* x, storage_idx_t label, tid_t tenant);
+    void insert(const float* x, idx_t label, tid_t tenant);
 
-    // navigate the tree to the leaf node that is closest to the query vector
-    const TreeNode* seek(const float* qv) const;
+    void grant_access(idx_t label, tid_t tenant);
+
+    // navigate the tree to the node that (1) is closest to the query vector
+    // and (2) contains a buffer of the querying tenant
+    const TreeNode* seek(const float* qv, tid_t tid) const;
+
+    // find an enclosing node for a given leaf node id that contains a buffer
+    // for the querying tenant
+    const TreeNode* seek(const node_id_t& leaf_id, tid_t tid) const;
+
+    // find the ancestor node of the given leaf node id that is (1) highest in
+    // the tree and (2) does not contain any vectors accessible to the tenant
+    const TreeNode* seek_empty(const TreeNode* leaf, tid_t tid) const;
+};
+
+template <typename T>
+struct VisitedSubtreeTable {
+    using node_id_t = std::vector<T>;
+    using tree_size_t = uint16_t;
+
+    struct TrieNode {
+        std::unordered_map<T, tree_size_t> children;
+        bool is_end_of_prefix{false};
+    };
+
+    std::vector<TrieNode> trie;
+    tree_size_t size{1};
+
+    explicit VisitedSubtreeTable(tree_size_t capacity) : trie(capacity) {}
+
+    tree_size_t capacity() const {
+        return trie.size();
+    }
+
+    void reserve(tree_size_t new_capacity) {
+        trie.resize(new_capacity);
+    }
+
+    void set(const node_id_t& node_id);
+
+    bool get(const node_id_t& node_id) const;
+
+    void clear();
+};
+
+struct HybridCurator {
+    using AccessList = std::unordered_set<tid_t>;
+    using AccessMatrix = std::unordered_map<idx_t, AccessList>;
+
+    IndexFlatL2 storage;   // storage for the vectors
+    Level0HNSW base_level; // graph index at the base level
+
+   private:
+    HierarchicalZoneMap zone_map; // zone map capturing per-tenant dist
+
+   public:
+    AccessMatrix access_matrix; // store the access control lists
+
+    // TODO: hierarchical zone map and access matrix are not yet thread-safe
+
+    size_t d{0};
+    bool is_trained{false};
+    idx_t entry_pt{-1};
+
+    explicit HybridCurator(
+            size_t d,
+            size_t M,
+            size_t branch_factor,
+            size_t bf_capacity,
+            float bf_error_rate,
+            size_t buf_capacity);
+
+    ~HybridCurator();
+
+    void train(idx_t n, const float* x, tid_t tid);
+
+    void add_vector(idx_t n, const float* x, tid_t tid);
+
+    void grant_access(idx_t xid, tid_t tid);
+
+    // bool remove_vector(idx_t xid);
+
+    // bool revoke_access(idx_t xid, tid_t tid);
+
+    void search(
+            idx_t n,
+            const float* x,
+            idx_t k,
+            tid_t tid,
+            float* distances,
+            idx_t* labels) const;
 };
 
 } // namespace faiss
