@@ -90,6 +90,8 @@ struct Level0HNSW {
 };
 
 struct HierarchicalZoneMap {
+    friend struct HybridCuratorV2;
+
     using buffer_t = std::vector<idx_t>;
     using node_id_t = std::vector<int8_t>;
 
@@ -166,7 +168,9 @@ struct HierarchicalZoneMap {
 
     // train the clustering tree using a representative set of vectors
     // !! caveat: the vectors will be sorted in place during training
-    void train(float* x, size_t n);
+    void train(float* x, size_t n, size_t split_thres = 32);
+
+    void train_with_depth_limit(float* x, size_t n, size_t max_depth);
 
     // update the tree structure and the aggregate data structures
     // to reflect the addition of a new vector to the index
@@ -255,6 +259,55 @@ struct HybridCurator {
     // bool remove_vector(idx_t xid);
 
     // bool revoke_access(idx_t xid, tid_t tid);
+
+    void search(
+            idx_t n,
+            const float* x,
+            idx_t k,
+            tid_t tid,
+            float* distances,
+            idx_t* labels) const;
+};
+
+struct HybridCuratorV2 {
+    using AccessList = HybridCurator::AccessList;
+    using AccessMatrix = HybridCurator::AccessMatrix;
+    using TreeNode = HierarchicalZoneMap::TreeNode;
+
+   private:
+    IndexFlatL2 storage;          // storage for the vectors
+    HierarchicalZoneMap zone_map; // zone map capturing per-tenant dist
+    AccessMatrix access_matrix;   // store the access control lists
+
+    // graph index for the lowest levels of the zone map
+    std::unordered_map<int, Level0HNSW> level_indexes;
+    // stores centroids of the nodes at each level
+    std::unordered_map<int, IndexFlatL2> level_storages;
+    std::unordered_map<int, std::unique_ptr<DistanceComputer>> level_dist_comps;
+    // maps (level, local centroid id) to the corresponding tree node
+    std::unordered_map<int, std::unordered_map<idx_t, TreeNode*>> idx2node;
+    std::unordered_map<const TreeNode*, std::pair<int, idx_t>> node2idx;
+
+    size_t d{0};
+    size_t tree_depth{0};
+    float alpha{1.0};
+
+   public:
+    explicit HybridCuratorV2(
+            size_t d,
+            size_t M,
+            size_t tree_depth,
+            size_t branch_factor,
+            float alpha,
+            size_t bf_capacity,
+            float bf_error_rate,
+            size_t buf_capacity);
+
+    void train(idx_t n, const float* x, tid_t tid);
+
+    void add_vector(idx_t n, const float* x, tid_t tid);
+
+    void grant_access(idx_t xid, tid_t tid);
 
     void search(
             idx_t n,

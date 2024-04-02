@@ -426,9 +426,12 @@ void train_tree_node(
         size_t d,
         float* vecs,
         size_t branch_factor,
-        size_t& tree_size) {
+        size_t level,
+        size_t& tree_size,
+        size_t split_thres,
+        size_t max_depth) {
     // stop if there are not enough vectors to split
-    if (n < branch_factor * 8) {
+    if (n < split_thres || level > max_depth) {
         return;
     }
 
@@ -461,16 +464,55 @@ void train_tree_node(
                 d,
                 vecs + cluster_offset,
                 branch_factor,
-                tree_size);
+                level + 1,
+                tree_size,
+                split_thres,
+                max_depth);
 
         node->children.push_back(std::move(child_node));
     }
 }
 } // namespace
 
-void HierarchicalZoneMap::train(float* x, size_t n) {
+void HierarchicalZoneMap::train(float* x, size_t n, size_t split_thres) {
     this->size = 1; // root node
-    train_tree_node(tree_root.get(), n, this->d, x, branch_factor, this->size);
+
+    if (split_thres < branch_factor * 8) {
+        std::cerr << "Warning: split threshold is too small (" << split_thres
+                  << "), setting it to " << branch_factor * 8 << std::endl;
+        split_thres = branch_factor * 8;
+    }
+
+    train_tree_node(
+            tree_root.get(),
+            n,
+            this->d,
+            x,
+            branch_factor,
+            /*level*/ 0,
+            this->size,
+            split_thres,
+            /*max_depth*/ std::numeric_limits<size_t>::max());
+}
+
+void HierarchicalZoneMap::train_with_depth_limit(
+        float* x,
+        size_t n,
+        size_t max_depth) {
+    this->size = 1; // root node
+
+    // the split threshold is set to a small but non-zero value to ensure that
+    // we always have enough vectors to split at each level
+    train_tree_node(
+            tree_root.get(),
+            n,
+            this->d,
+            x,
+            branch_factor,
+            /*level*/ 0,
+            this->size,
+            /*split_thres*/ branch_factor * 8,
+            max_depth);
 }
 
 namespace {
@@ -685,7 +727,7 @@ HybridCurator::~HybridCurator() {}
 
 void HybridCurator::train(idx_t n, const float* x, tid_t tid) {
     std::vector<float> x_copy(x, x + n * d);
-    zone_map.train(x_copy.data(), n);
+    zone_map.train(x_copy.data(), n, zone_map.branch_factor * 8);
     is_trained = true;
 }
 
@@ -792,6 +834,8 @@ void add_buffer_to_heap(
 }
 } // namespace
 
+// TODO: this version suffers from loss of connectivity during graph traversal
+// because it does not further explore the inaccessible vectors
 void HybridCurator::search(
         idx_t n,
         const float* x,
@@ -811,7 +855,7 @@ void HybridCurator::search(
     // find the node that is closest to the query vector and contains a buffer
     auto init_node = zone_map.seek(x, tid);
     if (!init_node) {
-        // seek returning nullptr indicates that the tenant has no access to 
+        // seek returning nullptr indicates that the tenant has no access to
         // any vector in the index
         return;
     }
@@ -846,7 +890,7 @@ void HybridCurator::search(
         return {begin, end};
     };
 
-    // initialize the result set and search frontier with the vectors in 
+    // initialize the result set and search frontier with the vectors in
     // the buffer of the initial node
     auto& init_buffer = init_node->buffers.at(tid);
     add_buffer_to_heap1(init_buffer);
@@ -879,6 +923,281 @@ void HybridCurator::search(
                     add_buffer_to_heap1(cnode->buffers.at(tid));
                 }
                 vt.set(cnode->node_id);
+            }
+        }
+    }
+
+    maxheap_reorder(k, distances, labels);
+}
+
+HybridCuratorV2::HybridCuratorV2(
+        size_t d,
+        size_t M,
+        size_t tree_depth,
+        size_t branch_factor,
+        float alpha,
+        size_t bf_capacity,
+        float bf_error_rate,
+        size_t buf_capacity)
+        : d(d),
+          tree_depth(tree_depth),
+          alpha(alpha),
+          storage(d),
+          zone_map(d, branch_factor, bf_capacity, bf_error_rate, buf_capacity) {
+    // initialize graph index for the lowest ``index_levels``-levels of the tree
+    for (size_t level = 1; level <= tree_depth; level++) {
+        level_indexes.emplace(level, Level0HNSW(M));
+        level_storages.emplace(level, IndexFlatL2(d));
+        auto dis = level_storages.at(level).get_distance_computer();
+        idx2node.emplace(level, std::unordered_map<idx_t, TreeNode*>());
+    }
+}
+
+void HybridCuratorV2::train(idx_t n, const float* x, tid_t tid) {
+    std::vector<float> x_copy(x, x + n * d);
+    zone_map.train_with_depth_limit(x_copy.data(), n, tree_depth);
+
+    // insert tree nodes into their corresponding indexes
+    std::queue<std::pair<TreeNode*, size_t>> q;
+    q.emplace(zone_map.tree_root.get(), 0);
+
+    // collect nodes at each level of the tree
+    std::unordered_map<int, std::vector<TreeNode*>> level_nodes;
+    for (size_t level = 1; level <= tree_depth; level++) {
+        level_nodes.emplace(level, std::vector<TreeNode*>());
+    }
+
+    while (!q.empty()) {
+        auto [node, level] = q.front();
+        q.pop();
+
+        if (level > 0) {
+            level_nodes.at(level).push_back(node);
+        }
+
+        for (auto& child : node->children) {
+            q.emplace(child.get(), level + 1);
+        }
+    }
+
+    // store the centroids of the nodes at each level
+    std::vector<float> centroid(d);
+    for (size_t level = 1; level <= tree_depth; level++) {
+        auto& nodes = level_nodes.at(level);
+        auto& storage = level_storages.at(level);
+
+        for (auto node : nodes) {
+            auto branch_idx = node->node_id.back();
+            node->parent->quantizer.reconstruct(branch_idx, centroid.data());
+            idx2node.at(level).emplace(storage.ntotal, node);
+            node2idx.emplace(node, std::make_pair(level, storage.ntotal));
+            storage.add(1, centroid.data());
+        }
+    }
+
+    // insert centroids at each level into the corresponding index
+    for (size_t level = 1; level <= tree_depth; level++) {
+        auto num_nodes = level_nodes.at(level).size();
+        auto& index = level_indexes.at(level);
+        auto& storage = level_storages.at(level);
+
+        auto dis = storage.get_distance_computer();
+        auto vt = faiss::VisitedTable(num_nodes);
+
+        // TODO: consider removing locks
+        auto locks = std::vector<omp_lock_t>(num_nodes);
+        for (auto& lock : locks) {
+            omp_init_lock(&lock);
+        }
+
+        for (size_t j = 0; j < num_nodes; j++) {
+            storage.reconstruct(j, centroid.data());
+            dis->set_query(centroid.data());
+            index.add_with_locks(*dis, j, j == 0 ? -1 : 0, locks, vt);
+        }
+
+        for (auto& lock : locks) {
+            omp_destroy_lock(&lock);
+        }
+
+        level_dist_comps.emplace(level, std::unique_ptr<DistanceComputer>(dis));
+    }
+}
+
+void HybridCuratorV2::add_vector(idx_t n, const float* x, tid_t tid) {
+    // update the access matrix
+    auto ntotal_old = storage.ntotal;
+    for (idx_t i = 0; i < n; i++) {
+        access_matrix.emplace(ntotal_old + i, AccessList{tid});
+    }
+
+    // add the vectors to the storage
+    storage.add(n, x);
+
+    // update the zone map
+    for (idx_t i = 0; i < n; i++) {
+        zone_map.insert(x + i * d, ntotal_old + i, tid);
+    }
+}
+
+void HybridCuratorV2::grant_access(idx_t xid, tid_t tid) {
+    // add the tenant to the access list of the vector
+    auto it = access_matrix.find(xid);
+    if (it == access_matrix.end()) {
+        FAISS_THROW_FMT("Vector with id %ld does not exist", xid);
+    }
+
+    auto access_list = it->second;
+    auto it2 = std::find(access_list.begin(), access_list.end(), tid);
+    if (it2 == access_list.end()) {
+        access_list.insert(tid);
+        zone_map.grant_access(xid, tid);
+    }
+}
+
+void HybridCuratorV2::search(
+        idx_t n,
+        const float* x,
+        idx_t k,
+        tid_t tid,
+        float* distances,
+        idx_t* labels) const {
+    // initialize the result heap
+    auto nres = static_cast<int>(0);
+    maxheap_heapify(k, distances, labels);
+
+    // find the node that is closest to the query vector and contains a buffer
+    auto init_node = zone_map.seek(x, tid);
+    if (!init_node) {
+        // seek returning nullptr indicates that the tenant has no access to
+        // any vector in the index
+        return;
+    }
+
+    // maintain the search frontier in a priority queue
+    using Node = std::pair<float /*distance*/, const TreeNode*>;
+    std::priority_queue<Node, std::vector<Node>, std::greater<Node>> candidates;
+
+    // initialize the visited set and the distance computer
+    // TODO: replace vt with a more efficient data structure
+    auto vt = std::unordered_set<const TreeNode*>();
+    vt.insert(init_node);
+
+    auto qdis = storage.get_distance_computer();
+    qdis->set_query(x);
+
+    // helper functions used in the search
+    auto add_vec_to_heap = [&](idx_t label, float d) {
+        if (nres < k) {
+            faiss::maxheap_push(++nres, distances, labels, d, label);
+        } else if (d < distances[0]) {
+            faiss::maxheap_replace_top(nres, distances, labels, d, label);
+        }
+    };
+
+    auto dis_to_qv = [&](const TreeNode* node) {
+        auto [level, lidx] = node2idx.at(node);
+        auto& ctrd_qdis = level_dist_comps.at(level);
+        ctrd_qdis->set_query(x);
+        return (*ctrd_qdis)(lidx);
+    };
+
+    auto add_buffer_to_heap = [&](const buffer_t& buffer) {
+        std::array<float, 4> dis;
+        size_t i = 0;
+
+        if (buffer.size() >= 4) {
+            for (; i < buffer.size() - 4 + 1; i += 4) {
+                // calculate distances in batches of 4
+                qdis->distances_batch_4(
+                        buffer[i],
+                        buffer[i + 1],
+                        buffer[i + 2],
+                        buffer[i + 3],
+                        dis[0],
+                        dis[1],
+                        dis[2],
+                        dis[3]);
+
+                for (size_t j = 0; j < 4; j++) {
+                    add_vec_to_heap(buffer[i + j], dis[j]);
+                }
+            }
+        }
+
+        // process the remaining vectors
+        for (; i < buffer.size(); i++) {
+            add_vec_to_heap(buffer[i], (*qdis)(buffer[i]));
+        }
+    };
+
+    // initialize the result set and search frontier with the vectors in
+    // the buffer of the initial node
+    auto& init_buffer = init_node->buffers.at(tid);
+    add_buffer_to_heap(init_buffer);
+    candidates.emplace(dis_to_qv(init_node), init_node);
+
+    size_t begin, end;
+
+    // TODO: perform A/B testing to determine whether the optimization of
+    // skipping external nodes is beneficial (which assumes that the cost
+    // of distance computation dominates the cost of bloom filter lookup)
+    while (candidates.size() > 0) {
+        auto [dis, node] = candidates.top();
+        candidates.pop();
+
+        if (dis > alpha * distances[0]) {
+            break;
+        }
+
+        auto buffer_it = node->buffers.find(tid);
+        if (buffer_it != node->buffers.end()) {
+            // if node is a leaf node, add its buffer to the result heap
+            // and add its neighbors to the search frontier
+            add_buffer_to_heap(buffer_it->second);
+
+            // root node has no neighbors
+            if (node == zone_map.tree_root.get()) {
+                continue;
+            }
+
+            auto [level, lidx] = node2idx.at(node);
+            auto& index = level_indexes.at(level);
+            index.neighbor_range(lidx, &begin, &end);
+
+            for (auto j = begin; j < end; j++) {
+                auto neigh = idx2node.at(level).at(index.neighbors[j]);
+                // optimization: skip to the ancestor node that is not an
+                // external node to reduce the number of distance computations
+                while (neigh && !neigh->bf->contains(tid)) {
+                    neigh = neigh->parent;
+                }
+                if (vt.find(neigh) == vt.end()) {
+                    candidates.emplace(dis_to_qv(neigh), neigh);
+                    vt.insert(neigh);
+                }
+            }
+        } else if (!node->bf->contains(tid)) {
+            // if node is an external node, add its parent node to the search
+            // frontier
+            auto parent = node->parent;
+            // optimization: skip to the ancestor node that is not an
+            // external node to reduce the number of distance computations
+            while (parent && !parent->bf->contains(tid)) {
+                parent = parent->parent;
+            }
+            candidates.emplace(dis_to_qv(parent), parent);
+            vt.insert(parent);
+        } else {
+            // if node is an internal node, add its children to the search
+            // frontier
+            for (auto& child : node->children) {
+                // optimization: skip children that are external nodes
+                if (child->bf->contains(tid)) {
+                    auto c = child.get();
+                    candidates.emplace(dis_to_qv(c), c);
+                    vt.insert(c);
+                }
             }
         }
     }

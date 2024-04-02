@@ -168,8 +168,16 @@ TEST(HybridCurator, Test_insert_search) {
     }
 
     // initialize index
-    auto index = faiss::HybridCurator(
-            nd, /*M*/ 8, /*br-fact*/ 4, nt, 0.01, /*buf-capa*/ 8);
+    auto index = faiss::HybridCuratorV2(
+            /*d*/ nd,
+            /*M*/ 8,
+            /*tree-depth*/ 5,
+            /*br-fact*/ 4,
+            /*alpha*/ 1.0,
+            /*bf-capa*/ nt,
+            /*bf-error*/ 0.01,
+            /*buf-capa*/ 8);
+
     index.train(nv, vecs.data(), /*tid (unused)*/ 0);
 
     // insert vectors into index
