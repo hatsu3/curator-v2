@@ -431,7 +431,7 @@ void train_tree_node(
         size_t split_thres,
         size_t max_depth) {
     // stop if there are not enough vectors to split
-    if (n < split_thres || level > max_depth) {
+    if (n < split_thres || level >= max_depth) {
         return;
     }
 
@@ -939,7 +939,7 @@ HybridCuratorV2::HybridCuratorV2(
         size_t bf_capacity,
         float bf_error_rate,
         size_t buf_capacity)
-        : d(d),
+        : MultiTenantIndex(d),
           tree_depth(tree_depth),
           alpha(alpha),
           storage(d),
@@ -1033,10 +1033,39 @@ void HybridCuratorV2::add_vector(idx_t n, const float* x, tid_t tid) {
 
     // add the vectors to the storage
     storage.add(n, x);
+    for (idx_t i = 0; i < n; i++) {
+        storage_idmap.emplace(ntotal_old + i, ntotal_old + i);
+    }
 
     // update the zone map
     for (idx_t i = 0; i < n; i++) {
         zone_map.insert(x + i * d, ntotal_old + i, tid);
+    }
+}
+
+void HybridCuratorV2::add_vector_with_ids(
+        idx_t n, const float* x, const idx_t* xids, tid_t tid) {
+    for (idx_t i = 0; i < n; i++) {
+        if (access_matrix.find(xids[i]) != access_matrix.end()) {
+            FAISS_THROW_FMT("Vector with id %ld already exists", xids[i]);
+        }
+    }
+    
+    // update the access matrix
+    for (idx_t i = 0; i < n; i++) {
+        access_matrix.emplace(xids[i], AccessList{tid});
+    }
+
+    // add the vectors to the storage
+    auto ntotal_old = storage.ntotal;
+    storage.add(n, x);
+    for (idx_t i = 0; i < n; i++) {
+        storage_idmap.emplace(xids[i], ntotal_old + i);
+    }
+
+    // update the zone map
+    for (idx_t i = 0; i < n; i++) {
+        zone_map.insert(x + i * d, xids[i], tid);
     }
 }
 
@@ -1061,7 +1090,12 @@ void HybridCuratorV2::search(
         idx_t k,
         tid_t tid,
         float* distances,
-        idx_t* labels) const {
+        idx_t* labels, 
+        const SearchParameters* params) const {
+    if (params) {
+        FAISS_THROW_MSG("Search parameters are not supported");
+    }
+
     // initialize the result heap
     auto nres = static_cast<int>(0);
     maxheap_heapify(k, distances, labels);
@@ -1081,7 +1115,6 @@ void HybridCuratorV2::search(
     // initialize the visited set and the distance computer
     // TODO: replace vt with a more efficient data structure
     auto vt = std::unordered_set<const TreeNode*>();
-    vt.insert(init_node);
 
     auto qdis = storage.get_distance_computer();
     qdis->set_query(x);
@@ -1096,6 +1129,9 @@ void HybridCuratorV2::search(
     };
 
     auto dis_to_qv = [&](const TreeNode* node) {
+        if (node == zone_map.tree_root.get()) {
+            return 0.0f;
+        }
         auto [level, lidx] = node2idx.at(node);
         auto& ctrd_qdis = level_dist_comps.at(level);
         ctrd_qdis->set_query(x);
@@ -1110,10 +1146,10 @@ void HybridCuratorV2::search(
             for (; i < buffer.size() - 4 + 1; i += 4) {
                 // calculate distances in batches of 4
                 qdis->distances_batch_4(
-                        buffer[i],
-                        buffer[i + 1],
-                        buffer[i + 2],
-                        buffer[i + 3],
+                        storage_idmap.at(buffer[i]),
+                        storage_idmap.at(buffer[i + 1]),
+                        storage_idmap.at(buffer[i + 2]),
+                        storage_idmap.at(buffer[i + 3]),
                         dis[0],
                         dis[1],
                         dis[2],
@@ -1131,11 +1167,14 @@ void HybridCuratorV2::search(
         }
     };
 
-    // initialize the result set and search frontier with the vectors in
-    // the buffer of the initial node
-    auto& init_buffer = init_node->buffers.at(tid);
-    add_buffer_to_heap(init_buffer);
-    candidates.emplace(dis_to_qv(init_node), init_node);
+    auto add_node_to_candidates = [&](const TreeNode* node) {
+        if (vt.find(node) == vt.end()) {
+            candidates.emplace(dis_to_qv(node), node);
+            vt.insert(node);
+        }
+    };
+
+    add_node_to_candidates(init_node);
 
     size_t begin, end;
 
@@ -1166,16 +1205,16 @@ void HybridCuratorV2::search(
             index.neighbor_range(lidx, &begin, &end);
 
             for (auto j = begin; j < end; j++) {
+                if (index.neighbors[j] < 0) {
+                    break;
+                }
                 auto neigh = idx2node.at(level).at(index.neighbors[j]);
                 // optimization: skip to the ancestor node that is not an
                 // external node to reduce the number of distance computations
                 while (neigh && !neigh->bf->contains(tid)) {
                     neigh = neigh->parent;
                 }
-                if (vt.find(neigh) == vt.end()) {
-                    candidates.emplace(dis_to_qv(neigh), neigh);
-                    vt.insert(neigh);
-                }
+                add_node_to_candidates(neigh);
             }
         } else if (!node->bf->contains(tid)) {
             // if node is an external node, add its parent node to the search
@@ -1186,17 +1225,14 @@ void HybridCuratorV2::search(
             while (parent && !parent->bf->contains(tid)) {
                 parent = parent->parent;
             }
-            candidates.emplace(dis_to_qv(parent), parent);
-            vt.insert(parent);
+            add_node_to_candidates(parent);
         } else {
             // if node is an internal node, add its children to the search
             // frontier
             for (auto& child : node->children) {
                 // optimization: skip children that are external nodes
                 if (child->bf->contains(tid)) {
-                    auto c = child.get();
-                    candidates.emplace(dis_to_qv(c), c);
-                    vt.insert(c);
+                    add_node_to_candidates(child.get());
                 }
             }
         }
