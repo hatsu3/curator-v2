@@ -269,13 +269,14 @@ struct HybridCurator {
             idx_t* labels) const;
 };
 
-struct HybridCuratorV2 {
+struct HybridCuratorV2 : MultiTenantIndex {
     using AccessList = HybridCurator::AccessList;
     using AccessMatrix = HybridCurator::AccessMatrix;
     using TreeNode = HierarchicalZoneMap::TreeNode;
 
    private:
     IndexFlatL2 storage;          // storage for the vectors
+    std::unordered_map<idx_t, idx_t> storage_idmap; // maps internal id to external id
     HierarchicalZoneMap zone_map; // zone map capturing per-tenant dist
     AccessMatrix access_matrix;   // store the access control lists
 
@@ -288,7 +289,6 @@ struct HybridCuratorV2 {
     std::unordered_map<int, std::unordered_map<idx_t, TreeNode*>> idx2node;
     std::unordered_map<const TreeNode*, std::pair<int, idx_t>> node2idx;
 
-    size_t d{0};
     size_t tree_depth{0};
     float alpha{1.0};
 
@@ -303,11 +303,15 @@ struct HybridCuratorV2 {
             float bf_error_rate,
             size_t buf_capacity);
 
-    void train(idx_t n, const float* x, tid_t tid);
+    ~HybridCuratorV2() override = default;
 
-    void add_vector(idx_t n, const float* x, tid_t tid);
+    void train(idx_t n, const float* x, tid_t tid) override;
 
-    void grant_access(idx_t xid, tid_t tid);
+    void add_vector(idx_t n, const float* x, tid_t tid) override;
+
+    void add_vector_with_ids(idx_t n, const float* x, const idx_t* xids, tid_t tid) override;
+
+    void grant_access(idx_t xid, tid_t tid) override;
 
     void search(
             idx_t n,
@@ -315,7 +319,12 @@ struct HybridCuratorV2 {
             idx_t k,
             tid_t tid,
             float* distances,
-            idx_t* labels) const;
+            idx_t* labels, 
+            const SearchParameters* params = nullptr) const override;
+    
+    bool remove_vector(idx_t xid, tid_t tid) override NOT_IMPLEMENTED
+
+    bool revoke_access(idx_t xid, tid_t tid) override NOT_IMPLEMENTED
 };
 
 } // namespace faiss

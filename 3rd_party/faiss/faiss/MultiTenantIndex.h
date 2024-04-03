@@ -3,12 +3,16 @@
 #ifndef FAISS_MULTI_TENANT_INDEX_H
 #define FAISS_MULTI_TENANT_INDEX_H
 
-#include <faiss/MetricType.h>
-#include <faiss/Index.h>
 #include <cstdio>
 #include <sstream>
 #include <string>
 #include <typeinfo>
+
+#include <faiss/MetricType.h>
+#include <faiss/Index.h>
+#include <faiss/impl/FaissAssert.h>
+
+#define NOT_IMPLEMENTED { FAISS_THROW_MSG("Not implemented"); }
 
 namespace faiss {
 
@@ -122,11 +126,15 @@ struct MultiTenantIndex {
      * @param labels      output labels of the NNs, size n*k
      * @param tid         id of the tenant that is searching
      */
-    virtual void assign(idx_t n, const float* x, tid_t tid, idx_t* labels, idx_t k = 1)
-            const;
+    virtual void assign(
+            idx_t n,
+            const float* x,
+            tid_t tid,
+            idx_t* labels,
+            idx_t k = 1) const;
 
     /// removes all elements from the database.
-    virtual void reset() = 0;
+    virtual void reset() NOT_IMPLEMENTED
 
     /** Removes a vector from the index.
      *
@@ -262,7 +270,8 @@ struct MultiTenantIndex {
     /** check that the two indexes are compatible (ie, they are
      * trained in the same way and have the same
      * parameters). Otherwise throw. */
-    virtual void check_compatible_for_merge(const MultiTenantIndex& otherIndex) const;
+    virtual void check_compatible_for_merge(
+            const MultiTenantIndex& otherIndex) const;
 };
 
 } // namespace faiss

@@ -8,26 +8,45 @@
 # not linting this file because it imports * from swigfaiss, which
 # causes a ton of useless warnings.
 
-import numpy as np
-import sys
 import inspect
+import sys
+
+import numpy as np
+
+# additional wrappers
+from faiss import class_wrappers
+from faiss.array_conversions import *
+from faiss.extra_wrappers import (
+    Kmeans,
+    MapInt64ToInt64,
+    ResultHeap,
+    bucket_sort,
+    checksum,
+    eval_intersection,
+    kmax,
+    kmin,
+    knn,
+    knn_hamming,
+    lrand,
+    matrix_bucket_sort_inplace,
+    merge_knn_results,
+    normalize_L2,
+    pairwise_distances,
+    rand,
+    rand_smooth_vectors,
+    randint,
+    randn,
+)
+from faiss.gpu_wrappers import *
 
 # We import * so that the symbol foo can be accessed as faiss.foo.
 from .loader import *
 
-# additional wrappers
-from faiss import class_wrappers
-from faiss.gpu_wrappers import *
-from faiss.array_conversions import *
-from faiss.extra_wrappers import kmin, kmax, pairwise_distances, rand, randint, \
-    lrand, randn, rand_smooth_vectors, eval_intersection, normalize_L2, \
-    ResultHeap, knn, Kmeans, checksum, matrix_bucket_sort_inplace, bucket_sort, \
-    merge_knn_results, MapInt64ToInt64, knn_hamming
-
-
-__version__ = "%d.%d.%d" % (FAISS_VERSION_MAJOR,
-                            FAISS_VERSION_MINOR,
-                            FAISS_VERSION_PATCH)
+__version__ = "%d.%d.%d" % (
+    FAISS_VERSION_MAJOR,
+    FAISS_VERSION_MINOR,
+    FAISS_VERSION_PATCH,
+)
 
 class_wrappers.handle_Clustering(Clustering)
 class_wrappers.handle_Clustering1D(Clustering1D)
@@ -40,7 +59,9 @@ class_wrappers.handle_NSG(IndexNSG)
 class_wrappers.handle_MapLong2Long(MapLong2Long)
 class_wrappers.handle_IDSelectorSubset(IDSelectorBatch, class_owns=True)
 class_wrappers.handle_IDSelectorSubset(IDSelectorArray, class_owns=False)
-class_wrappers.handle_IDSelectorSubset(IDSelectorBitmap, class_owns=False, force_int64=False)
+class_wrappers.handle_IDSelectorSubset(
+    IDSelectorBitmap, class_owns=False, force_int64=False
+)
 class_wrappers.handle_CodeSet(CodeSet)
 
 this_module = sys.modules[__name__]
@@ -66,8 +87,9 @@ for symbol in dir(this_module):
         if issubclass(the_class, Quantizer):
             class_wrappers.handle_Quantizer(the_class)
 
-        if issubclass(the_class, IndexRowwiseMinMax) or \
-                issubclass(the_class, IndexRowwiseMinMaxFP16):
+        if issubclass(the_class, IndexRowwiseMinMax) or issubclass(
+            the_class, IndexRowwiseMinMaxFP16
+        ):
             class_wrappers.handle_IndexRowwiseMinMax(the_class)
 
         if issubclass(the_class, SearchParameters):
@@ -108,8 +130,9 @@ def add_ref_in_constructor(the_class, parameter_no):
     else:
         the_class.__init__ = replacement_init
 
+
 def add_to_referenced_objects(self, ref):
-    if not hasattr(self, 'referenced_objects'):
+    if not hasattr(self, "referenced_objects"):
         self.referenced_objects = [ref]
     else:
         self.referenced_objects.append(ref)
@@ -122,6 +145,7 @@ def add_ref_in_method(the_class, method_name, parameter_no):
         ref = args[parameter_no]
         add_to_referenced_objects(self, ref)
         return original_method(self, *args)
+
     setattr(the_class, method_name, replacement_method)
 
 
@@ -131,7 +155,7 @@ def add_ref_in_method_explicit_own(the_class, method_name):
 
     def replacement_method(self, ref, own=False):
         if not own:
-            if not hasattr(self, 'referenced_objects'):
+            if not hasattr(self, "referenced_objects"):
                 self.referenced_objects = [ref]
             else:
                 self.referenced_objects.append(ref)
@@ -139,6 +163,7 @@ def add_ref_in_method_explicit_own(the_class, method_name):
             # transfer ownership to C++ class
             ref.this.disown()
         return original_method(self, ref, own)
+
     setattr(the_class, method_name, replacement_method)
 
 
@@ -151,6 +176,7 @@ def add_ref_in_function(function_name, parameter_no):
         ref = args[parameter_no]
         result.referenced_objects = [ref]
         return result
+
     setattr(this_module, function_name, replacement_function)
 
 
@@ -162,8 +188,9 @@ add_ref_in_constructor(MultiTenantIndexIVFFlatBF, 0)
 add_ref_in_constructor(MultiTenantIndexIVFFlatSep, 0)
 add_ref_in_constructor(MultiTenantIndexIVFHierarchical, 0)
 add_ref_in_constructor(MultiTenantIndexHNSW, 0)
+add_ref_in_constructor(HybridCuratorV2, 0)
 add_ref_in_constructor(IndexPreTransform, {2: [0, 1], 1: [0]})
-add_ref_in_method(IndexPreTransform, 'prepend_transform', 0)
+add_ref_in_method(IndexPreTransform, "prepend_transform", 0)
 add_ref_in_constructor(IndexIVFPQ, 0)
 add_ref_in_constructor(IndexIVFPQR, 0)
 add_ref_in_constructor(IndexIVFPQFastScan, 0)
@@ -182,8 +209,8 @@ add_ref_in_constructor(IndexRowwiseMinMaxFP16, 0)
 add_ref_in_constructor(IndexIDMap, 0)
 add_ref_in_constructor(IndexIDMap2, 0)
 add_ref_in_constructor(IndexHNSW, 0)
-add_ref_in_method(IndexShards, 'add_shard', 0)
-add_ref_in_method(IndexBinaryShards, 'add_shard', 0)
+add_ref_in_method(IndexShards, "add_shard", 0)
+add_ref_in_method(IndexBinaryShards, "add_shard", 0)
 add_ref_in_constructor(IndexRefineFlat, {2: [0], 1: [0]})
 add_ref_in_constructor(IndexRefine, {2: [0, 1]})
 
@@ -192,8 +219,8 @@ add_ref_in_constructor(IndexBinaryFromFloat, 0)
 add_ref_in_constructor(IndexBinaryIDMap, 0)
 add_ref_in_constructor(IndexBinaryIDMap2, 0)
 
-add_ref_in_method(IndexReplicas, 'addIndex', 0)
-add_ref_in_method(IndexBinaryReplicas, 'addIndex', 0)
+add_ref_in_method(IndexReplicas, "addIndex", 0)
+add_ref_in_method(IndexBinaryReplicas, "addIndex", 0)
 
 add_ref_in_constructor(BufferedIOWriter, 0)
 add_ref_in_constructor(BufferedIOReader, 0)
@@ -219,7 +246,7 @@ search_with_parameters_c = search_with_parameters
 
 
 def search_with_parameters(index, x, k, params=None, output_stats=False):
-    x = np.ascontiguousarray(x, dtype='float32')
+    x = np.ascontiguousarray(x, dtype="float32")
     n, d = x.shape
     assert d == index.d
     if not params:
@@ -228,24 +255,29 @@ def search_with_parameters(index, x, k, params=None, output_stats=False):
         index_ivf = extract_index_ivf(index)
         params.nprobe = index_ivf.nprobe
         params.max_codes = index_ivf.max_codes
-    nb_dis = np.empty(1, 'uint64')
-    ms_per_stage = np.empty(3, 'float64')
+    nb_dis = np.empty(1, "uint64")
+    ms_per_stage = np.empty(3, "float64")
     distances = np.empty((n, k), dtype=np.float32)
     labels = np.empty((n, k), dtype=np.int64)
     search_with_parameters_c(
-        index, n, swig_ptr(x),
-        k, swig_ptr(distances),
+        index,
+        n,
+        swig_ptr(x),
+        k,
+        swig_ptr(distances),
         swig_ptr(labels),
-        params, swig_ptr(nb_dis), swig_ptr(ms_per_stage)
+        params,
+        swig_ptr(nb_dis),
+        swig_ptr(ms_per_stage),
     )
     if not output_stats:
         return distances, labels
     else:
         stats = {
-            'ndis': nb_dis[0],
-            'pre_transform_ms': ms_per_stage[0],
-            'coarse_quantizer_ms': ms_per_stage[1],
-            'invlist_scan_ms': ms_per_stage[2],
+            "ndis": nb_dis[0],
+            "pre_transform_ms": ms_per_stage[0],
+            "coarse_quantizer_ms": ms_per_stage[1],
+            "invlist_scan_ms": ms_per_stage[2],
         }
         return distances, labels, stats
 
@@ -254,7 +286,7 @@ range_search_with_parameters_c = range_search_with_parameters
 
 
 def range_search_with_parameters(index, x, radius, params=None, output_stats=False):
-    x = np.ascontiguousarray(x, dtype='float32')
+    x = np.ascontiguousarray(x, dtype="float32")
     n, d = x.shape
     assert d == index.d
     if not params:
@@ -263,13 +295,18 @@ def range_search_with_parameters(index, x, radius, params=None, output_stats=Fal
         index_ivf = extract_index_ivf(index)
         params.nprobe = index_ivf.nprobe
         params.max_codes = index_ivf.max_codes
-    nb_dis = np.empty(1, 'uint64')
-    ms_per_stage = np.empty(3, 'float64')
+    nb_dis = np.empty(1, "uint64")
+    ms_per_stage = np.empty(3, "float64")
     res = RangeSearchResult(n)
     range_search_with_parameters_c(
-        index, n, swig_ptr(x),
-        radius, res,
-        params, swig_ptr(nb_dis), swig_ptr(ms_per_stage)
+        index,
+        n,
+        swig_ptr(x),
+        radius,
+        res,
+        params,
+        swig_ptr(nb_dis),
+        swig_ptr(ms_per_stage),
     )
     lims = rev_swig_ptr(res.lims, n + 1).copy()
     nd = int(lims[-1])
@@ -279,10 +316,10 @@ def range_search_with_parameters(index, x, radius, params=None, output_stats=Fal
         return lims, Dout, Iout
     else:
         stats = {
-            'ndis': nb_dis[0],
-            'pre_transform_ms': ms_per_stage[0],
-            'coarse_quantizer_ms': ms_per_stage[1],
-            'invlist_scan_ms': ms_per_stage[2],
+            "ndis": nb_dis[0],
+            "pre_transform_ms": ms_per_stage[0],
+            "coarse_quantizer_ms": ms_per_stage[1],
+            "invlist_scan_ms": ms_per_stage[2],
         }
         return lims, Dout, Iout, stats
 
@@ -301,7 +338,7 @@ IVFSearchParameters = SearchParametersIVF
 
 
 def serialize_index(index):
-    """ convert an index to a numpy uint8 array  """
+    """convert an index to a numpy uint8 array"""
     writer = VectorIOWriter()
     write_index(index, writer)
     return vector_to_array(writer.data)
@@ -314,7 +351,7 @@ def deserialize_index(data):
 
 
 def serialize_index_binary(index):
-    """ convert an index to a numpy uint8 array  """
+    """convert an index to a numpy uint8 array"""
     writer = VectorIOWriter()
     write_index_binary(index, writer)
     return vector_to_array(writer.data)
