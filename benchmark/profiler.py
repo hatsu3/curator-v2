@@ -267,7 +267,7 @@ class IndexProfiler:
             tenant_vecs = test_vecs[tenant_vecs_mask]
 
             query_start = time()
-            ids = index.batch_query(
+            query_results = index.batch_query(
                 tenant_vecs, k=k, tenant_id=int(tenant_id), num_threads=num_threads
             )
             batch_query_lat = time() - query_start
