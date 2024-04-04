@@ -76,6 +76,20 @@ class Index(ABC):
             ID of the tenant that is creating the vector
         """
         raise NotImplementedError
+    
+    def batch_create(self, X: np.ndarray, labels: list[int], tenant_ids: list[list[int]]) -> None:
+        """Insert multiple vectors into the index.
+
+        Parameters
+        ----------
+        X : np.ndarray
+            The vectors to insert.
+        labels : list[int]
+            The external labels of the vectors, which are used by the user to identify them.
+        tenant_ids : list[list[int]]
+            The list of tenant IDs that have access to each vector.
+        """
+        raise NotImplementedError
 
     def grant_access(self, label: int, tenant_id: int) -> None:
         """Grant access to a vector to a tenant.
