@@ -19,9 +19,8 @@ void Level0HNSW::neighbor_range(idx_t no, size_t* begin, size_t* end) const {
     *end = (no + 1) * nbNeighbors;
 }
 
-Level0HNSW::Level0HNSW(int M) {
-    nbNeighbors = M;
-}
+Level0HNSW::Level0HNSW(int M, int efConstruction, int efSearch)
+        : nbNeighbors(M), efConstruction(efConstruction), efSearch(efSearch) {}
 
 namespace {
 using NodeDistCloser = Level0HNSW::NodeDistCloser;
@@ -936,17 +935,19 @@ HybridCuratorV2::HybridCuratorV2(
         size_t tree_depth,
         size_t branch_factor,
         float alpha,
+        size_t ef_construction,
         size_t bf_capacity,
         float bf_error_rate,
         size_t buf_capacity)
         : MultiTenantIndex(d),
+          ef_construction(ef_construction),
           tree_depth(tree_depth),
           alpha(alpha),
           storage(d),
           zone_map(d, branch_factor, bf_capacity, bf_error_rate, buf_capacity) {
     // initialize graph index for the lowest ``index_levels``-levels of the tree
     for (size_t level = 1; level <= tree_depth; level++) {
-        level_indexes.emplace(level, Level0HNSW(M));
+        level_indexes.emplace(level, Level0HNSW(M, ef_construction));
         level_storages.emplace(level, IndexFlatL2(d));
         auto dis = level_storages.at(level).get_distance_computer();
         idx2node.emplace(level, std::unordered_map<idx_t, TreeNode*>());

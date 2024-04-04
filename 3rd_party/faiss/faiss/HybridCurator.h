@@ -48,13 +48,13 @@ struct Level0HNSW {
     std::vector<idx_t> neighbors;
 
     // number of neighbors at the base level
-    int nbNeighbors = 32;
+    int nbNeighbors{32};
 
     // expansion factor at construction time
-    int efConstruction = 40;
+    int efConstruction{40};
 
     // expansion factor at query time
-    int efSearch = 16;
+    int efSearch{16};
 
     // whether or not to check whether the next best distance is good enough
     // during search
@@ -63,7 +63,7 @@ struct Level0HNSW {
     // range of entries in the neighbors list
     void neighbor_range(idx_t no, size_t* begin, size_t* end) const;
 
-    explicit Level0HNSW(int M = 32);
+    explicit Level0HNSW(int M = 32, int efConstruction = 40, int efSearch = 16);
 
     void add_links_starting_from(
             DistanceComputer& ptdis,
@@ -290,6 +290,7 @@ struct HybridCuratorV2 : MultiTenantIndex {
     std::unordered_map<const TreeNode*, std::pair<int, idx_t>> node2idx;
 
     size_t tree_depth{0};
+    size_t ef_construction{40};
     float alpha{1.0};
 
    public:
@@ -299,6 +300,7 @@ struct HybridCuratorV2 : MultiTenantIndex {
             size_t tree_depth,
             size_t branch_factor,
             float alpha,
+            size_t ef_construction,
             size_t bf_capacity,
             float bf_error_rate,
             size_t buf_capacity);

@@ -12,23 +12,25 @@ class HybridCurator(Index):
         self,
         d: int,
         M: int,
-        tree_depth: int,
         branch_factor: int = 4,
+        buf_capacity: int = 32,
         alpha: float = 1.0,
+        ef_construction: int = 40,
+        tree_depth: int = 8,
         bf_capacity: int = 1000,
         bf_error_rate: float = 0.001,
-        buf_capacity: int = 32,
     ):
         super().__init__()
 
         self.d = d
         self.M = M
-        self.tree_depth = tree_depth
         self.branch_factor = branch_factor
+        self.buf_capacity = buf_capacity
+        self.tree_depth = tree_depth
         self.alpha = alpha
+        self.ef_construction = ef_construction
         self.bf_capacity = bf_capacity
         self.bf_error_rate = bf_error_rate
-        self.buf_capacity = buf_capacity
 
         self.index = faiss.HybridCuratorV2(
             self.d,
@@ -36,6 +38,7 @@ class HybridCurator(Index):
             self.tree_depth,
             self.branch_factor,
             self.alpha,
+            self.ef_construction,
             self.bf_capacity,
             self.bf_error_rate,
             self.buf_capacity,
@@ -48,6 +51,7 @@ class HybridCurator(Index):
             "M": self.M,
             "tree_depth": self.tree_depth,
             "branch_factor": self.branch_factor,
+            "ef_construction": self.ef_construction,
             "bf_capacity": self.bf_capacity,
             "bf_error_rate": self.bf_error_rate,
             "buf_capacity": self.buf_capacity,
@@ -97,7 +101,7 @@ if __name__ == "__main__":
     print("Testing HybridCurator...")
 
     d, M, tree_depth, branch_factor = 512, 16, 4, 4
-    index = HybridCurator(d, M, tree_depth, branch_factor, buf_capacity=4)
+    index = HybridCurator(d, M, branch_factor, buf_capacity=4, tree_depth=tree_depth)
 
     index.train(np.random.rand(1000, d))
 
