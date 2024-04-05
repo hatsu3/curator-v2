@@ -1,7 +1,9 @@
-from functools import partial
-from itertools import product
 import logging
 import os
+import shutil
+import uuid
+from functools import partial
+from itertools import product
 from typing import IO
 
 import fire
@@ -64,7 +66,7 @@ def profile_filtered_diskann(
     logging.info("Querying index...")
     if os.environ.get("BATCH_QUERY") is not None:
         logging.warning("DiskANN does not support batch queries. Flag ignored.")
-    
+
     query_results, query_latencies = self.run_query(
         index, k, test_vecs, test_mds, verbose, log_file, timeout
     )
@@ -74,7 +76,7 @@ def profile_filtered_diskann(
     delete_latencies, update_latencies = [0], [0]
 
     assert self.multi_tenant, "FilteredDiskANN must be multi-tenant"
-    
+
     return {
         "train_latency": train_latency,
         "index_size_kb": index_size,
@@ -89,7 +91,7 @@ def profile_filtered_diskann(
 
 
 def exp_filtered_diskann(
-    index_dir="index",
+    index_dir_prefix="index",
     ef_construct_space=[32, 64, 128],
     graph_degree_space=[16, 32, 64],
     alpha_space=[1.0, 1.5, 2.0],
@@ -102,18 +104,21 @@ def exp_filtered_diskann(
     num_runs=1,
     timeout=600,
     output_path: str | None = None,
+    cache_index=False,
 ):
     construct_threads = construct_threads or os.environ.get("OMP_NUM_THREADS", 16)
 
     if output_path is None:
         output_path = f"output/filtered_diskann_{dataset_key}.csv"
 
+    index_dir = f"{index_dir_prefix}_{uuid.uuid4().hex[:8]}"
     dataset_config, dim = get_dataset_config(dataset_key, test_size=test_size)
 
     index_configs = [
         IndexConfig(
             index_cls=FilteredDiskANN,
             index_params={
+                "index_dir": index_dir,
                 "d": dim,
                 "ef_construct": ef_construct,
                 "graph_degree": graph_degree,
@@ -158,6 +163,9 @@ def exp_filtered_diskann(
             ]
         )
         df.to_csv(output_path, index=False)
+
+    if not cache_index:
+        shutil.rmtree(index_dir, ignore_errors=True)
 
     return results
 
