@@ -8,6 +8,10 @@ RUN apt-key del 7fa2af80 && \
 
 # Install anaconda
 RUN apt update && apt install -y wget build-essential swig && \
+    # apt install -y apt-transport-https ca-certificates gnupg software-properties-common lsb-release && \
+    # apt-key adv --fetch-keys https://apt.kitware.com/keys/kitware-archive-latest.asc && \
+    # apt-add-repository "deb https://apt.kitware.com/ubuntu/ $(lsb_release -cs) main" && \
+    # apt update && apt install -y cmake && \
     wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh && \
     bash Miniconda3-latest-Linux-x86_64.sh -b && \
     rm Miniconda3-latest-Linux-x86_64.sh
