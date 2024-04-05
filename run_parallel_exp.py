@@ -211,6 +211,54 @@ def run_separate_hnsw_exp(
     )
 
 
+def run_filtered_diskann_exp(
+    ef_construct: int,
+    graph_degree: int,
+    alpha: float,
+    filter_ef_construct: int,
+    ef_search: int,
+    cpu_limit: str,
+    log_path: str | None = None,
+    mem_limit: int = 20_000_000_000,
+    num_runs: int = 1,
+    timeout: int = 600,
+):
+    if log_path is not None:
+        fh = logging.FileHandler(log_path)
+        fh.setLevel(logging.INFO)
+        logging.getLogger().addHandler(fh)
+
+    run_docker(
+        cmd=[
+            "python",
+            "-m",
+            "benchmark.profile_filtered_diskann",
+            "--ef_construct_space",
+            f"[{ef_construct}]",
+            "--graph_degree_space",
+            f"[{graph_degree}]",
+            "--alpha_space",
+            f"[{alpha}]",
+            "--filter_ef_construct_space",
+            f"[{filter_ef_construct}]",
+            "--ef_search_space",
+            f"[{ef_search}]",
+            "--construct_threads",
+            "16",
+            "--dataset_key",
+            "yfcc100m",
+            "--test_size",
+            "0.01",
+            "--num_runs",
+            str(num_runs),
+            "--timeout",
+            str(timeout),
+        ],
+        cpu_limit=cpu_limit,
+        mem_limit=mem_limit,
+    )
+
+
 def run_curator_param_sweep(
     nlist_space: list[int],
     gamma1_space: list[int],
@@ -354,6 +402,48 @@ def run_separate_hnsw_param_sweep(
             construction_ef=construction_ef,
             search_ef=search_ef,
             m=m,
+            cpu_limit=cpu_limit,
+            log_path=str(log_path),
+            mem_limit=mem_limit,
+            num_runs=num_runs,
+            timeout=timeout,
+        )
+
+
+def run_filtered_diskann_param_sweep(
+    ef_construct_space: list[int],
+    graph_degree_space: list[int],
+    alpha_space: list[float],
+    filter_ef_construct_space: list[int],
+    ef_search_space: list[int],
+    cpu_limit: str,
+    log_dir: str,
+    mem_limit: int = 20_000_000_000,
+    num_runs: int = 1,
+    timeout: int = 600,
+):
+    log_dir_path = Path(log_dir)
+    log_dir_path.mkdir(parents=True, exist_ok=True)
+
+    for ef_construct, graph_degree, alpha, filter_ef_construct, ef_search in product(
+        ef_construct_space,
+        graph_degree_space,
+        alpha_space,
+        filter_ef_construct_space,
+        ef_search_space,
+    ):
+        log_path = (
+            log_dir_path
+            / f"ef_construct={ef_construct}-graph_degree={graph_degree}-alpha={alpha}"
+            f"-filter_ef_construct={filter_ef_construct}-ef_search={ef_search}.log"
+        ).absolute()
+
+        run_filtered_diskann_exp(
+            ef_construct=ef_construct,
+            graph_degree=graph_degree,
+            alpha=alpha,
+            filter_ef_construct=filter_ef_construct,
+            ef_search=ef_search,
             cpu_limit=cpu_limit,
             log_path=str(log_path),
             mem_limit=mem_limit,
@@ -647,6 +737,78 @@ def run_separate_hnsw_overall_exp(
                 "[16]",
                 "--m_space",
                 "[48]",
+                "--dataset_key",
+                "yfcc100m",
+                "--test_size",
+                "0.01",
+                "--num_runs",
+                str(num_runs),
+                "--timeout",
+                str(timeout),
+            ],
+            cpu_limit=cpu_limit,
+            mem_limit=mem_limit,
+        )
+
+
+def run_filtered_diskann_overall_exp(
+    dataset,
+    cpu_limit: str,
+    mem_limit: int = 20_000_000_000,
+    num_runs: int = 1,
+    timeout: int = 600,
+):
+    assert dataset in ["arxiv-large", "yfcc100m"]
+    logging.basicConfig(level=logging.INFO)
+
+    if dataset == "arxiv-large":
+        run_docker(
+            cmd=[
+                "python",
+                "-m",
+                "benchmark.profile_filtered_diskann",
+                "--ef_construct_space",
+                "[32]",
+                "--graph_degree_space",
+                "[16]",
+                "--alpha_space",
+                "[1.0]",
+                "--filter_ef_construct_space",
+                "[32]",
+                "--ef_search_space",
+                "[32]",
+                "--construct_threads",
+                "16",
+                "--dataset_key",
+                "arxiv-large-10",
+                "--test_size",
+                "0.005",
+                "--num_runs",
+                str(num_runs),
+                "--timeout",
+                str(timeout),
+            ],
+            cpu_limit=cpu_limit,
+            mem_limit=mem_limit,
+        )
+    elif dataset == "yfcc100m":
+        run_docker(
+            cmd=[
+                "python",
+                "-m",
+                "benchmark.profile_filtered_diskann",
+                "--ef_construct_space",
+                "[32]",
+                "--graph_degree_space",
+                "[16]",
+                "--alpha_space",
+                "[1.0]",
+                "--filter_ef_construct_space",
+                "[32]",
+                "--ef_search_space",
+                "[32]",
+                "--construct_threads",
+                "16",
                 "--dataset_key",
                 "yfcc100m",
                 "--test_size",
