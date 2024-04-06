@@ -259,6 +259,49 @@ def run_filtered_diskann_exp(
     )
 
 
+def run_hybrid_curator_exp(
+    graph_degree: int,
+    branch_factor: int,
+    buf_capacity: int,
+    alpha: float,
+    cpu_limit: str,
+    log_path: str | None = None,
+    mem_limit: int = 20_000_000_000,
+    num_runs: int = 1,
+    timeout: int = 600,
+):
+    if log_path is not None:
+        fh = logging.FileHandler(log_path)
+        fh.setLevel(logging.INFO)
+        logging.getLogger().addHandler(fh)
+
+    run_docker(
+        cmd=[
+            "python",
+            "-m",
+            "benchmark.profile_hybrid_curator",
+            "--graph_degree_space",
+            f"[{graph_degree}]",
+            "--branch_factor_space",
+            f"[{branch_factor}]",
+            "--buf_capacity_space",
+            f"[{buf_capacity}]",
+            "--alpha_space",
+            f"[{alpha}]",
+            "--dataset_key",
+            "yfcc100m",
+            "--test_size",
+            "0.01",
+            "--num_runs",
+            str(num_runs),
+            "--timeout",
+            str(timeout),
+        ],
+        cpu_limit=cpu_limit,
+        mem_limit=mem_limit,
+    )
+
+
 def run_curator_param_sweep(
     nlist_space: list[int],
     gamma1_space: list[int],
@@ -444,6 +487,42 @@ def run_filtered_diskann_param_sweep(
             alpha=alpha,
             filter_ef_construct=filter_ef_construct,
             ef_search=ef_search,
+            cpu_limit=cpu_limit,
+            log_path=str(log_path),
+            mem_limit=mem_limit,
+            num_runs=num_runs,
+            timeout=timeout,
+        )
+
+
+def run_hybrid_curator_param_sweep(
+    graph_degree_space: list[int],
+    branch_factor_space: list[int],
+    buf_capacity_space: list[int],
+    alpha_space: list[float],
+    cpu_limit: str,
+    log_dir: str,
+    mem_limit: int = 20_000_000_000,
+    num_runs: int = 1,
+    timeout: int = 600,
+):
+    log_dir_path = Path(log_dir)
+    log_dir_path.mkdir(parents=True, exist_ok=True)
+
+    for graph_degree, branch_factor, buf_capacity, alpha in product(
+        graph_degree_space, branch_factor_space, buf_capacity_space, alpha_space
+    ):
+        log_path = (
+            log_dir_path
+            / f"graph_degree={graph_degree}-branch_factor={branch_factor}"
+            f"-buf_capacity={buf_capacity}-alpha={alpha}.log"
+        ).absolute()
+
+        run_hybrid_curator_exp(
+            graph_degree=graph_degree,
+            branch_factor=branch_factor,
+            buf_capacity=buf_capacity,
+            alpha=alpha,
             cpu_limit=cpu_limit,
             log_path=str(log_path),
             mem_limit=mem_limit,

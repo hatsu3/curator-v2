@@ -11,7 +11,7 @@ class HybridCurator(Index):
     def __init__(
         self,
         d: int,
-        M: int,
+        graph_degree: int,
         branch_factor: int = 4,
         buf_capacity: int = 32,
         alpha: float = 1.0,
@@ -23,7 +23,7 @@ class HybridCurator(Index):
         super().__init__()
 
         self.d = d
-        self.M = M
+        self.graph_degree = graph_degree
         self.branch_factor = branch_factor
         self.buf_capacity = buf_capacity
         self.tree_depth = tree_depth
@@ -34,7 +34,7 @@ class HybridCurator(Index):
 
         self.index = faiss.HybridCuratorV2(
             self.d,
-            self.M,
+            self.graph_degree,
             self.tree_depth,
             self.branch_factor,
             self.alpha,
@@ -48,7 +48,7 @@ class HybridCurator(Index):
     def params(self) -> dict[str, Any]:
         return {
             "d": self.d,
-            "M": self.M,
+            "graph_degree": self.graph_degree,
             "tree_depth": self.tree_depth,
             "branch_factor": self.branch_factor,
             "ef_construction": self.ef_construction,
@@ -100,8 +100,8 @@ class HybridCurator(Index):
 if __name__ == "__main__":
     print("Testing HybridCurator...")
 
-    d, M, tree_depth, branch_factor = 512, 16, 4, 4
-    index = HybridCurator(d, M, branch_factor, buf_capacity=4, tree_depth=tree_depth)
+    d, graph_degree, tree_depth, branch_factor = 512, 16, 4, 4
+    index = HybridCurator(d, graph_degree, branch_factor, buf_capacity=4, tree_depth=tree_depth)
 
     index.train(np.random.rand(1000, d))
 
