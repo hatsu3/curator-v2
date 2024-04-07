@@ -16,6 +16,7 @@ dependencies:
   - tqdm=4.65.0
   - transformers=4.29.2
   - pip:
+      - hnswlib==0.7.0
       - diskannpy==0.7.0
       - urllib3==1.26.0
       - ansicolors==1.1.8
