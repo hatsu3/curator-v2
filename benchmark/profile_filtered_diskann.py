@@ -111,39 +111,46 @@ def exp_filtered_diskann(
     if output_path is None:
         output_path = f"output/filtered_diskann_{dataset_key}.csv"
 
-    index_dir = f"{index_dir_prefix}_{uuid.uuid4().hex[:8]}"
     dataset_config, dim = get_dataset_config(dataset_key, test_size=test_size)
 
-    index_configs = [
-        IndexConfig(
-            index_cls=FilteredDiskANN,
-            index_params={
-                "index_dir": index_dir,
-                "d": dim,
-                "ef_construct": ef_construct,
-                "graph_degree": graph_degree,
-                "alpha": alpha,
-                "filter_ef_construct": filter_ef_construct,
-                "construct_threads": construct_threads,
-                "search_threads": search_threads,
-            },
-            search_params={
-                "ef_search": ef_search,
-            },
-            train_params={
-                "train_ratio": 1,
-                "min_train": 50,
-                "random_seed": 42,
-            },
+    index_configs = []
+    index_dirs = []
+    for ef_construct, graph_degree, alpha, filter_ef_construct, ef_search in product(
+        ef_construct_space,
+        graph_degree_space,
+        alpha_space,
+        filter_ef_construct_space,
+        ef_search_space,
+    ):
+        index_dir = f"{index_dir_prefix}_ef{ef_construct}_m{graph_degree}_a{alpha}_fef{filter_ef_construct}"
+        if not cache_index:
+            index_dir += f"_{uuid.uuid4().hex}"
+        index_dirs.append(index_dir)
+
+        index_configs.append(
+            IndexConfig(
+                index_cls=FilteredDiskANN,
+                index_params={
+                    "index_dir": index_dir,
+                    "d": dim,
+                    "ef_construct": ef_construct,
+                    "graph_degree": graph_degree,
+                    "alpha": alpha,
+                    "filter_ef_construct": filter_ef_construct,
+                    "construct_threads": construct_threads,
+                    "search_threads": search_threads,
+                    "cache_index": cache_index,
+                },
+                search_params={
+                    "ef_search": ef_search,
+                },
+                train_params={
+                    "train_ratio": 1,
+                    "min_train": 50,
+                    "random_seed": 42,
+                },
+            )
         )
-        for ef_construct, graph_degree, alpha, filter_ef_construct, ef_search in product(
-            ef_construct_space,
-            graph_degree_space,
-            alpha_space,
-            filter_ef_construct_space,
-            ef_search_space,
-        )
-    ]
 
     profiler = IndexProfiler(multi_tenant=True)
     profiler.profile = partial(profile_filtered_diskann, profiler)
@@ -164,7 +171,7 @@ def exp_filtered_diskann(
         )
         df.to_csv(output_path, index=False)
 
-    if not cache_index:
+    for index_dir in index_dirs:
         shutil.rmtree(index_dir, ignore_errors=True)
 
     return results

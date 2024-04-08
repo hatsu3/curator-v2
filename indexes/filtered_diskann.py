@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Any
+import shutil
 
 import diskannpy as dap
 import numpy as np
@@ -20,6 +21,7 @@ class FilteredDiskANN(Index):
         construct_threads: int = 16,
         search_threads: int = 1,
         ef_search: int = 64,
+        cache_index: bool = False,
     ):
         super().__init__()
 
@@ -34,6 +36,7 @@ class FilteredDiskANN(Index):
         self.construct_threads = construct_threads
         self.search_threads = search_threads
         self.ef_search = ef_search
+        self.cache_index = cache_index
 
         self.index: dap.StaticMemoryIndex | None = None
 
@@ -126,6 +129,10 @@ class FilteredDiskANN(Index):
     ) -> list[list[int]]:
         # diskann does not support batch queries with filtering
         return [self.query(x, k, tenant_id) for x in X]
+
+    def __del__(self):
+        if not self.cache_index and self.index_dir.exists():
+            shutil.rmtree(self.index_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
