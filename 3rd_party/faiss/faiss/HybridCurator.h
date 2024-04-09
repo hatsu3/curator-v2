@@ -178,6 +178,10 @@ struct HierarchicalZoneMap {
 
     void grant_access(idx_t label, tid_t tenant);
 
+    void remove(idx_t label);
+
+    void revoke_access(idx_t label, tid_t tenant);
+
     // navigate the tree to the node that (1) is closest to the query vector
     // and (2) contains a buffer of the querying tenant
     const TreeNode* seek(const float* qv, tid_t tid) const;
@@ -323,10 +327,10 @@ struct HybridCuratorV2 : MultiTenantIndex {
             float* distances,
             idx_t* labels, 
             const SearchParameters* params = nullptr) const override;
-    
-    bool remove_vector(idx_t xid, tid_t tid) override NOT_IMPLEMENTED
 
-    bool revoke_access(idx_t xid, tid_t tid) override NOT_IMPLEMENTED
+    bool remove_vector(idx_t xid, tid_t tid) override;
+
+    bool revoke_access(idx_t xid, tid_t tid) override;
 };
 
 } // namespace faiss

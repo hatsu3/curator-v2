@@ -581,6 +581,14 @@ void HierarchicalZoneMap::grant_access(idx_t label, tid_t tenant) {
     insert_tree_node(tree_root.get(), 0, leaf->node_id, label, tenant, *this);
 }
 
+void HierarchicalZoneMap::remove(idx_t label) {
+    return;
+}
+
+void HierarchicalZoneMap::revoke_access(idx_t label, tid_t tenant) {
+    return;
+}
+
 namespace {
 const TreeNode* seek_from_node(
         const TreeNode* node,
@@ -1240,6 +1248,14 @@ void HybridCuratorV2::search(
     }
 
     maxheap_reorder(k, distances, labels);
+}
+
+bool HybridCuratorV2::remove_vector(idx_t xid, tid_t tid) {
+    return true;
+}
+
+bool HybridCuratorV2::revoke_access(idx_t xid, tid_t tid) {
+    return true;
 }
 
 } // namespace faiss
