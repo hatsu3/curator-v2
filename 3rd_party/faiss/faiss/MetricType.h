@@ -51,7 +51,7 @@ constexpr bool is_similarity_metric(MetricType metric_type) {
 
 /// multi-tenancy-related types
 // tenant id, -1 means any tenant
-using tid_t = int64_t;
+using tid_t = int16_t;
 
 // access list of each vector in the index
 using AccessMap = std::unordered_map<idx_t, std::unordered_set<tid_t>>;

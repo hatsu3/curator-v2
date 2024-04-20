@@ -20,7 +20,7 @@ struct MultiTenantIndexIVFFlatSep : MultiTenantIndexIVFFlat {
     // quantizer for each tenant
     std::unordered_map<tid_t, IndexFlatL2*> quantizers;
     // tenants that have access to each vector
-    std::unordered_map<tid_t, std::unordered_set<idx_t>> xid_to_tids;
+    std::unordered_map<idx_t, std::unordered_set<tid_t>> xid_to_tids;
     // the owner of each vector
     std::unordered_map<idx_t, tid_t> xid_to_owner;
 
