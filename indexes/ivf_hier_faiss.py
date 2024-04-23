@@ -3,12 +3,12 @@ from typing import Any
 import faiss
 import numpy as np
 
-from indexes.base import Index
 from dataset import Metadata
+from indexes.base import Index
 
 
 class IVFFlatMultiTenantBFHierFaiss(Index):
-    """ Curator index """
+    """Curator index"""
 
     def __init__(
         self,
@@ -19,6 +19,9 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         gamma1: float = 16.0,
         gamma2: float = 256.0,
         max_sl_size: int = 128,
+        update_bf_interval: int = 100,
+        clus_niter: int = 10,
+        max_leaf_size: int = 128,
     ):
         """Initialize Curator index.
 
@@ -45,6 +48,9 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         self.gamma1 = gamma1
         self.gamma2 = gamma2
         self.max_sl_size = max_sl_size
+        self.update_bf_interval = update_bf_interval
+        self.clus_niter = clus_niter
+        self.max_leaf_size = max_leaf_size
 
         self.quantizer = faiss.IndexFlatL2(self.d)
         self.index = faiss.MultiTenantIndexIVFHierarchical(
@@ -57,6 +63,9 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
             self.gamma1,
             self.gamma2,
             self.max_sl_size,
+            self.update_bf_interval,
+            self.clus_niter,
+            self.max_leaf_size,
         )
 
     @property
@@ -67,6 +76,9 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
             "bf_capacity": self.bf_capacity,
             "bf_error_rate": self.bf_error_rate,
             "max_sl_size": self.max_sl_size,
+            "update_bf_interval": self.update_bf_interval,
+            "clus_niter": self.clus_niter,
+            "max_leaf_size": self.max_leaf_size,
         }
 
     @property

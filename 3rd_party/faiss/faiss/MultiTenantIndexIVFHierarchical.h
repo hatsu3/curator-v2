@@ -123,7 +123,6 @@ struct TreeNode {
     size_t level;      // the level of this node in the tree
     size_t sibling_id; // the id of this node among its siblings
     TreeNode* parent;
-    size_t n_clusters; // number of children nodes
     std::vector<TreeNode*> children;
 
     /* information about the cluster */
@@ -144,7 +143,6 @@ struct TreeNode {
             TreeNode* parent,
             float* centroid,
             size_t d,
-            size_t n_clusters,
             size_t bf_capacity,
             float bf_false_pos);
 
@@ -152,17 +150,14 @@ struct TreeNode {
 };
 
 struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
-    // TODO: try to remove these constants
-    static constexpr size_t MIN_POINTS_PER_CENTROID = 8;
-    static constexpr size_t MAX_LEVEL = 8;
-    static constexpr float N_CLUSTER_DIVISOR = 2.0;
-    static constexpr size_t MIN_N_CLUSTERS = 4;
-    static constexpr size_t BF_UPDATE_INTERVAL = 100;
-
     /* construction parameters */
     size_t bf_capacity;
     float bf_false_pos;
     size_t max_sl_size;
+    size_t n_clusters;
+    size_t clus_niter;
+    size_t update_bf_interval;
+    size_t max_leaf_size;
 
     /* search parameters */
     float gamma1, gamma2;
@@ -180,13 +175,16 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
     MultiTenantIndexIVFHierarchical(
             Index* quantizer,
             size_t d,
-            size_t nlist_,
+            size_t n_clusters,
             MetricType metric = METRIC_L2,
             size_t bf_capacity = 1000,
             float bf_false_pos = 0.01,
             float gamma1 = 16,
             float gamma2 = 256,
-            size_t max_sl_size = 128);
+            size_t max_sl_size = 128, 
+            size_t update_bf_interval = 100, 
+            size_t clus_niter = 10, 
+            size_t max_leaf_size = 128);
 
     /*
      * API functions

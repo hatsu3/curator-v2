@@ -61,14 +61,9 @@ TreeNode::TreeNode(
         TreeNode* parent,
         float* centroid,
         size_t d,
-        size_t n_clusters,
         size_t bf_capacity,
         float bf_false_pos)
-        : level(level),
-          sibling_id(sibling_id),
-          parent(parent),
-          n_clusters(n_clusters),
-          quantizer(d) {
+        : level(level), sibling_id(sibling_id), parent(parent), quantizer(d) {
     if (centroid == nullptr) {
         this->centroid = nullptr;
     } else {
@@ -92,31 +87,29 @@ TreeNode::~TreeNode() {
 MultiTenantIndexIVFHierarchical::MultiTenantIndexIVFHierarchical(
         Index* quantizer,
         size_t d,
-        size_t nlist_,
+        size_t n_clusters,
         MetricType metric,
         size_t bf_capacity,
         float bf_false_pos,
         float gamma1,
         float gamma2,
-        size_t max_sl_size)
-        : MultiTenantIndexIVFFlat(quantizer, d, nlist_, metric),
-          tree_root(
-                  0,
-                  0,
-                  nullptr,
-                  nullptr,
-                  d,
-                  nlist_,
-                  bf_capacity,
-                  bf_false_pos),
+        size_t max_sl_size,
+        size_t update_bf_interval,
+        size_t clus_niter,
+        size_t max_leaf_size)
+        : MultiTenantIndexIVFFlat(quantizer, d, n_clusters, metric),
+          tree_root(0, 0, nullptr, nullptr, d, bf_capacity, bf_false_pos),
+          n_clusters(n_clusters),
           bf_capacity(bf_capacity),
           bf_false_pos(bf_false_pos),
           gamma1(gamma1),
           gamma2(gamma2),
           max_sl_size(max_sl_size),
-          vec_store(d) {
-    update_bf_after = BF_UPDATE_INTERVAL;
-}
+          update_bf_interval(update_bf_interval),
+          update_bf_after(update_bf_interval),
+          vec_store(d),
+          clus_niter(clus_niter),
+          max_leaf_size(max_leaf_size) {}
 
 void MultiTenantIndexIVFHierarchical::train(
         idx_t n,
@@ -130,16 +123,16 @@ void MultiTenantIndexIVFHierarchical::train_helper(
         idx_t n,
         const float* x) {
     // stop if there are too few samples to cluster
-    if (n < node->n_clusters * MIN_POINTS_PER_CENTROID ||
-        node->level >= MAX_LEVEL) {
+    if (n <= max_leaf_size || node->level >= 8) {
         return;
     }
 
     // partition the data into n_clusters clusters
     node->quantizer.reset();
     ClusteringParameters cp;
-    cp.min_points_per_centroid = MIN_POINTS_PER_CENTROID;
-    Clustering clus(d, node->n_clusters, cp);
+    cp.niter = clus_niter;
+    cp.min_points_per_centroid = 1;
+    Clustering clus(d, n_clusters, cp);
     clus.train(n, x, node->quantizer);
     node->quantizer.is_trained = true;
 
@@ -148,8 +141,8 @@ void MultiTenantIndexIVFHierarchical::train_helper(
 
     // sort the vectors by cluster
     std::vector<float> sorted_x(n * d);
-    std::vector<size_t> cluster_size(node->n_clusters, 0);
-    std::vector<size_t> cluster_offsets(node->n_clusters, 0);
+    std::vector<size_t> cluster_size(n_clusters, 0);
+    std::vector<size_t> cluster_offsets(n_clusters, 0);
 
     for (size_t i = 0; i < n; i++) {
         size_t cluster = cluster_ids[i];
@@ -157,7 +150,7 @@ void MultiTenantIndexIVFHierarchical::train_helper(
     }
 
     cluster_offsets[0] = 0;
-    for (size_t i = 1; i < node->n_clusters; i++) {
+    for (size_t i = 1; i < n_clusters; i++) {
         cluster_offsets[i] = cluster_offsets[i - 1] + cluster_size[i - 1];
     }
 
@@ -173,17 +166,13 @@ void MultiTenantIndexIVFHierarchical::train_helper(
     }
 
     // recursively train children
-    size_t n_clusters_new = std::max(
-            static_cast<size_t>(node->n_clusters / N_CLUSTER_DIVISOR),
-            MIN_N_CLUSTERS);
-    for (size_t clus_id = 0; clus_id < node->n_clusters; clus_id++) {
+    for (size_t clus_id = 0; clus_id < n_clusters; clus_id++) {
         TreeNode* child = new TreeNode(
                 node->level + 1,
                 clus_id,
                 node,
                 clus.centroids.data() + clus_id * d,
                 d,
-                n_clusters_new,
                 bf_capacity,
                 bf_false_pos);
 
@@ -414,7 +403,7 @@ void MultiTenantIndexIVFHierarchical::update_bf_helper(TreeNode* leaf) {
     }
 
     if (update_bf_after == 0) {
-        update_bf_after = BF_UPDATE_INTERVAL;
+        update_bf_after = update_bf_interval;
     } else {
         update_bf_after--;
     }
