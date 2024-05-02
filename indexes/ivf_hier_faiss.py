@@ -16,12 +16,12 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         nlist: int,
         bf_capacity: int = 1000,
         bf_error_rate: float = 0.001,
-        gamma1: float = 16.0,
-        gamma2: float = 256.0,
         max_sl_size: int = 128,
         update_bf_interval: int = 100,
-        clus_niter: int = 10,
+        clus_niter: int = 20,
         max_leaf_size: int = 128,
+        nprobe: int = 30,
+        prune_thres: float = 1.2,
     ):
         """Initialize Curator index.
 
@@ -35,9 +35,6 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
             The capacity of the Bloom filter.
         bf_error_rate : float, optional
             The error rate of the Bloom filter.
-        gamma1, gamma2 : float, optional
-            The scaling factor of the candidate set during knn search.
-            Larger values of gamma will lead to more accurate results but slower search.
         """
         super().__init__()
 
@@ -45,12 +42,12 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         self.nlist = nlist
         self.bf_capacity = bf_capacity
         self.bf_error_rate = bf_error_rate
-        self.gamma1 = gamma1
-        self.gamma2 = gamma2
         self.max_sl_size = max_sl_size
         self.update_bf_interval = update_bf_interval
         self.clus_niter = clus_niter
         self.max_leaf_size = max_leaf_size
+        self.nprobe = nprobe
+        self.prune_thres = prune_thres
 
         self.quantizer = faiss.IndexFlatL2(self.d)
         self.index = faiss.MultiTenantIndexIVFHierarchical(
@@ -60,12 +57,12 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
             faiss.METRIC_L2,
             self.bf_capacity,
             self.bf_error_rate,
-            self.gamma1,
-            self.gamma2,
             self.max_sl_size,
             self.update_bf_interval,
             self.clus_niter,
             self.max_leaf_size,
+            self.nprobe,
+            self.prune_thres,
         )
 
     @property
@@ -84,16 +81,16 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
     @property
     def search_params(self) -> dict[str, Any]:
         return {
-            "gamma1": self.gamma1,
-            "gamma2": self.gamma2,
+            "nprobe": self.nprobe,
+            "prune_thres": self.prune_thres,
         }
 
     @search_params.setter
     def search_params(self, params: dict[str, Any]) -> None:
-        if "gamma1" in params:
-            self.gamma1 = params["gamma1"]
-        if "gamma2" in params:
-            self.gamma2 = params["gamma2"]
+        if "nprobe" in params:
+            self.nprobe = params["nprobe"]
+        if "prune_thres" in params:
+            self.prune_thres = params["prune_thres"]
 
     def train(
         self, X: np.ndarray, tenant_ids: Metadata | None = None, **train_params

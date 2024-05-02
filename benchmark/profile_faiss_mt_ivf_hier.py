@@ -11,9 +11,12 @@ from indexes.ivf_hier_faiss import IVFFlatMultiTenantBFHierFaiss
 
 def exp_ivf_hier_faiss(
     nlist_space=[4, 8, 16, 32],
-    gamma1_space=[8.0, 16.0, 24.0],
-    gamma2_space=[128.0, 256.0, 512.0],
     max_sl_size_space=[32, 64, 128, 256],
+    update_bf_interval_space=[100],
+    clus_niter_space=[20],
+    max_leaf_size_space=[128],
+    nprobe_space=[30],
+    prune_thres_space=[1.2],
     dataset_key="arxiv-small",
     test_size=0.2,
     num_runs=1,
@@ -34,10 +37,13 @@ def exp_ivf_hier_faiss(
                 "bf_capacity": 1000,
                 "bf_error_rate": 0.01,
                 "max_sl_size": max_sl_size,
+                "update_bf_interval": update_bf_interval,
+                "clus_niter": clus_niter,
+                "max_leaf_size": max_leaf_size,
             },
             search_params={
-                "gamma1": gamma1,
-                "gamma2": gamma2,
+                "nprobe": nprobe,
+                "prune_thres": prune_thres,
             },
             train_params={
                 "train_ratio": 1,
@@ -45,13 +51,21 @@ def exp_ivf_hier_faiss(
                 "random_seed": 42,
             },
         )
-        for nlist, gamma1, gamma2, max_sl_size in product(
-            nlist_space, gamma1_space, gamma2_space, max_sl_size_space
+        for nlist, max_sl_size, update_bf_interval, clus_niter, max_leaf_size, nprobe, prune_thres in product(
+            nlist_space,
+            max_sl_size_space,
+            update_bf_interval_space,
+            clus_niter_space,
+            max_leaf_size_space,
+            nprobe_space,
+            prune_thres_space,
         )
     ]
 
     profiler = IndexProfiler(multi_tenant=True)
-    results = profiler.batch_profile(index_configs, [dataset_config], num_runs=num_runs, timeout=timeout)
+    results = profiler.batch_profile(
+        index_configs, [dataset_config], num_runs=num_runs, timeout=timeout
+    )
 
     if output_path is not None:
         df = pd.DataFrame(

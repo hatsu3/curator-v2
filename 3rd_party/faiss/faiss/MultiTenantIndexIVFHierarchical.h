@@ -160,7 +160,8 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
     size_t max_leaf_size;
 
     /* search parameters */
-    float gamma1, gamma2;
+    size_t nprobe;
+    float prune_thres;
 
     /* main data structures */
     TreeNode tree_root;
@@ -179,12 +180,12 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
             MetricType metric = METRIC_L2,
             size_t bf_capacity = 1000,
             float bf_false_pos = 0.01,
-            float gamma1 = 16,
-            float gamma2 = 256,
             size_t max_sl_size = 128, 
             size_t update_bf_interval = 100, 
-            size_t clus_niter = 10, 
-            size_t max_leaf_size = 128);
+            size_t clus_niter = 20, 
+            size_t max_leaf_size = 128, 
+            size_t nprobe = 40,
+            float prune_thres = 1.6);
 
     /*
      * API functions

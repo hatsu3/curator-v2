@@ -91,25 +91,25 @@ MultiTenantIndexIVFHierarchical::MultiTenantIndexIVFHierarchical(
         MetricType metric,
         size_t bf_capacity,
         float bf_false_pos,
-        float gamma1,
-        float gamma2,
         size_t max_sl_size,
         size_t update_bf_interval,
         size_t clus_niter,
-        size_t max_leaf_size)
+        size_t max_leaf_size,
+        size_t nprobe,
+        float prune_thres)
         : MultiTenantIndexIVFFlat(quantizer, d, n_clusters, metric),
           tree_root(0, 0, nullptr, nullptr, d, bf_capacity, bf_false_pos),
           n_clusters(n_clusters),
           bf_capacity(bf_capacity),
           bf_false_pos(bf_false_pos),
-          gamma1(gamma1),
-          gamma2(gamma2),
           max_sl_size(max_sl_size),
           update_bf_interval(update_bf_interval),
           update_bf_after(update_bf_interval),
           vec_store(d),
           clus_niter(clus_niter),
-          max_leaf_size(max_leaf_size) {}
+          max_leaf_size(max_leaf_size),
+          nprobe(nprobe),
+          prune_thres(prune_thres) {}
 
 void MultiTenantIndexIVFHierarchical::train(
         idx_t n,
@@ -239,9 +239,9 @@ void MultiTenantIndexIVFHierarchical::grant_access_helper(
         // case 1. this tenant has already been shortlisted
         if (it != node->shortlists.end()) {
             it->second.push_back(vid);
-            if (it->second.size() > max_sl_size) {
-                node->shortlists.erase(it);
-            }
+            // if (it->second.size() > max_sl_size) {
+            //     node->shortlists.erase(it);
+            // }
             // case 2. this is the first vector of the tenant
         } else if (!node->bf.contains(tid)) {
             node->shortlists.emplace(tid, std::vector<vid_t>{vid});
@@ -458,196 +458,58 @@ void MultiTenantIndexIVFHierarchical::search_one(
         float* distances,
         idx_t* labels,
         const SearchParameters* params) const {
-    // perform BFS to find candidate leaf nodes
-    size_t n_cand_vectors = 0;
-    std::vector<CandBucket> bucket_dists;
-
     MinHeap pq;
     pq.emplace(0.0, &tree_root);
 
-    while (!pq.empty() && n_cand_vectors < gamma1 * gamma2 * k) {
-        float dist = pq.top().first;
-        const TreeNode* node = pq.top().second;
+    std::vector<CandBucket> bucket_dists;
+
+    while (!pq.empty() && bucket_dists.size() < this->nprobe) {
+        auto [dist, node] = pq.top();
         pq.pop();
 
-        // case 1. this node has a short list for the tenant
         auto it = node->shortlists.find(tid);
         if (it != node->shortlists.end()) {
-            size_t nvecs = it->second.size();
-            bucket_dists.emplace_back(dist, node, nvecs);
-            n_cand_vectors += nvecs;
+            bucket_dists.emplace_back(dist, node, it->second.size());
             continue;
         }
 
-        // case 2. this node does not contain any data point that the tenant has
-        // access to
         if (!node->bf.contains(tid)) {
             continue;
         }
 
-        // case 3. this node contains many data points that the tenant has
-        // access to
         if (!node->children.empty()) {
-            const float* centroid = node->children[0]->centroid;
-            for (size_t i = 0; i < node->children.size() - 1; i++) {
-                const float* next_centroid = node->children[i + 1]->centroid;
-                prefetch_L1(next_centroid);
-                float dist = fvec_L2sqr(x, centroid, d);
-                pq.emplace(dist, node->children[i]);
-                centroid = next_centroid;
+            for (auto child : node->children) {
+                float dist = fvec_L2sqr(x, child->centroid, d);
+                pq.emplace(dist, child);
             }
-            float dist = fvec_L2sqr(x, centroid, d);
-            pq.emplace(dist, node->children.back());
             continue;
         }
 
-        auto it2 = node->n_vectors_per_tenant.find(tid);
-        if (it2 != node->n_vectors_per_tenant.end()) {
-            size_t nvecs = it2->second;
-            bucket_dists.emplace_back(dist, node, nvecs);
-            n_cand_vectors += nvecs;
-        }
+        // We should only reach here due to false positives in the bloom filter
     }
 
-    // sort the buckets by distance to the query
     std::sort(bucket_dists.begin(), bucket_dists.end());
-    while (n_cand_vectors > gamma2 * k) {
-        n_cand_vectors -= std::get<2>(bucket_dists.back());
-        bucket_dists.pop_back();
-    }
 
-    // examine the buckets in order
     heap_heapify<HeapForL2>(k, distances, labels);
 
-    bool inter_query_parallel = getenv("BATCH_QUERY") != nullptr;
-    if (inter_query_parallel) {
-        auto update_results = [&](vid_t vid, const float* vec) {
-            label_t label = id_allocator.get_label(vid);
-            float dist = fvec_L2sqr(x, vec, d);
+    if (bucket_dists.empty()) {
+        return;
+    }
 
+    float min_buck_dist = std::get<0>(bucket_dists[0]);
+
+    for (auto [dist, node, nvecs] : bucket_dists) {
+        if (dist > this->prune_thres * min_buck_dist) {
+            break;
+        }
+
+        for (auto vid : node->shortlists.at(tid)) {
+            auto vec = vec_store.get_vec(vid);
+            auto lbl = id_allocator.get_label(vid);
+            auto dist = fvec_L2sqr(x, vec, d);
             if (dist < distances[0]) {
-                maxheap_replace_top(k, distances, labels, dist, label);
+                maxheap_replace_top(k, distances, labels, dist, lbl);
             }
-        };
-
-        auto scan_one_list = [&](CandBucket bucket_dist) {
-            const TreeNode* bucket = std::get<1>(bucket_dist);
-
-            // examine the candidate vectors and update the results
-            // case 1. node has a short list for the tenant
-            auto it = bucket->shortlists.find(tid);
-            if (it != bucket->shortlists.end()) {
-                const float* vec = vec_store.get_vec(it->second[0]);
-                for (size_t i = 0; i < it->second.size() - 1; i++) {
-                    vid_t vid = it->second[i];
-                    const float* next_vec =
-                            vec_store.get_vec(it->second[i + 1]);
-                    prefetch_L1(next_vec);
-                    update_results(vid, vec);
-                    vec = next_vec;
-                }
-                update_results(it->second.back(), vec);
-                // case 2. node is a leaf node and does not have a short list
-            } else {
-                for (auto vid : bucket->vector_indices) {
-                    if (access_matrix.has_access(vid, tid)) {
-                        const float* vec = vec_store.get_vec(vid);
-                        update_results(vid, vec);
-                    }
-                }
-            }
-        };
-
-        for (const auto& bucket_dist : bucket_dists) {
-            scan_one_list(bucket_dist);
-        }
-    } else {
-        // split buckets into fixed-size chunks
-        size_t chunk_size =
-                getenv("CHUNK_SIZE") ? atoi(getenv("CHUNK_SIZE")) : 16;
-        std::vector<std::tuple<
-                size_t /*bucket-id*/,
-                size_t /*start*/,
-                size_t /*end*/>>
-                tasks;
-        for (size_t bucket_idx = 0; bucket_idx < bucket_dists.size();
-             bucket_idx++) {
-            auto& bucket_dist = bucket_dists[bucket_idx];
-            size_t nvecs = std::get<2>(bucket_dist);
-            size_t nchunks = (nvecs + chunk_size - 1) / chunk_size;
-            for (size_t chunk_idx = 0; chunk_idx < nchunks; chunk_idx++) {
-                size_t start = chunk_idx * chunk_size;
-                size_t end = std::min(start + chunk_size, nvecs);
-                tasks.emplace_back(bucket_idx, start, end);
-            }
-        }
-
-#pragma omp parallel
-        {
-            std::vector<float> local_dis(k);
-            std::vector<idx_t> local_idx(k);
-
-            heap_heapify<HeapForL2>(k, local_dis.data(), local_idx.data());
-
-            auto update_results = [&](vid_t vid, const float* vec) {
-                label_t label = id_allocator.get_label(vid);
-                float dist = fvec_L2sqr(x, vec, d);
-
-                if (dist < local_dis[0]) {
-                    maxheap_replace_top(
-                            k, local_dis.data(), local_idx.data(), dist, label);
-                }
-            };
-
-            auto scan_one_list = [&](CandBucket bucket_dist,
-                                     size_t start,
-                                     size_t end) {
-                const TreeNode* bucket = std::get<1>(bucket_dist);
-
-                // examine the candidate vectors and update the results
-                // case 1. node has a short list for the tenant
-                auto it = bucket->shortlists.find(tid);
-                if (it != bucket->shortlists.end()) {
-                    const float* vec = vec_store.get_vec(it->second[start]);
-                    for (size_t i = start; i < end - 1; i++) {
-                        vid_t vid = it->second[i];
-                        const float* next_vec =
-                                vec_store.get_vec(it->second[i + 1]);
-                        prefetch_L1(next_vec);
-                        update_results(vid, vec);
-                        vec = next_vec;
-                    }
-                    update_results(it->second[end - 1], vec);
-                    // case 2. node is a leaf node and does not have a short
-                    // list
-                } else {
-                    for (size_t i = start; i < end; i++) {
-                        vid_t vid = bucket->vector_indices[i];
-                        if (access_matrix.has_access(vid, tid)) {
-                            const float* vec = vec_store.get_vec(vid);
-                            update_results(vid, vec);
-                        }
-                    }
-                }
-            };
-
-#pragma omp for schedule(dynamic) nowait
-            for (const auto& task : tasks) {
-                size_t bucket_idx = std::get<0>(task);
-                size_t start = std::get<1>(task);
-                size_t end = std::get<2>(task);
-
-                scan_one_list(bucket_dists[bucket_idx], start, end);
-            }
-
-#pragma omp critical
-            heap_addn<HeapForL2>(
-                    k,
-                    distances,
-                    labels,
-                    local_dis.data(),
-                    local_idx.data(),
-                    k);
         }
     }
 
