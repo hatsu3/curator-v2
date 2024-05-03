@@ -118,6 +118,38 @@ struct AccessMatrix {
     }
 };
 
+struct RunningMean {
+    int n;
+    double sum;
+
+    RunningMean() : sum(0.0), n(0) {}
+
+    void add(double x) {
+        sum += x;
+        n++;
+    }
+
+    void remove(double x) {
+        FAISS_ASSERT_MSG(n > 0, "no elements to remove");
+        
+        sum -= x;
+        n--;
+
+        if (n == 0) {
+            // reset the sum to avoid numerical issues
+            sum = 0.0;
+        }
+    }
+
+    double get_mean() const {
+        if (n > 0) {
+            return sum / n;
+        } else {
+            return 0.0;
+        }
+    }
+};
+
 struct TreeNode {
     /* information about the tree structure */
     size_t level;      // the level of this node in the tree
@@ -128,6 +160,7 @@ struct TreeNode {
     /* information about the cluster */
     float* centroid;
     IndexFlatL2 quantizer;
+    RunningMean variance;
 
     /* available for all nodes */
     bloom_filter bf;
@@ -146,7 +179,12 @@ struct TreeNode {
             size_t bf_capacity,
             float bf_false_pos);
 
-    ~TreeNode();
+    ~TreeNode() {
+        delete[] centroid;
+        for (TreeNode* child : children) {
+            delete child;
+        }
+    }
 };
 
 struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
@@ -162,9 +200,10 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
     /* search parameters */
     size_t nprobe;
     float prune_thres;
+    float variance_boost;
 
     /* main data structures */
-    TreeNode tree_root;
+    TreeNode* tree_root;
     IdAllocator id_allocator;
     VectorStore vec_store;
     AccessMatrix access_matrix;
@@ -185,7 +224,12 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
             size_t clus_niter = 20, 
             size_t max_leaf_size = 128, 
             size_t nprobe = 40,
-            float prune_thres = 1.6);
+            float prune_thres = 1.6, 
+            float variance_boost = 0.2);
+
+    ~MultiTenantIndexIVFHierarchical() override {
+        delete tree_root;
+    }
 
     /*
      * API functions

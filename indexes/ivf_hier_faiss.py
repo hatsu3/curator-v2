@@ -20,8 +20,9 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         update_bf_interval: int = 100,
         clus_niter: int = 20,
         max_leaf_size: int = 128,
-        nprobe: int = 30,
-        prune_thres: float = 1.2,
+        nprobe: int = 40,
+        prune_thres: float = 1.6,
+        variance_boost: float = 0.2,
     ):
         """Initialize Curator index.
 
@@ -48,6 +49,7 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         self.max_leaf_size = max_leaf_size
         self.nprobe = nprobe
         self.prune_thres = prune_thres
+        self.variance_boost = variance_boost
 
         self.quantizer = faiss.IndexFlatL2(self.d)
         self.index = faiss.MultiTenantIndexIVFHierarchical(
@@ -63,6 +65,7 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
             self.max_leaf_size,
             self.nprobe,
             self.prune_thres,
+            self.variance_boost,
         )
 
     @property
@@ -83,6 +86,7 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         return {
             "nprobe": self.nprobe,
             "prune_thres": self.prune_thres,
+            "variance_boost": self.variance_boost,
         }
 
     @search_params.setter
@@ -91,6 +95,8 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
             self.nprobe = params["nprobe"]
         if "prune_thres" in params:
             self.prune_thres = params["prune_thres"]
+        if "variance_boost" in params:
+            self.variance_boost = params["variance_boost"]
 
     def train(
         self, X: np.ndarray, tenant_ids: Metadata | None = None, **train_params

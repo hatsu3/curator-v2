@@ -15,8 +15,9 @@ def exp_ivf_hier_faiss(
     update_bf_interval_space=[100],
     clus_niter_space=[20],
     max_leaf_size_space=[128],
-    nprobe_space=[30],
-    prune_thres_space=[1.2],
+    nprobe_space=[40],
+    prune_thres_space=[1.6],
+    variance_boost_space=[0.2],
     dataset_key="arxiv-small",
     test_size=0.2,
     num_runs=1,
@@ -44,6 +45,7 @@ def exp_ivf_hier_faiss(
             search_params={
                 "nprobe": nprobe,
                 "prune_thres": prune_thres,
+                "variance_boost": variance_boost,
             },
             train_params={
                 "train_ratio": 1,
@@ -51,7 +53,7 @@ def exp_ivf_hier_faiss(
                 "random_seed": 42,
             },
         )
-        for nlist, max_sl_size, update_bf_interval, clus_niter, max_leaf_size, nprobe, prune_thres in product(
+        for nlist, max_sl_size, update_bf_interval, clus_niter, max_leaf_size, nprobe, prune_thres, variance_boost in product(
             nlist_space,
             max_sl_size_space,
             update_bf_interval_space,
@@ -59,6 +61,7 @@ def exp_ivf_hier_faiss(
             max_leaf_size_space,
             nprobe_space,
             prune_thres_space,
+            variance_boost_space,
         )
     ]
 

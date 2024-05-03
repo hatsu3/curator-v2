@@ -80,10 +80,6 @@ TreeNode::TreeNode(
     bf = bloom_filter(bf_params);
 }
 
-TreeNode::~TreeNode() {
-    delete[] centroid;
-}
-
 MultiTenantIndexIVFHierarchical::MultiTenantIndexIVFHierarchical(
         Index* quantizer,
         size_t d,
@@ -96,9 +92,9 @@ MultiTenantIndexIVFHierarchical::MultiTenantIndexIVFHierarchical(
         size_t clus_niter,
         size_t max_leaf_size,
         size_t nprobe,
-        float prune_thres)
+        float prune_thres,
+        float variance_boost)
         : MultiTenantIndexIVFFlat(quantizer, d, n_clusters, metric),
-          tree_root(0, 0, nullptr, nullptr, d, bf_capacity, bf_false_pos),
           n_clusters(n_clusters),
           bf_capacity(bf_capacity),
           bf_false_pos(bf_false_pos),
@@ -109,19 +105,40 @@ MultiTenantIndexIVFHierarchical::MultiTenantIndexIVFHierarchical(
           clus_niter(clus_niter),
           max_leaf_size(max_leaf_size),
           nprobe(nprobe),
-          prune_thres(prune_thres) {}
+          prune_thres(prune_thres),
+          variance_boost(variance_boost) {
+    tree_root =
+            new TreeNode(0, 0, nullptr, nullptr, d, bf_capacity, bf_false_pos);
+}
 
 void MultiTenantIndexIVFHierarchical::train(
         idx_t n,
         const float* x,
         tid_t tid) {
-    train_helper(&tree_root, n, x);
+    train_helper(tree_root, n, x);
 }
 
 void MultiTenantIndexIVFHierarchical::train_helper(
         TreeNode* node,
         idx_t n,
         const float* x) {
+    if (node->centroid == nullptr) {
+        node->centroid = new float[d];
+        for (size_t i = 0; i < d; i++) {
+            node->centroid[i] = 0;
+        }
+
+        for (size_t i = 0; i < n; i++) {
+            for (size_t j = 0; j < d; j++) {
+                node->centroid[j] += x[i * d + j];
+            }
+        }
+
+        for (size_t i = 0; i < d; i++) {
+            node->centroid[i] /= n;
+        }
+    }
+
     // stop if there are too few samples to cluster
     if (n <= max_leaf_size || node->level >= 8) {
         return;
@@ -205,9 +222,16 @@ void MultiTenantIndexIVFHierarchical::add_vector_with_ids(
         leaf->n_vectors_per_tenant[tid]++;
         leaf->vector_indices.push_back(vid);
 
+        TreeNode* curr = leaf;
+        while (curr != nullptr) {
+            float dist = fvec_L2sqr(xi, curr->centroid, d);
+            curr->variance.add(dist);
+            curr = curr->parent;
+        }
+
         // grant access to the creator (update bloom filter and short lists)
         std::vector<idx_t> path = get_vector_path(label);
-        grant_access_helper(&tree_root, label, tid, path);
+        grant_access_helper(tree_root, label, tid, path);
     }
 }
 
@@ -222,7 +246,7 @@ void MultiTenantIndexIVFHierarchical::grant_access(idx_t label, tid_t tid) {
 
     // grant access to the tenant (update bloom filter and short lists)
     std::vector<idx_t> path = get_vector_path(label);
-    grant_access_helper(&tree_root, label, tid, path);
+    grant_access_helper(tree_root, label, tid, path);
 }
 
 void MultiTenantIndexIVFHierarchical::grant_access_helper(
@@ -300,6 +324,15 @@ bool MultiTenantIndexIVFHierarchical::remove_vector(idx_t label, tid_t tid) {
 
     // update shortlists
     update_shortlists_helper(leaf, vid, tenants);
+
+    // update the variance of the tree nodes along the path
+    TreeNode* curr = leaf;
+    auto vec = vec_store.get_vec(vid);
+    while (curr != nullptr) {
+        float dist = fvec_L2sqr(vec, curr->centroid, d);
+        curr->variance.remove(dist);
+        curr = curr->parent;
+    }
 
     // remove the vector from the vector store and access matrix
     id_allocator.free_id(label);
@@ -458,17 +491,26 @@ void MultiTenantIndexIVFHierarchical::search_one(
         float* distances,
         idx_t* labels,
         const SearchParameters* params) const {
+    auto node_priority = [&](TreeNode* node) {
+        float dist = fvec_L2sqr(x, node->centroid, d);
+        float var = node->variance.get_mean();
+        float score = dist - this->variance_boost * var;
+        return score;
+    };
+
     MinHeap pq;
-    pq.emplace(0.0, &tree_root);
+    pq.emplace(node_priority(tree_root), tree_root);
 
     std::vector<CandBucket> bucket_dists;
 
     while (!pq.empty() && bucket_dists.size() < this->nprobe) {
-        auto [dist, node] = pq.top();
+        auto [score, node] = pq.top();
         pq.pop();
 
         auto it = node->shortlists.find(tid);
         if (it != node->shortlists.end()) {
+            float var = node->variance.get_mean();
+            float dist = score + this->variance_boost * var;
             bucket_dists.emplace_back(dist, node, it->second.size());
             continue;
         }
@@ -479,8 +521,7 @@ void MultiTenantIndexIVFHierarchical::search_one(
 
         if (!node->children.empty()) {
             for (auto child : node->children) {
-                float dist = fvec_L2sqr(x, child->centroid, d);
-                pq.emplace(dist, child);
+                pq.emplace(node_priority(child), child);
             }
             continue;
         }
@@ -517,7 +558,7 @@ void MultiTenantIndexIVFHierarchical::search_one(
 }
 
 TreeNode* MultiTenantIndexIVFHierarchical::assign_vec_to_leaf(const float* x) {
-    TreeNode* curr = &tree_root;
+    TreeNode* curr = tree_root;
     idx_t cluster_id;
 
     while (!curr->children.empty()) {
