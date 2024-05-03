@@ -475,13 +475,8 @@ void MultiTenantIndexIVFHierarchical::search(
     }
 }
 
-using CandBucket =
-        std::tuple<float /*dist*/, const TreeNode* /*node*/, size_t /*nvecs*/>;
-using Candidate = std::pair<float /*dist*/, const TreeNode* /*node*/>;
-using MinHeap = std::priority_queue<
-        Candidate,
-        std::vector<Candidate>,
-        std::greater<Candidate>>;
+template <typename T>
+using MinHeap = std::priority_queue<T, std::vector<T>, std::greater<T>>;
 using HeapForL2 = CMax<float, idx_t>;
 
 void MultiTenantIndexIVFHierarchical::search_one(
@@ -491,6 +486,8 @@ void MultiTenantIndexIVFHierarchical::search_one(
         float* distances,
         idx_t* labels,
         const SearchParameters* params) const {
+    using Candidate = std::pair<float, const TreeNode*>;
+
     auto node_priority = [&](TreeNode* node) {
         float dist = fvec_L2sqr(x, node->centroid, d);
         float var = node->variance.get_mean();
@@ -498,12 +495,13 @@ void MultiTenantIndexIVFHierarchical::search_one(
         return score;
     };
 
-    MinHeap pq;
+    MinHeap<Candidate> pq;
     pq.emplace(node_priority(tree_root), tree_root);
 
-    std::vector<CandBucket> bucket_dists;
+    size_t n_cand_vecs = 0;
+    std::vector<Candidate> buckets;
 
-    while (!pq.empty() && bucket_dists.size() < this->nprobe) {
+    while (!pq.empty() && n_cand_vecs < this->nprobe) {
         auto [score, node] = pq.top();
         pq.pop();
 
@@ -511,7 +509,8 @@ void MultiTenantIndexIVFHierarchical::search_one(
         if (it != node->shortlists.end()) {
             float var = node->variance.get_mean();
             float dist = score + this->variance_boost * var;
-            bucket_dists.emplace_back(dist, node, it->second.size());
+            buckets.emplace_back(dist, node);
+            n_cand_vecs += it->second.size();
             continue;
         }
 
@@ -529,17 +528,17 @@ void MultiTenantIndexIVFHierarchical::search_one(
         // We should only reach here due to false positives in the bloom filter
     }
 
-    std::sort(bucket_dists.begin(), bucket_dists.end());
+    std::sort(buckets.begin(), buckets.end());
 
     heap_heapify<HeapForL2>(k, distances, labels);
 
-    if (bucket_dists.empty()) {
+    if (buckets.empty()) {
         return;
     }
 
-    float min_buck_dist = std::get<0>(bucket_dists[0]);
+    float min_buck_dist = buckets[0].first;
 
-    for (auto [dist, node, nvecs] : bucket_dists) {
+    for (auto [dist, node] : buckets) {
         if (dist > this->prune_thres * min_buck_dist) {
             break;
         }
