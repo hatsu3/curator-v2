@@ -128,6 +128,28 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         top_dists, top_ids = self.index.search(X, k, tenant_id)  # type: ignore
         return top_ids.tolist()
 
+    def enable_stats_tracking(self, enable: bool = True):
+        self.index.enable_stats_tracking(enable)
+
+    def get_search_stats(self) -> dict[str, int]:
+        stats = self.index.get_search_stats()
+        stats = [stats.at(i) for i in range(stats.size())]
+        return dict(
+            zip(
+                [
+                    "n_dists",
+                    "n_nodes_visited",
+                    "n_bucks_unpruned",
+                    "n_bucks_pruned",
+                    "n_vecs_visited",
+                    "n_steps",
+                    "n_bf_queries",
+                    "n_var_queries",
+                ],
+                stats,
+            )
+        )
+
 
 if __name__ == "__main__":
     print("Testing IVFFlatMultiTenantBFHierFaiss...")
@@ -137,5 +159,7 @@ if __name__ == "__main__":
     index.create(np.random.rand(10), 1, 0)
     index.create(np.random.rand(10), 2, 1)
     index.grant_access(2, 2)
+    index.enable_stats_tracking(True)
     res = index.query(np.random.rand(10), 2, 0)
+    print(index.get_search_stats())
     print(res)

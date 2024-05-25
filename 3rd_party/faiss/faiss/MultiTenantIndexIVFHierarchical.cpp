@@ -488,7 +488,20 @@ void MultiTenantIndexIVFHierarchical::search_one(
         const SearchParameters* params) const {
     using Candidate = std::pair<float, const TreeNode*>;
 
+    int n_dists = 0;
+    int n_nodes_visited = 0;
+    int n_bucks_unpruned = 0;
+    int n_bucks_pruned = 0;
+    int n_vecs_visited = 0;
+    int n_steps = 0;
+    int n_bf_queries = 0;
+    int n_var_queries = 0;
+
     auto node_priority = [&](TreeNode* node) {
+        n_dists++;
+        n_nodes_visited++;
+        n_var_queries++;
+
         float dist = fvec_L2sqr(x, node->centroid, d);
         float var = node->variance.get_mean();
         float score = dist - this->variance_boost * var;
@@ -502,11 +515,13 @@ void MultiTenantIndexIVFHierarchical::search_one(
     std::vector<Candidate> buckets;
 
     while (!pq.empty() && n_cand_vecs < this->nprobe) {
+        n_steps++;
         auto [score, node] = pq.top();
         pq.pop();
 
         auto it = node->shortlists.find(tid);
         if (it != node->shortlists.end()) {
+            n_var_queries++;
             float var = node->variance.get_mean();
             float dist = score + this->variance_boost * var;
             buckets.emplace_back(dist, node);
@@ -514,6 +529,7 @@ void MultiTenantIndexIVFHierarchical::search_one(
             continue;
         }
 
+        n_bf_queries++;
         if (!node->bf.contains(tid)) {
             continue;
         }
@@ -529,6 +545,7 @@ void MultiTenantIndexIVFHierarchical::search_one(
     }
 
     std::sort(buckets.begin(), buckets.end());
+    n_bucks_unpruned = buckets.size();
 
     heap_heapify<HeapForL2>(k, distances, labels);
 
@@ -543,7 +560,10 @@ void MultiTenantIndexIVFHierarchical::search_one(
             break;
         }
 
+        n_bucks_pruned++;
         for (auto vid : node->shortlists.at(tid)) {
+            n_dists++;
+            n_vecs_visited++;
             auto vec = vec_store.get_vec(vid);
             auto lbl = id_allocator.get_label(vid);
             auto dist = fvec_L2sqr(x, vec, d);
@@ -554,6 +574,18 @@ void MultiTenantIndexIVFHierarchical::search_one(
     }
 
     heap_reorder<HeapForL2>(k, distances, labels);
+
+    if (track_stats) {
+        search_stats.clear();
+        search_stats.push_back(n_dists);
+        search_stats.push_back(n_nodes_visited);
+        search_stats.push_back(n_bucks_unpruned);
+        search_stats.push_back(n_bucks_pruned);
+        search_stats.push_back(n_vecs_visited);
+        search_stats.push_back(n_steps);
+        search_stats.push_back(n_bf_queries);
+        search_stats.push_back(n_var_queries);
+    }
 }
 
 TreeNode* MultiTenantIndexIVFHierarchical::assign_vec_to_leaf(const float* x) {

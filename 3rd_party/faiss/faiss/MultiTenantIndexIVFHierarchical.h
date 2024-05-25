@@ -131,7 +131,7 @@ struct RunningMean {
 
     void remove(double x) {
         FAISS_ASSERT_MSG(n > 0, "no elements to remove");
-        
+
         sum -= x;
         n--;
 
@@ -212,6 +212,9 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
     size_t update_bf_after;
     std::unordered_map<label_t, TreeNode*> label_to_leaf;
 
+    bool track_stats = false;
+    mutable std::vector<int> search_stats;
+
     MultiTenantIndexIVFHierarchical(
             Index* quantizer,
             size_t d,
@@ -219,16 +222,24 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
             MetricType metric = METRIC_L2,
             size_t bf_capacity = 1000,
             float bf_false_pos = 0.01,
-            size_t max_sl_size = 128, 
-            size_t update_bf_interval = 100, 
-            size_t clus_niter = 20, 
-            size_t max_leaf_size = 128, 
+            size_t max_sl_size = 128,
+            size_t update_bf_interval = 100,
+            size_t clus_niter = 20,
+            size_t max_leaf_size = 128,
             size_t nprobe = 40,
-            float prune_thres = 1.6, 
+            float prune_thres = 1.6,
             float variance_boost = 0.2);
 
     ~MultiTenantIndexIVFHierarchical() override {
         delete tree_root;
+    }
+
+    void enable_stats_tracking(bool enable) {
+        track_stats = enable;
+    }
+
+    std::vector<int> get_search_stats() const {
+        return search_stats;
     }
 
     /*
