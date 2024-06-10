@@ -1,8 +1,11 @@
 import numpy as np
 import psutil
 
+from benchmark.config import DatasetConfig
+from dataset import get_dataset, get_metadata
 from dataset.arxiv_dataset import ARXIV_DATA_DIR, ArxivDatasetConfig
 from dataset.randperm_dataset import RandPermDatasetConfig
+from dataset.utils import compute_ground_truth, load_sampled_metadata
 from dataset.yfcc100m_dataset import YFCC100M_DIR, YFCC100MDatasetConfig
 
 
@@ -96,7 +99,9 @@ def get_dataset_config(dataset_key: str, test_size: float = 0.2):
         np.random.seed(42)
         train_size = int(n_vectors * (1 - test_size))
         train_vecs = train_vecs[np.random.choice(train_vecs.shape[0], train_size)]
-        test_vecs = test_vecs[np.random.choice(test_vecs.shape[0], n_vectors - train_size)]
+        test_vecs = test_vecs[
+            np.random.choice(test_vecs.shape[0], n_vectors - train_size)
+        ]
 
         dataset_config = RandPermDatasetConfig(
             dataset_params={
@@ -119,3 +124,31 @@ def get_dataset_config(dataset_key: str, test_size: float = 0.2):
         raise ValueError(f"Unknown dataset key: {dataset_key}")
 
     return dataset_config, dim
+
+
+def load_dataset(dataset_config: DatasetConfig):
+    train_vecs, test_vecs, metadata = get_dataset(
+        dataset_name=dataset_config.dataset_name, **dataset_config.dataset_params
+    )
+
+    train_mds, test_mds = get_metadata(
+        synthesized=dataset_config.synthesize_metadata,
+        train_vecs=train_vecs,
+        test_vecs=test_vecs,
+        dataset_name=dataset_config.dataset_name,
+        **dataset_config.metadata_params,
+    )
+
+    ground_truth, train_cates = compute_ground_truth(
+        train_vecs,
+        train_mds,
+        test_vecs,
+        test_mds,
+        k=10,
+        metric=metadata["metric"],
+        multi_tenant=True,
+    )
+
+    train_mds, test_mds = load_sampled_metadata(train_mds, test_mds, train_cates)
+
+    return train_vecs, test_vecs, train_mds, test_mds, ground_truth, train_cates
