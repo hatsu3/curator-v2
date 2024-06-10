@@ -3,12 +3,12 @@ from typing import Any
 import faiss
 import numpy as np
 
-from indexes.base import Index
 from dataset import Metadata
+from indexes.base import Index
 
 
 class HNSWMultiTenantHnswlib(Index):
-    """ HNSW index with metadata filtering """
+    """HNSW index with metadata filtering"""
 
     def __init__(
         self,
@@ -83,6 +83,12 @@ class HNSWMultiTenantHnswlib(Index):
     ) -> list[list[int]]:
         _, top_ids = self.index.search(X, k, tenant_id)  # type: ignore
         return top_ids.tolist()
+
+    def get_search_stats(self) -> dict[str, Any]:
+        assert self.index is not None
+        return {
+            "n_dists": self.index.n_dists, # type: ignore
+        }
 
 
 if __name__ == "__main__":

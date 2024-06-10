@@ -91,6 +91,8 @@ struct MultiTenantIndexHNSW : MultiTenantIndex {
     hnswlib::L2Space* space;
     hnswlib::HierarchicalNSW<float>* index;
 
+    mutable long n_dists;  // number of distances computed in the last search
+
     MultiTenantIndexHNSW(size_t d, size_t M, size_t ef_construction, size_t ef, size_t max_elements);
 
     ~MultiTenantIndexHNSW();

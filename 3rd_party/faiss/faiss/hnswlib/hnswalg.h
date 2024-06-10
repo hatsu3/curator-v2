@@ -69,7 +69,6 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     std::mutex deleted_elements_lock;  // lock for deleted_elements
     std::unordered_set<tableint> deleted_elements;  // contains internal ids of deleted elements
 
-
     HierarchicalNSW(SpaceInterface<dist_t> *s) {
     }
 
@@ -1182,7 +1181,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
     std::priority_queue<std::pair<dist_t, labeltype >>
     searchKnn(const void *query_data, size_t k, BaseFilterFunctor* isIdAllowed = nullptr) const {
-        std::priority_queue<std::pair<dist_t, labeltype >> result;
+        std::priority_queue<std::pair<dist_t, labeltype>> result;
         if (cur_element_count == 0) return result;
 
         tableint currObj = enterpoint_node_;
