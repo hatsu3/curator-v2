@@ -30,6 +30,7 @@ set(FAISS_SRC
   MultiTenantIndexIVFFlat.cpp
   MultiTenantIndexIVFFlatBF.cpp
   MultiTenantIndexIVFFlatSep.cpp
+  complex_predicate.cpp
   MultiTenantIndexIVFHierarchical.cpp
   MultiTenantIndexHNSW.cpp
   IndexIVFPQ.cpp
@@ -130,6 +131,7 @@ set(FAISS_HEADERS
   MultiTenantIndexIVFFlat.h
   MultiTenantIndexIVFFlatBF.h
   MultiTenantIndexIVFFlatSep.h
+  complex_predicate.h
   MultiTenantIndexIVFHierarchical.h
   MultiTenantIndexHNSW.h
   IndexIVFPQ.h

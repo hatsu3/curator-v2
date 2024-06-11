@@ -20,7 +20,7 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         update_bf_interval: int = 100,
         clus_niter: int = 20,
         max_leaf_size: int = 128,
-        nprobe: int = 40,
+        nprobe: int = 1200,
         prune_thres: float = 1.6,
         variance_boost: float = 0.2,
     ):
@@ -122,6 +122,14 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         top_dists, top_ids = self.index.search(x[None], k, tenant_id)  # type: ignore
         return top_ids[0].tolist()
 
+    def query_with_filter(self, x: np.ndarray, k: int, filter: str) -> list[int]:
+        top_dists, top_ids = self.index.search(x[None], k, filter)  # type: ignore
+        return top_ids[0].tolist()
+
+    def query_unfiltered(self, x: np.ndarray, k: int) -> list[int]:
+        top_dists, top_ids = self.index.search(x[None], k, -1) # type: ignore
+        return top_ids[0].tolist()
+
     def batch_query(
         self, X: np.ndarray, k: int, tenant_id: int | None = None, num_threads: int = 1
     ) -> list[list[int]]:
@@ -162,4 +170,5 @@ if __name__ == "__main__":
     index.enable_stats_tracking(True)
     res = index.query(np.random.rand(10), 2, 0)
     print(index.get_search_stats())
+    res = index.query_with_filter(np.random.rand(10), 3, "OR 0 1")
     print(res)

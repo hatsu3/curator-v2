@@ -6,6 +6,7 @@
 
 #include <faiss/MetricType.h>
 #include <faiss/MultiTenantIndex.h>
+#include <faiss/complex_predicate.h>
 #include <faiss/hnswlib/hnswlib.h>
 #include <thread>
 
@@ -74,26 +75,49 @@ class PermissionCheck : public hnswlib::BaseFilterFunctor {
     tid_t tenant;
     const AccessMap& access_map;
 
-public:
-    PermissionCheck(tid_t tenant, const AccessMap& access_map) : tenant(tenant), access_map(access_map) {}
+   public:
+    PermissionCheck(tid_t tenant, const AccessMap& access_map)
+            : tenant(tenant), access_map(access_map) {}
     bool operator()(hnswlib::labeltype label_id) {
-        return access_map.at(label_id).find(tenant) != access_map.at(label_id).end();
+        return access_map.at(label_id).find(tenant) !=
+                access_map.at(label_id).end();
+    }
+};
+
+class ComplexPredicateCheck : public hnswlib::BaseFilterFunctor {
+    const AccessMap& access_map;
+    std::vector<std::string> tokens;
+
+   public:
+    ComplexPredicateCheck(
+            const std::string& filter,
+            const AccessMap& access_map)
+            : tokens(complex_predicate::tokenize_formula(filter)),
+              access_map(access_map) {}
+
+    bool operator()(hnswlib::labeltype label_id) {
+        auto& access_list = access_map.at(label_id);
+        return complex_predicate::evaluate_formula(tokens, access_list);
     }
 };
 
 struct MultiTenantIndexHNSW : MultiTenantIndex {
-
     size_t d, M, ef_construction, ef, max_elements;
-    
+
     AccessMap access_map;
     std::unordered_map<idx_t, tid_t> vector_owners;
 
     hnswlib::L2Space* space;
     hnswlib::HierarchicalNSW<float>* index;
 
-    mutable long n_dists;  // number of distances computed in the last search
+    mutable long n_dists; // number of distances computed in the last search
 
-    MultiTenantIndexHNSW(size_t d, size_t M, size_t ef_construction, size_t ef, size_t max_elements);
+    MultiTenantIndexHNSW(
+            size_t d,
+            size_t M,
+            size_t ef_construction,
+            size_t ef,
+            size_t max_elements);
 
     ~MultiTenantIndexHNSW();
 
@@ -119,6 +143,15 @@ struct MultiTenantIndexHNSW : MultiTenantIndex {
             float* distances,
             idx_t* labels,
             const SearchParameters* params = nullptr) const override;
+
+    void search(
+            idx_t n,
+            const float* x,
+            idx_t k,
+            const std::string& filter,
+            float* distances,
+            idx_t* labels,
+            const SearchParameters* params = nullptr) const;
 
     void add_vector(idx_t n, const float* x, tid_t tid) override;
 
@@ -171,7 +204,8 @@ struct MultiTenantIndexHNSW : MultiTenantIndex {
 
     void merge_from(MultiTenantIndex& otherIndex, idx_t add_id = 0) override;
 
-    void check_compatible_for_merge(const MultiTenantIndex& otherIndex) const override;
+    void check_compatible_for_merge(
+            const MultiTenantIndex& otherIndex) const override;
 };
 
 } // namespace faiss

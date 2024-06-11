@@ -50,8 +50,10 @@ constexpr bool is_similarity_metric(MetricType metric_type) {
 }
 
 /// multi-tenancy-related types
-// tenant id, -1 means any tenant
-using tid_t = int16_t;
+using tid_t = int16_t;    // tenant id
+using vid_t = uint32_t;   // internal vector id
+using label_t = uint32_t; // external vector id
+using Buffer = std::vector<vid_t>;
 
 // access list of each vector in the index
 using AccessMap = std::unordered_map<idx_t, std::unordered_set<tid_t>>;

@@ -1,5 +1,4 @@
-#ifndef MULTI_TENANT_INDEX_IVF_HIERARCHICAL_H
-#define MULTI_TENANT_INDEX_IVF_HIERARCHICAL_H
+#pragma once
 
 #include <stdint.h>
 #include <unordered_map>
@@ -8,12 +7,10 @@
 #include <faiss/IndexFlat.h>
 #include <faiss/MetricType.h>
 #include <faiss/MultiTenantIndexIVFFlat.h>
+#include <faiss/complex_predicate.h>
 #include <faiss/impl/FaissAssert.h>
 
 namespace faiss {
-
-typedef uint32_t vid_t;
-typedef uint32_t label_t;
 
 struct IdAllocator {
     std::unordered_set<vid_t> free_list;
@@ -226,9 +223,9 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
             size_t update_bf_interval = 100,
             size_t clus_niter = 20,
             size_t max_leaf_size = 128,
-            size_t nprobe = 40,
+            size_t nprobe = 3000,
             float prune_thres = 1.6,
-            float variance_boost = 0.2);
+            float variance_boost = 0.4);
 
     ~MultiTenantIndexIVFHierarchical() override {
         delete tree_root;
@@ -284,10 +281,42 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
             idx_t* labels,
             const SearchParameters* params = nullptr) const override;
 
+    void search(
+            idx_t n,
+            const float* x,
+            idx_t k,
+            const std::string& filter,
+            float* distances,
+            idx_t* labels,
+            const SearchParameters* params = nullptr) const;
+
+    void search(
+            idx_t n,
+            const float* x,
+            idx_t k,
+            float* distances,
+            idx_t* labels,
+            const SearchParameters* params = nullptr) const;
+
     void search_one(
             const float* x,
             idx_t k,
             tid_t tid,
+            float* distances,
+            idx_t* labels,
+            const SearchParameters* params = nullptr) const;
+
+    void search_one(
+            const float* x,
+            idx_t k,
+            const std::string& filter,
+            float* distances,
+            idx_t* labels,
+            const SearchParameters* params = nullptr) const;
+
+    void search_one(
+            const float* x,
+            idx_t k,
             float* distances,
             idx_t* labels,
             const SearchParameters* params = nullptr) const;
@@ -305,8 +334,12 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
     bool merge_short_list(TreeNode* node, tid_t tid);
 
     bool merge_short_list_recursively(TreeNode* node, tid_t tid);
+
+    std::vector<size_t> get_node_path(const TreeNode* node) const;
+
+    void locate_vector(label_t label) const;
+
+    void print_tree_info() const;
 };
 
 } // namespace faiss
-
-#endif

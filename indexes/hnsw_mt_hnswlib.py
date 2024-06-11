@@ -78,6 +78,10 @@ class HNSWMultiTenantHnswlib(Index):
         _, top_ids = self.index.search(x[None], k, tenant_id)  # type: ignore
         return top_ids[0].tolist()
 
+    def query_with_filter(self, x: np.ndarray, k: int, filter: str) -> list[int]:
+        top_dists, top_ids = self.index.search(x[None], k, filter)  # type: ignore
+        return top_ids[0].tolist()
+
     def batch_query(
         self, X: np.ndarray, k: int, tenant_id: int | None = None, num_threads: int = 1
     ) -> list[list[int]]:
@@ -87,7 +91,7 @@ class HNSWMultiTenantHnswlib(Index):
     def get_search_stats(self) -> dict[str, Any]:
         assert self.index is not None
         return {
-            "n_dists": self.index.n_dists, # type: ignore
+            "n_dists": self.index.n_dists,  # type: ignore
         }
 
 

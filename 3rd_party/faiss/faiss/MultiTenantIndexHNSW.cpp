@@ -110,6 +110,29 @@ void MultiTenantIndexHNSW::search(
     });
 }
 
+void MultiTenantIndexHNSW::search(
+        idx_t n,
+        const float* x,
+        idx_t k,
+        const std::string& filter,
+        float* distances,
+        idx_t* labels,
+        const SearchParameters* params) const {
+    ComplexPredicateCheck checker(filter, access_map);
+    size_t num_threads =
+            getenv("OMP_NUM_THREADS") ? atoi(getenv("OMP_NUM_THREADS")) : 1;
+
+    ParallelFor(0, n, num_threads, [&](size_t i, size_t threadId) {
+        std::vector<std::pair<float, hnswlib::labeltype>> result =
+                index->searchKnnCloserFirst((void*)(x + i * d), k, &checker);
+
+        for (size_t j = 0; j < k; j++) {
+            distances[i * k + j] = result[j].first;
+            labels[i * k + j] = result[j].second;
+        }
+    });
+}
+
 void MultiTenantIndexHNSW::add_vector(idx_t n, const float* x, tid_t tid) {
     FAISS_THROW_MSG("Not implemented");
 }
