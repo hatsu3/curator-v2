@@ -126,8 +126,11 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         top_dists, top_ids = self.index.search(x[None], k, filter)  # type: ignore
         return top_ids[0].tolist()
 
+    def index_filter(self, filter: str) -> None:
+        self.index.build_index_for_filter(filter)
+
     def query_unfiltered(self, x: np.ndarray, k: int) -> list[int]:
-        top_dists, top_ids = self.index.search(x[None], k, -1) # type: ignore
+        top_dists, top_ids = self.index.search(x[None], k, -1)  # type: ignore
         return top_ids[0].tolist()
 
     def batch_query(

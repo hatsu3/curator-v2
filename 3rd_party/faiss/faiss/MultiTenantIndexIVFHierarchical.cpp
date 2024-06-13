@@ -15,17 +15,22 @@
 
 namespace faiss {
 
-vid_t IdAllocator::allocate_id(label_t label) {
-    // return the existing id if the label already exists
-    auto it = label_to_id.find(label);
-    if (it != label_to_id.end()) {
-        return it->second;
-    }
+template <>
+const vid_t VectorIdAllocator::INVALID_ID = -1;
 
-    vid_t id;
+template <>
+const tid_t TenantIdAllocator::INVALID_ID = -1;
+
+template <typename ExtLabel, typename IntLabel>
+IntLabel IdAllocator<ExtLabel, IntLabel>::allocate_id(ExtLabel label) {
+    FAISS_THROW_IF_NOT_MSG(
+            label_to_id.find(label) == label_to_id.end(),
+            "label already exists");
+
+    IntLabel id;
     if (free_list.empty()) {
         id = id_to_label.size();
-        id_to_label.push_back(-1);
+        id_to_label.push_back(INVALID_ID);
     } else {
         id = *free_list.begin();
         free_list.erase(free_list.begin());
@@ -33,24 +38,22 @@ vid_t IdAllocator::allocate_id(label_t label) {
 
     label_to_id.emplace(label, id);
     id_to_label[id] = label;
+
     return id;
 }
 
-void IdAllocator::free_id(label_t label) {
+template <typename ExtLabel, typename IntLabel>
+void IdAllocator<ExtLabel, IntLabel>::free_id(ExtLabel label) {
     auto it = label_to_id.find(label);
-
-    // silently ignore if the label does not exist
-    if (it == label_to_id.end()) {
-        return;
-    }
+    FAISS_THROW_IF_NOT_MSG(it != label_to_id.end(), "label does not exist");
 
     label_to_id.erase(label);
 
-    vid_t id = it->second;
+    IntLabel id = it->second;
     if (id == id_to_label.size() - 1) {
         id_to_label.pop_back();
     } else {
-        id_to_label[id] = -1;
+        id_to_label[id] = INVALID_ID;
         free_list.emplace(id);
     }
 }
@@ -206,6 +209,8 @@ void MultiTenantIndexIVFHierarchical::add_vector_with_ids(
         const float* x,
         const idx_t* labels,
         tid_t tid) {
+    tid = tid_allocator.get_or_create_id(tid);
+
     for (size_t i = 0; i < n; i++) {
         label_t label = labels[i];
         const float* xi = x + i * d;
@@ -236,6 +241,8 @@ void MultiTenantIndexIVFHierarchical::add_vector_with_ids(
 }
 
 void MultiTenantIndexIVFHierarchical::grant_access(idx_t label, tid_t tid) {
+    tid = tid_allocator.get_or_create_id(tid);
+
     // update the access information in the leaf node
     TreeNode* leaf = label_to_leaf.at(label);
     leaf->n_vectors_per_tenant[tid]++;
@@ -299,6 +306,8 @@ void MultiTenantIndexIVFHierarchical::grant_access_helper(
 }
 
 bool MultiTenantIndexIVFHierarchical::remove_vector(idx_t label, tid_t tid) {
+    tid = tid_allocator.get_or_create_id(tid);
+
     // check if the vector is accessible by the tenant
     if (!vector_owners.at(label) == tid) {
         return false;
@@ -352,6 +361,8 @@ bool MultiTenantIndexIVFHierarchical::remove_vector(idx_t label, tid_t tid) {
 }
 
 bool MultiTenantIndexIVFHierarchical::revoke_access(idx_t label, tid_t tid) {
+    tid = tid_allocator.get_or_create_id(tid);
+
     // update the access information in access matrix
     vid_t vid = id_allocator.get_id(label);
     access_matrix.revoke_access(vid, tid);
@@ -456,6 +467,8 @@ void MultiTenantIndexIVFHierarchical::search(
         return;
     }
 
+    tid = tid_allocator.get_id(tid);
+
     bool inter_query_parallel = getenv("BATCH_QUERY") != nullptr;
     if (inter_query_parallel) {
 #pragma omp parallel for schedule(dynamic) if (n > 1)
@@ -489,11 +502,23 @@ void MultiTenantIndexIVFHierarchical::search(
         float* distances,
         idx_t* labels,
         const SearchParameters* params) const {
+    // if the filter is already indexed, perform simple filtered search
+    // here we only do exact match, but it's possible to perform subexpression
+    // matching in the future
+    auto filter_label = filter_to_label.find(filter);
+    if (filter_label != filter_to_label.end()) {
+        auto tid = filter_label->second;
+        search(n, x, k, tid, distances, labels, params);
+        return;
+    }
+
+    auto converted_filter = convert_complex_predicate(filter);
+
     for (idx_t i = 0; i < n; i++) {
         search_one(
                 x + i * d,
                 k,
-                filter,
+                converted_filter,
                 distances + i * k,
                 labels + i * k,
                 params);
@@ -1050,6 +1075,218 @@ void MultiTenantIndexIVFHierarchical::print_tree_info() const {
         }
     }
     fflush(stdout);
+}
+
+std::string MultiTenantIndexIVFHierarchical::convert_complex_predicate(
+        const std::string& filter) const {
+    using namespace complex_predicate;
+
+    std::string converted_filter;
+    auto tokens = tokenize_formula(filter);
+
+    for (auto i = 0; i < tokens.size(); i++) {
+        auto token = tokens[i];
+
+        if (token != "AND" && token != "OR" && token != "NOT") {
+            auto tenant_id = tid_allocator.get_id(std::stol(token));
+            token = std::to_string(tenant_id);
+        }
+
+        converted_filter = converted_filter + token;
+        if (i < tokens.size() - 1) {
+            converted_filter = converted_filter + " ";
+        }
+    }
+
+    return converted_filter;
+}
+
+std::vector<vid_t> MultiTenantIndexIVFHierarchical::find_all_qualified_vecs(
+        const std::string& filter) const {
+    using namespace complex_predicate;
+
+    std::vector<vid_t> qualified_vecs;
+    auto tokens = tokenize_formula(filter);
+
+    auto n_vecs = access_matrix.access_matrix.size();
+
+    for (vid_t vid = 0; vid < n_vecs; vid++) {
+        if (evaluate_formula(tokens, access_matrix.access_matrix[vid])) {
+            qualified_vecs.push_back(vid);
+        }
+    }
+
+    return qualified_vecs;
+}
+
+void MultiTenantIndexIVFHierarchical::batch_grant_access(
+        const std::vector<vid_t>& vids,
+        tid_t tid) {
+    tid = tid_allocator.get_or_create_id(tid);
+    batch_grant_access_helper(tree_root, vids, tid);
+
+    for (auto vid : vids) {
+        access_matrix.grant_access(vid, tid);
+        auto leaf = label_to_leaf.at(id_allocator.get_label(vid));
+        leaf->n_vectors_per_tenant[tid]++;
+    }
+}
+
+void MultiTenantIndexIVFHierarchical::batch_grant_access_helper(
+        TreeNode* node,
+        const std::vector<vid_t>& vids,
+        tid_t tid) {
+    if (node->children.empty() || vids.size() <= max_sl_size) {
+        node->shortlists[tid] = vids;
+    } else {
+        std::unordered_map<TreeNode*, std::vector<vid_t>> child_vids;
+        for (auto vid : vids) {
+            auto label = id_allocator.get_label(vid);
+            auto path = get_vector_path(label);
+            auto child = node->children[path[node->level]];
+            child_vids[child].push_back(vid);
+        }
+
+        for (auto& [child, vids] : child_vids) {
+            batch_grant_access_helper(child, vids, tid);
+        }
+    }
+
+    node->bf.insert(tid);
+}
+
+void MultiTenantIndexIVFHierarchical::build_index_for_filter(
+        const std::string& filter) {
+    auto converted_filter = convert_complex_predicate(filter);
+    auto qualified_vecs = find_all_qualified_vecs(converted_filter);
+    auto reserved_label = tid_allocator.allocate_reserved_label();
+    auto reserved_tid = tid_allocator.allocate_id(reserved_label);
+    filter_to_label.emplace(filter, reserved_label);
+    batch_grant_access_helper(tree_root, qualified_vecs, reserved_tid);
+}
+
+namespace {
+bool check_bloom_filter(
+        const MultiTenantIndexIVFHierarchical& index,
+        const TreeNode& node) {
+    for (auto child : node.children) {
+        if (!check_bloom_filter(index, *child)) {
+            return false;
+        }
+    }
+
+    bloom_parameters bf_params;
+    bf_params.projected_element_count = index.bf_capacity;
+    bf_params.false_positive_probability = index.bf_false_pos;
+    bf_params.random_seed = 0xA5A5A5A5;
+    bf_params.compute_optimal_parameters();
+    bloom_filter expected_bf(bf_params);
+
+    for (const auto& pair : node.shortlists) {
+        expected_bf.insert(pair.first);
+    }
+
+    for (auto child : node.children) {
+        expected_bf = expected_bf | child->bf;
+    }
+
+    return node.bf == expected_bf;
+}
+
+std::pair<bool, std::set<tid_t>> check_shortlists(
+        const MultiTenantIndexIVFHierarchical& index,
+        const TreeNode& node) {
+    // recursively check the shortlists in the descendant nodes
+
+    std::set<tid_t> shortlists_in_desc;
+    for (auto child : node.children) {
+        auto [success, sls] = check_shortlists(index, *child);
+        if (!success) {
+            return {false, {}};
+        }
+        shortlists_in_desc.insert(sls.begin(), sls.end());
+    }
+
+    // check 1. shortlist size should not exceed the threshold
+
+    for (const auto& [tenant, shortlist] : node.shortlists) {
+        if (shortlist.size() > index.max_sl_size) {
+            printf("Oversized shortlist\n");
+            return {false, {}};
+        }
+    }
+
+    // check 2. shortlist merging should be done correctly
+
+    if (!node.children.empty()) {
+        std::set<tid_t> all_tenants;
+        for (auto child : node.children) {
+            for (const auto& [tenant, shortlist] : child->shortlists) {
+                all_tenants.insert(tenant);
+            }
+        }
+
+        for (auto tenant : all_tenants) {
+            size_t total_sl_size = 0;
+            for (auto child : node.children) {
+                if (!child->bf.contains(tenant)) {
+                    continue;
+                } else if (
+                        child->shortlists.find(tenant) !=
+                        child->shortlists.end()) {
+                    total_sl_size += child->shortlists.at(tenant).size();
+                } else {
+                    total_sl_size += index.max_sl_size + 1;
+                    break;
+                }
+            }
+
+            if (total_sl_size <= index.max_sl_size) {
+                printf("Fail to merge\n");
+                return {false, {}};
+            }
+        }
+    }
+
+    // check 3. there should not be two shortlists of the same tenant in any
+    // path
+
+    std::set<tid_t> shortlists_in_node;
+    for (const auto& [tenant, shortlist] : node.shortlists) {
+        shortlists_in_node.insert(tenant);
+    }
+
+    std::set<tid_t> intersect;
+    std::set_intersection(
+            shortlists_in_desc.begin(),
+            shortlists_in_desc.end(),
+            shortlists_in_node.begin(),
+            shortlists_in_node.end(),
+            std::inserter(intersect, intersect.begin()));
+
+    if (intersect.size() > 0) {
+        printf("Duplicate shortlists\n");
+        return {false, {}};
+    }
+
+    std::set<tid_t> all_shortlists;
+    std::set_union(
+            shortlists_in_desc.begin(),
+            shortlists_in_desc.end(),
+            shortlists_in_node.begin(),
+            shortlists_in_node.end(),
+            std::inserter(all_shortlists, all_shortlists.begin()));
+
+    return {true, all_shortlists};
+}
+} // namespace
+
+void MultiTenantIndexIVFHierarchical::sanity_check() const {
+    printf("Sanity check:\n");
+    printf("Checking bloom filters...\n");
+    check_bloom_filter(*this, *tree_root);
+    printf("Checking shortlists...\n");
+    check_shortlists(*this, *tree_root);
 }
 
 } // namespace faiss

@@ -210,13 +210,15 @@ Expr parse_formula(
         const std::string& formula,
         std::unordered_map<std::string, State>* var_map = nullptr);
 
+template <typename Container>
 bool evaluate_formula(
         const std::vector<std::string>& tokens,
-        const std::unordered_set<tid_t>& access_list);
+        const Container& access_list);
 
+template <typename Container>
 bool evaluate_formula(
         const std::string& formula,
-        const std::unordered_set<tid_t>& access_list);
+        const Container& access_list);
 
 } // namespace complex_predicate
 } // namespace faiss

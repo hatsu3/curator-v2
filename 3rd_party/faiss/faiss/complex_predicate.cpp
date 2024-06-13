@@ -291,9 +291,10 @@ Expr parse_formula(
     return std::move(stack.top());
 }
 
+template <typename Container>
 bool evaluate_formula(
         const std::vector<std::string>& tokens,
-        const std::unordered_set<tid_t>& access_list) {
+        const Container& access_list) {
     std::vector<bool> stack;
 
     auto eval_token = [&access_list](const std::string& token) -> bool {
@@ -344,12 +345,29 @@ bool evaluate_formula(
     return stack.back();
 }
 
+template <typename Container>
 bool evaluate_formula(
         const std::string& formula,
-        const std::unordered_set<tid_t>& access_list) {
+        const Container& access_list) {
     auto tokens = tokenize_formula(formula);
     return evaluate_formula(tokens, access_list);
 }
+
+template bool evaluate_formula(
+        const std::vector<std::string>& tokens,
+        const std::unordered_set<tid_t>& access_list);
+
+template bool evaluate_formula(
+        const std::vector<std::string>& tokens,
+        const std::vector<tid_t>& access_list);
+
+template bool evaluate_formula(
+        const std::string& formula,
+        const std::unordered_set<tid_t>& access_list);
+
+template bool evaluate_formula(
+        const std::string& formula,
+        const std::vector<tid_t>& access_list);
 
 } // namespace complex_predicate
 } // namespace faiss

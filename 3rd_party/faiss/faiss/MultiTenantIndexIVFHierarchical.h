@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <limits>
 #include <unordered_map>
 
 #include <faiss/BloomFilter.h>
@@ -12,28 +13,67 @@
 
 namespace faiss {
 
+template <typename ExtLabel, typename IntLabel>
 struct IdAllocator {
-    std::unordered_set<vid_t> free_list;
-    std::unordered_map<label_t, vid_t> label_to_id;
-    std::vector<label_t> id_to_label;
+    /*
+     * This class is used to manage the mapping between external _label_s and
+     * internal _id_s (non-negative integers). Internal ids are allocated in a
+     * contiguous manner starting from 0.
+     */
 
-    vid_t allocate_id(label_t label);
+    static const IntLabel INVALID_ID;
 
-    void free_id(label_t label);
+    std::unordered_set<IntLabel> free_list;
+    std::unordered_map<ExtLabel, IntLabel> label_to_id;
+    std::vector<ExtLabel> id_to_label;
 
-    const vid_t get_id(label_t label) const {
+    IntLabel allocate_id(ExtLabel label);
+
+    ExtLabel allocate_reserved_label() {
+        // count down from the maximum possible label value to avoid conflicts
+        // with user-provided labels
+        for (ExtLabel label = std::numeric_limits<ExtLabel>::max();
+             label != std::numeric_limits<ExtLabel>::min();
+             label--) {
+            if (!has_label(label)) {
+                return label;
+            }
+        }
+
+        FAISS_THROW_MSG("No available reserved label");
+    }
+
+    void free_id(ExtLabel label);
+
+    bool has_label(ExtLabel label) const {
+        return label_to_id.find(label) != label_to_id.end();
+    }
+
+    const IntLabel get_id(ExtLabel label) const {
         auto it = label_to_id.find(label);
         FAISS_THROW_IF_NOT_MSG(it != label_to_id.end(), "label does not exist");
         return it->second;
     }
 
-    const label_t get_label(vid_t vid) const {
+    const IntLabel get_or_create_id(ExtLabel label) {
+        if (has_label(label)) {
+            return get_id(label);
+        } else {
+            return allocate_id(label);
+        }
+    }
+
+    const ExtLabel get_label(IntLabel id) const {
         FAISS_THROW_IF_NOT_MSG(
-                vid < id_to_label.size() || id_to_label[vid] == -1,
+                id < id_to_label.size() || id_to_label[id] == INVALID_ID,
                 "id does not exist");
-        return id_to_label[vid];
+        return id_to_label[id];
     }
 };
+
+// TODO: use a string to represent external tenant label
+using VectorIdAllocator = IdAllocator<label_t, vid_t>;
+using TenantIdAllocator = IdAllocator<tid_t, tid_t>;
 
 struct VectorStore {
     size_t d;
@@ -201,13 +241,15 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
 
     /* main data structures */
     TreeNode* tree_root;
-    IdAllocator id_allocator;
+    VectorIdAllocator id_allocator;
+    TenantIdAllocator tid_allocator;
     VectorStore vec_store;
     AccessMatrix access_matrix;
 
     /* auxiliary data structures */
     size_t update_bf_after;
     std::unordered_map<label_t, TreeNode*> label_to_leaf;
+    std::unordered_map<std::string, tid_t> filter_to_label;
 
     bool track_stats = false;
     mutable std::vector<int> search_stats;
@@ -340,6 +382,21 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
     void locate_vector(label_t label) const;
 
     void print_tree_info() const;
+
+    std::string convert_complex_predicate(const std::string& filter) const;
+
+    std::vector<vid_t> find_all_qualified_vecs(const std::string& filter) const;
+
+    void batch_grant_access(const std::vector<vid_t>& vids, tid_t tid);
+
+    void batch_grant_access_helper(
+            TreeNode* node,
+            const std::vector<vid_t>& vids,
+            tid_t tid);
+
+    void build_index_for_filter(const std::string& filter);
+
+    void sanity_check() const;
 };
 
 } // namespace faiss

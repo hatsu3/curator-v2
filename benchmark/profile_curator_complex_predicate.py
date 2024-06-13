@@ -1,4 +1,5 @@
 import hashlib
+import json
 import pickle as pkl
 import time
 from pathlib import Path
@@ -10,27 +11,10 @@ import seaborn as sns
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 
-from benchmark.config import DatasetConfig, IndexConfig
-from benchmark.utils import get_dataset_config, recall
-from dataset import get_dataset, get_metadata
+from benchmark.config import IndexConfig
+from benchmark.utils import get_dataset_config, load_dataset, recall
 from indexes.hnsw_mt_hnswlib import HNSWMultiTenantHnswlib
 from indexes.ivf_hier_faiss import IVFFlatMultiTenantBFHierFaiss
-
-
-def load_dataset(dataset_config: DatasetConfig):
-    train_vecs, test_vecs, metadata = get_dataset(
-        dataset_name=dataset_config.dataset_name, **dataset_config.dataset_params
-    )
-
-    train_mds, test_mds = get_metadata(
-        synthesized=dataset_config.synthesize_metadata,
-        train_vecs=train_vecs,
-        test_vecs=test_vecs,
-        dataset_name=dataset_config.dataset_name,
-        **dataset_config.metadata_params,
-    )
-
-    return train_vecs, test_vecs, train_mds, test_mds, metadata
 
 
 def evaluate_predicate(formula: str, mds: list[int]):
@@ -193,21 +177,12 @@ def compute_ground_truth(
     return ground_truths, selectivities
 
 
-def exp_curator_complex_predicate(
+def generate_dataset(
     num_filters_per_template: int,
     num_queries: int,
-    nlist: int = 16,
-    max_sl_size: int = 256,
-    max_leaf_size: int = 128,
-    clus_niter: int = 20,
-    update_bf_interval: int = 100,
-    nprobe: int = 1200,
-    prune_thres: float = 1.6,
-    variance_boost: float = 0.4,
     dataset_key: str = "yfcc100m",
     test_size: float = 0.01,
     gt_cache_dir: str | None = None,
-    output_path: str | None = None,
     seed: int = 42,
 ):
     filters = generate_random_filters(num_filters_per_template, 1000, seed)
@@ -215,9 +190,8 @@ def exp_curator_complex_predicate(
 
     np.random.seed(seed)
 
-    # load dataset
     dataset_config, dim = get_dataset_config(dataset_key, test_size=test_size)
-    train_vecs, test_vecs, train_mds, test_mds, metadata = load_dataset(dataset_config)
+    train_vecs, test_vecs, train_mds, test_mds, __, __ = load_dataset(dataset_config)
 
     # randomly sample query vectors from the test set
     if num_queries > test_vecs.shape[0]:
@@ -228,7 +202,6 @@ def exp_curator_complex_predicate(
         np.random.choice(test_vecs.shape[0], num_queries, replace=False)
     ]
 
-    # compute ground truth
     all_filters = [filter for fs in filters.values() for filter in fs]
     ground_truths, selectivities = compute_ground_truth(
         query_vecs,
@@ -239,7 +212,17 @@ def exp_curator_complex_predicate(
         cache_dir=gt_cache_dir,
     )
 
-    # initialize index
+    return train_vecs, query_vecs, train_mds, filters, ground_truths, selectivities, dim
+
+
+def get_curator_index(
+    dim: int,
+    nlist: int = 16,
+    max_sl_size: int = 128,
+    prune_thres: float = 1.6,
+    nprobe: int = 4000,
+    seed: int = 42,
+) -> IVFFlatMultiTenantBFHierFaiss:
     index_config = IndexConfig(
         index_cls=IVFFlatMultiTenantBFHierFaiss,
         index_params={
@@ -248,19 +231,19 @@ def exp_curator_complex_predicate(
             "bf_capacity": 1000,
             "bf_error_rate": 0.01,
             "max_sl_size": max_sl_size,
-            "update_bf_interval": update_bf_interval,
-            "clus_niter": clus_niter,
-            "max_leaf_size": max_leaf_size,
+            "update_bf_interval": 100,
+            "clus_niter": 20,
+            "max_leaf_size": max_sl_size,
         },
         search_params={
             "nprobe": nprobe,
             "prune_thres": prune_thres,
-            "variance_boost": variance_boost,
+            "variance_boost": 0.4,
         },
         train_params={
             "train_ratio": 1,
             "min_train": 50,
-            "random_seed": 42,
+            "random_seed": seed,
         },
     )
 
@@ -269,11 +252,67 @@ def exp_curator_complex_predicate(
     )
     assert isinstance(index, IVFFlatMultiTenantBFHierFaiss)
 
-    # train index
+    return index
+
+
+def get_shared_hnsw_index(
+    construction_ef: int = 32,
+    search_ef: int = 16,
+    m: int = 32,
+    max_elements: int = 1000000,
+) -> HNSWMultiTenantHnswlib:
+    index_config = IndexConfig(
+        index_cls=HNSWMultiTenantHnswlib,
+        index_params={
+            "construction_ef": construction_ef,
+            "m": m,
+            "max_elements": max_elements,
+        },
+        search_params={
+            "search_ef": search_ef,
+        },
+        train_params=None,
+    )
+
+    index = index_config.index_cls(
+        **index_config.index_params, **index_config.search_params
+    )
+    assert isinstance(index, HNSWMultiTenantHnswlib)
+
+    return index
+
+
+def exp_curator_complex_predicate(
+    num_filters_per_template: int,
+    num_queries: int,
+    nlist: int = 16,
+    max_sl_size: int = 256,
+    prune_thres: float = 1.6,
+    nprobe: int = 4000,
+    dataset_key: str = "yfcc100m",
+    test_size: float = 0.01,
+    gt_cache_dir: str | None = None,
+    output_path: str | None = None,
+    seed: int = 42,
+):
+    print("Generating dataset...", flush=True)
+    train_vecs, query_vecs, train_mds, filters, ground_truths, selectivities, dim = (
+        generate_dataset(
+            num_filters_per_template,
+            num_queries,
+            dataset_key,
+            test_size,
+            gt_cache_dir,
+            seed,
+        )
+    )
+
+    print("Initializing index...", flush=True)
+    index = get_curator_index(dim, nlist, max_sl_size, prune_thres, nprobe, seed)
+
     print("Training index...", flush=True)
     index.train(train_vecs, train_mds)
 
-    # insert vectors into index
     for i, (vec, mds) in tqdm(
         enumerate(zip(train_vecs, train_mds)),
         total=len(train_vecs),
@@ -310,14 +349,14 @@ def exp_curator_complex_predicate(
                     "template": template,
                     "filter": filter,
                     "selectivity": selectivities[filter],
-                    "nlist": nlist,
-                    "max_sl_size": max_sl_size,
-                    "max_leaf_size": max_leaf_size,
-                    "clus_niter": clus_niter,
-                    "update_bf_interval": update_bf_interval,
-                    "nprobe": nprobe,
-                    "prune_thres": prune_thres,
-                    "variance_boost": variance_boost,
+                    "nlist": index.nlist,
+                    "max_sl_size": index.max_sl_size,
+                    "max_leaf_size": index.max_leaf_size,
+                    "clus_niter": index.clus_niter,
+                    "update_bf_interval": index.update_bf_interval,
+                    "nprobe": index.nprobe,
+                    "prune_thres": index.prune_thres,
+                    "variance_boost": index.variance_boost,
                     "avg_recall": avg_recall,
                     "avg_search_lat": avg_search_lat,
                 }
@@ -343,54 +382,21 @@ def exp_shared_hnsw_complex_predicate(
     output_path: str | None = None,
     seed: int = 42,
 ):
-    filters = generate_random_filters(num_filters_per_template, 1000, seed)
-    print(f"Generated {sum(len(fs) for fs in filters.values())} filters")
-
-    np.random.seed(seed)
-
-    # load dataset
-    dataset_config, dim = get_dataset_config(dataset_key, test_size=test_size)
-    train_vecs, test_vecs, train_mds, test_mds, metadata = load_dataset(dataset_config)
-
-    # randomly sample query vectors from the test set
-    if num_queries > test_vecs.shape[0]:
-        raise ValueError(
-            f"Number of queries ({num_queries}) exceeds the size of the test set ({test_vecs.shape[0]})"
+    print("Generating dataset...", flush=True)
+    train_vecs, query_vecs, train_mds, filters, ground_truths, selectivities, dim = (
+        generate_dataset(
+            num_filters_per_template,
+            num_queries,
+            dataset_key,
+            test_size,
+            gt_cache_dir,
+            seed,
         )
-    query_vecs = test_vecs[
-        np.random.choice(test_vecs.shape[0], num_queries, replace=False)
-    ]
-
-    # compute ground truth
-    all_filters = [filter for fs in filters.values() for filter in fs]
-    ground_truths, selectivities = compute_ground_truth(
-        query_vecs,
-        all_filters,
-        train_vecs,
-        train_mds,
-        k=10,
-        cache_dir=gt_cache_dir,
     )
 
-    index_config = IndexConfig(
-        index_cls=HNSWMultiTenantHnswlib,
-        index_params={
-            "construction_ef": construction_ef,
-            "m": m,
-            "max_elements": max_elements,
-        },
-        search_params={
-            "search_ef": search_ef,
-        },
-        train_params=None,
-    )
+    print("Initializing index...", flush=True)
+    index = get_shared_hnsw_index(construction_ef, search_ef, m, max_elements)
 
-    index = index_config.index_cls(
-        **index_config.index_params, **index_config.search_params
-    )
-    assert isinstance(index, HNSWMultiTenantHnswlib)
-
-    # insert vectors into index
     for i, (vec, mds) in tqdm(
         enumerate(zip(train_vecs, train_mds)),
         total=len(train_vecs),
@@ -403,7 +409,6 @@ def exp_shared_hnsw_complex_predicate(
         for md in mds[1:]:
             index.grant_access(i, md)
 
-    # query index with filters
     results = []
     n_filters = sum(len(fs) for fs in filters.values())
     pbar = tqdm(total=n_filters * num_queries, desc="Querying index")
@@ -440,6 +445,225 @@ def exp_shared_hnsw_complex_predicate(
         pd.DataFrame(results).to_csv(output_path, index=False)
 
     return results
+
+
+def test_indexing_subexpression(
+    num_filters_per_template: int,
+    num_queries: int,
+    nlist: int = 16,
+    max_sl_size: int = 256,
+    prune_thres: float = 1.6,
+    nprobe: int = 4000,
+    dataset_key: str = "yfcc100m",
+    test_size: float = 0.01,
+    gt_cache_dir: str | None = None,
+    seed: int = 42,
+    output_dir: str = "output/complex_predicate/index_subexpr",
+):
+    print("Generating dataset...", flush=True)
+    train_vecs, query_vecs, train_mds, filters, ground_truths, selectivities, dim = (
+        generate_dataset(
+            num_filters_per_template,
+            num_queries,
+            dataset_key,
+            test_size,
+            gt_cache_dir,
+            seed,
+        )
+    )
+
+    print("Initializing index...", flush=True)
+    index = get_curator_index(dim, nlist, max_sl_size, prune_thres, nprobe, seed)
+
+    print("Training index...", flush=True)
+    index.train(train_vecs, train_mds)
+
+    for i, (vec, mds) in tqdm(
+        enumerate(zip(train_vecs, train_mds)),
+        total=len(train_vecs),
+        desc="Building index",
+    ):
+        if not mds:
+            continue
+
+        index.create(vec, i, mds[0])
+        for md in mds[1:]:
+            index.grant_access(i, md)
+
+    index.index.sanity_check()
+
+    # query index with filters
+    results = []
+    n_filters = sum(len(fs) for fs in filters.values())
+    pbar = tqdm(total=n_filters * num_queries, desc="Querying index")
+    for template, fs in filters.items():
+        for filter in fs:
+            query_results = []
+            query_latencies = []
+
+            for qv in query_vecs:
+                pbar.update(1)
+                query_start = time.time()
+                labels = index.query_with_filter(qv, 10, filter)
+                query_latencies.append(time.time() - query_start)
+                query_results.append(labels)
+
+            avg_recall = recall(query_results, ground_truths[filter]).item()
+            avg_search_lat = np.array(query_latencies).mean()
+
+            results.append(
+                {
+                    "template": template,
+                    "filter": filter,
+                    "avg_recall": avg_recall,
+                    "avg_search_lat": avg_search_lat,
+                }
+            )
+
+    print("Before indexing subexpression:")
+    results_df = pd.DataFrame(results)
+    print(results_df)
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    output_path = f"{output_dir}/perf_before_index.csv"
+    print(f"Saving results to {output_path} ...")
+    results_df.to_csv(output_path, index=False)
+
+    # index subexpression
+    print("Indexing subexpression...", flush=True)
+    for __, fs in filters.items():
+        for filter in fs:
+            index.index_filter(filter)
+
+    index.index.sanity_check()
+
+    results = []
+    pbar = tqdm(total=n_filters * num_queries, desc="Querying index")
+    for template, fs in filters.items():
+        for filter in fs:
+            query_results = []
+            query_latencies = []
+
+            for qv in query_vecs:
+                pbar.update(1)
+                query_start = time.time()
+                labels = index.query_with_filter(qv, 10, filter)
+                query_latencies.append(time.time() - query_start)
+                query_results.append(labels)
+
+            avg_recall = recall(query_results, ground_truths[filter]).item()
+            avg_search_lat = np.array(query_latencies).mean()
+
+            results.append(
+                {
+                    "template": template,
+                    "filter": filter,
+                    "avg_recall": avg_recall,
+                    "avg_search_lat": avg_search_lat,
+                }
+            )
+
+    print("After indexing subexpression:")
+    results_df = pd.DataFrame(results)
+    print(results_df)
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    output_path = f"{output_dir}/perf_after_index.csv"
+    print(f"Saving results to {output_path} ...")
+    results_df.to_csv(output_path, index=False)
+
+    output_path = f"{output_dir}/config.json"
+    print(f"Saving experiment configuration to {output_path} ...")
+    with open(output_path, "w") as f:
+        json.dump(
+            {
+                "num_filters_per_template": num_filters_per_template,
+                "num_queries": num_queries,
+                "nlist": nlist,
+                "max_sl_size": max_sl_size,
+                "prune_thres": prune_thres,
+                "nprobe": nprobe,
+                "dataset_key": dataset_key,
+                "test_size": test_size,
+                "gt_cache_dir": gt_cache_dir,
+                "seed": seed,
+            },
+            f,
+            indent=4,
+        )
+
+
+def plot_indexing_subexpression(
+    results_dir: str = "output/complex_predicate/index_subexpr",
+    output_path: str | None = None,
+):
+    if output_path is None:
+        output_path = f"{results_dir}/index_subexpr_perf.png"
+
+    print(f"Loading results from {results_dir} ...")
+    results_before = pd.read_csv(f"{results_dir}/perf_before_index.csv")
+    results_after = pd.read_csv(f"{results_dir}/perf_after_index.csv")
+
+    results_before["Indexing"] = "Before"
+    results_after["Indexing"] = "After"
+    results = pd.concat([results_before, results_after])
+    results["avg_search_lat"] *= 1000
+
+    print("Plotting results ...")
+    sns.scatterplot(
+        data=results,
+        x="avg_recall",
+        y="avg_search_lat",
+        hue="Indexing",
+        style="template",
+    )
+
+    plt.xlabel("Recall@10")
+    plt.ylabel("Search Latency (ms)")
+
+    print(f"Saving plot to {output_path} ...")
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=200)
+
+
+def plot_filtered_search_latency_breakdown(
+    log_path: str,
+    output_path: str = "output/complex_predicate/perf_analysis/latency_breakdown.png",
+):
+    import parse
+
+    with open(log_path, "r") as f:
+        lines = f.readlines()
+
+    for i, line in enumerate(reversed(lines)):
+        if "n_invocations" in line:
+            lines = lines[-i:]
+
+    results = dict()
+    keys = [
+        "update_var_map_time",
+        "eval_filter_time",
+        "infer_child_time",
+        "heap_time",
+        "dist_time",
+        "total_time",
+    ]
+
+    for key, line in zip(keys, lines):
+        res = parse.parse(f"{key}: {{val}}", line)
+        assert isinstance(res, parse.Result), f"Failed to parse {key}: {line}"
+        results[key] = float(res["val"])
+
+    total = results.pop("total_time")
+    results["misc"] = total - sum(results.values())
+
+    df = pd.DataFrame(results.items(), columns=["Operation", "Percentage"])
+    df.plot.pie(y="Percentage", labels=df["Operation"], autopct="%1.1f%%", legend=False)
+    plt.ylabel("")
+
+    print(f"Saving plot to {output_path} ...")
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=200)
 
 
 def plot_figure():
