@@ -101,7 +101,7 @@ class VarMapNode {
 
 class ExprNode {
    public:
-    virtual State evaluate(VarMap var_map) const = 0;
+    virtual State evaluate(VarMap var_map, bool concretize = false) const = 0;
 
     virtual ~ExprNode() {}
 
@@ -122,7 +122,7 @@ class VariableNode : public ExprNode {
    public:
     VariableNode(const std::string& name) : var_name(name) {}
 
-    State evaluate(VarMap var_map) const override;
+    State evaluate(VarMap var_map, bool concretize = false) const override;
 
     void print(std::ostream& os) const override {
         os << var_name;
@@ -153,7 +153,7 @@ class NotNode : public UnaryOperatorNode {
    public:
     using UnaryOperatorNode::UnaryOperatorNode;
 
-    State evaluate(VarMap var_map) const override;
+    State evaluate(VarMap var_map, bool concretize = false) const override;
 
     void print(std::ostream& os) const override {
         os << "NOT(" << *operand << ")";
@@ -164,7 +164,7 @@ class AndNode : public BinaryOperatorNode {
    public:
     using BinaryOperatorNode::BinaryOperatorNode;
 
-    State evaluate(VarMap var_map) const override;
+    State evaluate(VarMap var_map, bool concretize = false) const override;
 
     void print(std::ostream& os) const override {
         os << "(" << *left << " AND " << *right << ")";
@@ -175,14 +175,21 @@ class OrNode : public BinaryOperatorNode {
    public:
     using BinaryOperatorNode::BinaryOperatorNode;
 
-    State evaluate(VarMap var_map) const override;
+    State evaluate(VarMap var_map, bool concretize = false) const override;
 
     void print(std::ostream& os) const override {
         os << "(" << *left << " OR " << *right << ")";
     }
 };
 
-State make_state(Type type, const Buffer& list = {});
+State make_state(Type type, bool concretize = false, const Buffer& list = {});
+
+inline const Buffer EMPTY_BUFFER = Buffer{};
+inline const State STATE_NONE = std::make_shared<StateNode>(Type::NONE, EMPTY_BUFFER, EMPTY_BUFFER);
+inline const State STATE_SOME = std::make_shared<StateNode>(Type::SOME, EMPTY_BUFFER, EMPTY_BUFFER);
+inline const State STATE_MOST = std::make_shared<StateNode>(Type::MOST, EMPTY_BUFFER, EMPTY_BUFFER);
+inline const State STATE_ALL = std::make_shared<StateNode>(Type::ALL, EMPTY_BUFFER, EMPTY_BUFFER);
+inline const State STATE_UNKNOWN = std::make_shared<StateNode>(Type::UNKNOWN, EMPTY_BUFFER, EMPTY_BUFFER);
 
 inline VarMap make_var_map(std::unordered_map<std::string, State>&& var_map) {
     return std::make_shared<VarMapNode>(std::move(var_map));

@@ -12,44 +12,12 @@ StateNode::StateNode(
         Type type,
         const Buffer& short_list,
         const Buffer& exclude_list)
-        : type(type), short_list(short_list), exclude_list(exclude_list) {
-    if (type != Type::SOME) {
-        FAISS_ASSERT(short_list.size() == 0);
-    }
-
-    if (type != Type::MOST) {
-        FAISS_ASSERT(exclude_list.size() == 0);
-    }
-
-    if (type == Type::MOST && exclude_list.empty()) {
-        this->type = Type::ALL;
-    }
-
-    if (type == Type::SOME && short_list.empty()) {
-        this->type = Type::NONE;
-    }
-}
+        : type(type), short_list(short_list), exclude_list(exclude_list) {}
 
 StateNode::StateNode(Type type, Buffer&& short_list, Buffer&& exclude_list)
         : type(type),
           short_list(std::move(short_list)),
-          exclude_list(std::move(exclude_list)) {
-    if (type != Type::SOME) {
-        FAISS_ASSERT(this->short_list.size() == 0);
-    }
-
-    if (type != Type::MOST) {
-        FAISS_ASSERT(this->exclude_list.size() == 0);
-    }
-
-    if (type == Type::MOST && this->exclude_list.empty()) {
-        this->type = Type::ALL;
-    }
-
-    if (type == Type::SOME && this->short_list.empty()) {
-        this->type = Type::NONE;
-    }
-}
+          exclude_list(std::move(exclude_list)) {}
 
 std::string StateNode::type_to_str() const {
     switch (type) {
@@ -85,19 +53,28 @@ std::ostream& operator<<(std::ostream& os, const StateNode& state) {
     return os;
 }
 
-State make_state(Type type, const Buffer& list) {
+State make_state(Type type, bool concretize, const Buffer& list) {
     switch (type) {
-        case Type::NONE:
-            return std::make_shared<StateNode>(type, Buffer{}, Buffer{});
-        case Type::SOME:
-            return std::make_shared<StateNode>(type, list, Buffer{});
-        case Type::MOST:
-            return std::make_shared<StateNode>(type, Buffer{}, list);
-        case Type::ALL:
-            return std::make_shared<StateNode>(type, Buffer{}, Buffer{});
+        case Type::SOME: {
+            if (!concretize) {
+                FAISS_THROW_MSG("Should not manually create SOME states in abstract mode");
+            } else if (list.empty()) {
+                return STATE_NONE;
+            } else {
+                return std::make_shared<StateNode>(type, list, EMPTY_BUFFER);
+            }
+        }
+        case Type::MOST: {
+            if (!concretize) {
+                FAISS_THROW_MSG("Should not manually create MOST states in abstract mode");
+            } else if (list.empty()) {
+                return STATE_ALL;
+            } else {
+                return std::make_shared<StateNode>(type, EMPTY_BUFFER, list);
+            }
+        }
         default:
-            return std::make_shared<StateNode>(
-                    Type::UNKNOWN, Buffer{}, Buffer{});
+            FAISS_THROW_MSG("Should not manually create states of type ALL, NONE, or UNKNOWN");
     }
 }
 
@@ -148,34 +125,44 @@ std::ostream& operator<<(std::ostream& os, const VarMapNode& var_map) {
     return os;
 }
 
-State VariableNode::evaluate(VarMap var_map) const {
+State VariableNode::evaluate(VarMap var_map, bool concretize) const {
     return var_map->get(var_name);
 }
 
-State NotNode::evaluate(VarMap var_map) const {
+State NotNode::evaluate(VarMap var_map, bool concretize) const {
     State op = operand->evaluate(var_map);
 
     switch (op->type) {
         case Type::NONE:
-            return make_state(Type::ALL);
-        case Type::SOME:
-            return make_state(Type::MOST, op->short_list);
-        case Type::MOST:
-            return make_state(Type::SOME, op->exclude_list);
+            return STATE_ALL;
+        case Type::SOME: {
+            if (!concretize) {
+                return STATE_MOST;
+            } else {
+                return make_state(Type::MOST, concretize, op->short_list);
+            }
+        }
+        case Type::MOST: {
+            if (!concretize) {
+                return STATE_SOME;
+            } else {
+                return make_state(Type::SOME, concretize, op->exclude_list);
+            }
+        }
         case Type::ALL:
-            return make_state(Type::NONE);
+            return STATE_NONE;
         default:
-            return make_state(Type::UNKNOWN);
+            return STATE_UNKNOWN;
     }
 }
 
-State AndNode::evaluate(VarMap var_map) const {
+State AndNode::evaluate(VarMap var_map, bool concretize) const {
     State lhs = left->evaluate(var_map);
     State rhs = right->evaluate(var_map);
 
     // If either side is NONE, the value of the expression is NONE
     if (*lhs == Type::NONE || *rhs == Type::NONE) {
-        return make_state(Type::NONE);
+        return STATE_NONE;
     }
 
     // If either side is ALL, the value of the expression is the other side
@@ -187,32 +174,49 @@ State AndNode::evaluate(VarMap var_map) const {
 
     // If we have an UNKNOWN state, we can't infer anything
     if (*lhs == Type::UNKNOWN || *rhs == Type::UNKNOWN) {
-        return make_state(Type::UNKNOWN);
+        return STATE_UNKNOWN;
     }
 
     // Otherwise, we have two SOME or MOST states
     if (*lhs == Type::SOME && *rhs == Type::SOME) {
-        auto short_list = buffer_intersect(lhs->short_list, rhs->short_list);
-        return make_state(Type::SOME, std::move(short_list));
+        if (concretize) {
+            auto short_list = buffer_intersect(lhs->short_list, rhs->short_list);
+            return make_state(Type::SOME, concretize, std::move(short_list));
+        } else {
+            return STATE_SOME;
+        }
     } else if (*lhs == Type::MOST && *rhs == Type::MOST) {
-        auto exclude_list = buffer_union(lhs->exclude_list, rhs->exclude_list);
-        return make_state(Type::MOST, std::move(exclude_list));
+        if (concretize) {
+            auto exclude_list =
+                buffer_union(lhs->exclude_list, rhs->exclude_list);
+            return make_state(Type::MOST, concretize, std::move(exclude_list));
+        } else {
+            return STATE_MOST;
+        }
     } else if (*lhs == Type::SOME && *rhs == Type::MOST) {
-        auto short_list = buffer_difference(lhs->short_list, rhs->exclude_list);
-        return make_state(Type::SOME, std::move(short_list));
+        if (concretize) {
+            auto short_list = buffer_difference(lhs->short_list, rhs->exclude_list);
+            return make_state(Type::SOME, concretize, std::move(short_list));
+        } else {
+            return STATE_SOME;
+        }
     } else {
-        auto short_list = buffer_difference(rhs->short_list, lhs->exclude_list);
-        return make_state(Type::SOME, std::move(short_list));
+        if (concretize) {
+            auto short_list = buffer_difference(rhs->short_list, lhs->exclude_list);
+            return make_state(Type::SOME, concretize, std::move(short_list));
+        } else {
+            return STATE_SOME;
+        }
     }
 }
 
-State OrNode::evaluate(VarMap var_map) const {
+State OrNode::evaluate(VarMap var_map, bool concretize) const {
     State lhs = left->evaluate(var_map);
     State rhs = right->evaluate(var_map);
 
     // If either side is ALL, the value of the expression is ALL
     if (*lhs == Type::ALL || *rhs == Type::ALL) {
-        return make_state(Type::ALL);
+        return STATE_ALL;
     }
 
     // If either side is NONE, the value of the expression is the other side
@@ -224,25 +228,41 @@ State OrNode::evaluate(VarMap var_map) const {
 
     // If we have an UNKNOWN state, we can't infer anything
     if (*lhs == Type::UNKNOWN || *rhs == Type::UNKNOWN) {
-        return make_state(Type::UNKNOWN);
+        return STATE_UNKNOWN;
     }
 
     // Otherwise, we have two SOME or MOST states
     if (*lhs == Type::SOME && *rhs == Type::SOME) {
-        auto short_list = buffer_union(lhs->short_list, rhs->short_list);
-        return make_state(Type::SOME, std::move(short_list));
+        if (concretize) {
+            auto short_list = buffer_union(lhs->short_list, rhs->short_list);
+            return make_state(Type::SOME, concretize, std::move(short_list));
+        } else {
+            return STATE_SOME;
+        }
     } else if (*lhs == Type::MOST && *rhs == Type::MOST) {
-        auto exclude_list =
+        if (concretize) {
+            auto exclude_list =
                 buffer_intersect(lhs->exclude_list, rhs->exclude_list);
-        return make_state(Type::MOST, std::move(exclude_list));
+            return make_state(Type::MOST, concretize, std::move(exclude_list));
+        } else {
+            return STATE_MOST;
+        }
     } else if (*lhs == Type::SOME && *rhs == Type::MOST) {
-        auto exclude_list =
+        if (concretize) {
+            auto exclude_list =
                 buffer_difference(rhs->exclude_list, lhs->short_list);
-        return make_state(Type::MOST, std::move(exclude_list));
+            return make_state(Type::MOST, concretize, std::move(exclude_list));
+        } else {
+            return STATE_MOST;
+        }
     } else {
-        auto exclude_list =
+        if (concretize) {
+            auto exclude_list =
                 buffer_difference(lhs->exclude_list, rhs->short_list);
-        return make_state(Type::MOST, std::move(exclude_list));
+            return make_state(Type::MOST, concretize, std::move(exclude_list));
+        } else {
+            return STATE_MOST;
+        }
     }
 }
 
@@ -283,7 +303,7 @@ Expr parse_formula(
         } else {
             stack.push(make_var(token));
             if (var_map) {
-                var_map->emplace(token, make_state(Type::UNKNOWN));
+                var_map->emplace(token, STATE_UNKNOWN);
             }
         }
     }

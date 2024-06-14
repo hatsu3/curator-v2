@@ -16,9 +16,6 @@
 namespace faiss {
 
 template <>
-const vid_t VectorIdAllocator::INVALID_ID = -1;
-
-template <>
 const tid_t TenantIdAllocator::INVALID_ID = -1;
 
 template <typename ExtLabel, typename IntLabel>
@@ -67,6 +64,16 @@ TreeNode::TreeNode(
         size_t bf_capacity,
         float bf_false_pos)
         : level(level), sibling_id(sibling_id), parent(parent), quantizer(d) {
+    if (parent != nullptr) {
+        auto offset =
+                (CURATOR_MAX_LEAF_SIZE_LOG2 +
+                 (CURATOR_MAX_TREE_DEPTH - level) *
+                         CURATOR_MAX_BRANCH_FACTOR_LOG2);
+        this->node_id = parent->node_id | (sibling_id << offset);
+    } else {
+        this->node_id = 0;
+    }
+
     if (centroid == nullptr) {
         this->centroid = nullptr;
     } else {
@@ -110,6 +117,16 @@ MultiTenantIndexIVFHierarchical::MultiTenantIndexIVFHierarchical(
           nprobe(nprobe),
           prune_thres(prune_thres),
           variance_boost(variance_boost) {
+    FAISS_ASSERT_FMT(
+            n_clusters <= CURATOR_MAX_BRANCH_FACTOR,
+            "n_clusters should be less than or equal to %zu",
+            CURATOR_MAX_BRANCH_FACTOR);
+
+    FAISS_ASSERT_FMT(
+            max_leaf_size <= CURATOR_MAX_LEAF_SIZE,
+            "max_leaf_size should be less than or equal to %zu",
+            CURATOR_MAX_LEAF_SIZE);
+
     tree_root =
             new TreeNode(0, 0, nullptr, nullptr, d, bf_capacity, bf_false_pos);
 }
@@ -143,7 +160,7 @@ void MultiTenantIndexIVFHierarchical::train_helper(
     }
 
     // stop if there are too few samples to cluster
-    if (n <= max_leaf_size || node->level >= 8) {
+    if (n <= max_leaf_size || node->level >= CURATOR_MAX_TREE_DEPTH) {
         return;
     }
 
@@ -215,14 +232,19 @@ void MultiTenantIndexIVFHierarchical::add_vector_with_ids(
         label_t label = labels[i];
         const float* xi = x + i * d;
 
+        // add the vector to the leaf node
+        TreeNode* leaf = assign_vec_to_leaf(xi);
+        auto offset = (CURATOR_MAX_TREE_DEPTH - leaf->level) *
+                CURATOR_MAX_BRANCH_FACTOR_LOG2;
+        auto local_vid = static_cast<vid_t>(leaf->vector_indices.size());
+        auto vid = leaf->node_id | (local_vid << offset);
+
         // add the vector to the vector store and access matrix
-        vid_t vid = id_allocator.allocate_id(label);
+        id_allocator.add_mapping(label, vid);
         vec_store.add_vector(xi, vid);
         access_matrix.add_vector(vid, tid);
         vector_owners.emplace(label, tid);
 
-        // add the vector to the leaf node
-        TreeNode* leaf = assign_vec_to_leaf(xi);
         label_to_leaf.emplace(label, leaf);
         leaf->n_vectors_per_tenant[tid]++;
         leaf->vector_indices.push_back(vid);
@@ -318,7 +340,7 @@ bool MultiTenantIndexIVFHierarchical::remove_vector(idx_t label, tid_t tid) {
     // update access information in the leaf node
     TreeNode* leaf = label_to_leaf.at(label);
     bool should_update_bf = false;
-    auto& tenants = access_matrix.access_matrix[vid];
+    const auto& tenants = access_matrix.get_access_list(vid);
     for (tid_t tid : tenants) {
         if (--leaf->n_vectors_per_tenant.at(tid) == 0) {
             leaf->n_vectors_per_tenant.erase(tid);
@@ -344,7 +366,7 @@ bool MultiTenantIndexIVFHierarchical::remove_vector(idx_t label, tid_t tid) {
     }
 
     // remove the vector from the vector store and access matrix
-    id_allocator.free_id(label);
+    id_allocator.remove_mapping(label);
     vec_store.remove_vector(vid);
     access_matrix.remove_vector(vid, tid);
     vector_owners.erase(label);
@@ -390,7 +412,7 @@ bool MultiTenantIndexIVFHierarchical::revoke_access(idx_t label, tid_t tid) {
 void MultiTenantIndexIVFHierarchical::update_shortlists_helper(
         TreeNode* leaf,
         vid_t vid,
-        std::vector<tid_t>& tenants) {
+        const std::vector<tid_t>& tenants) {
     for (TreeNode* curr = leaf; curr != nullptr; curr = curr->parent) {
         std::vector<tid_t> intersection;
 
@@ -650,6 +672,190 @@ void MultiTenantIndexIVFHierarchical::search_one(
     }
 }
 
+// void MultiTenantIndexIVFHierarchical::search_one(
+//         const float* x,
+//         idx_t k,
+//         const std::string& filter,
+//         float* distances,
+//         idx_t* labels,
+//         const SearchParameters* params) const {
+//     using namespace complex_predicate;
+//     using Candidate = std::tuple<float, const TreeNode*, VarMap, State>;
+
+//     // update var map based on short lists and bloom filter of current node
+//     auto update_var_map = [&](const TreeNode* node, VarMap var_map) -> VarMap
+//     {
+//         auto new_var_map = std::unordered_map<std::string, State>();
+
+//         for (const auto& var : var_map->unresolved_vars()) {
+//             tid_t tid = std::stoi(var);
+//             auto it = node->shortlists.find(tid);
+//             if (it != node->shortlists.end()) {
+//                 new_var_map[var] = make_state(Type::SOME, it->second);
+//             } else if (!node->bf.contains(tid)) {
+//                 new_var_map[var] = make_state(Type::NONE);
+//             }
+//         }
+
+//         return var_map->update(new_var_map);
+//     };
+
+//     // infer the state of child based on that of the parent
+//     auto infer_child_state = [&](State state, const TreeNode* child) -> State
+//     {
+//         if (*state == Type::ALL || *state == Type::NONE ||
+//             *state == Type::UNKNOWN) {
+//             return state;
+//         }
+
+//         auto& buffer =
+//                 *state == Type::SOME ? state->short_list :
+//                 state->exclude_list;
+//         auto child_buffer = Buffer();
+
+//         for (auto vid : buffer) {
+//             auto leaf = label_to_leaf.at(id_allocator.get_label(vid));
+//             while (leaf != nullptr) {
+//                 if (leaf == child) {
+//                     child_buffer.push_back(vid);
+//                     break;
+//                 }
+//                 leaf = leaf->parent;
+//             }
+//         }
+
+//         return make_state(state->type, child_buffer);
+//     };
+
+//     auto infer_child_vmap = [&](VarMap var_map,
+//                                 const TreeNode* child) -> VarMap {
+//         auto new_vmap = std::unordered_map<std::string, State>();
+
+//         for (const auto& [varname, state] : var_map->get()) {
+//             if (*state == Type::SOME || *state == Type::MOST) {
+//                 new_vmap[varname] = infer_child_state(state, child);
+//             }
+//         }
+
+//         return var_map->update(new_vmap);
+//     };
+
+//     // helper functions for updating the result heap
+//     auto add_buffer_to_heap = [&](const Buffer& buffer) {
+//         for (auto vid : buffer) {
+//             auto label = id_allocator.get_label(vid);
+//             auto vec = vec_store.get_vec(vid);
+//             auto dist = fvec_L2sqr(x, vec, d);
+
+//             if (dist < distances[0]) {
+//                 maxheap_replace_top(k, distances, labels, dist, label);
+//             }
+//         }
+//     };
+
+//     auto node_priority = [&](TreeNode* node) {
+//         float dist = fvec_L2sqr(x, node->centroid, d);
+//         float var = node->variance.get_mean();
+//         float score = dist - this->variance_boost * var;
+//         return score;
+//     };
+
+//     // parse the filter expression
+//     auto var_map_data = std::unordered_map<std::string, State>();
+//     auto filter_expr = parse_formula(filter, &var_map_data);
+//     auto var_map = make_var_map(std::move(var_map_data));
+
+//     // initialize the search frontier and result heap
+//     MinHeap<Candidate> pq;
+//     float root_priority = node_priority(tree_root);
+//     pq.emplace(root_priority, tree_root, var_map, make_state(Type::UNKNOWN));
+
+//     int n_cand_vecs = 0;
+//     std::vector<Candidate> buckets;
+
+//     while (!pq.empty() && n_cand_vecs < nprobe) {
+//         auto [score, node, vmap, state] = pq.top();
+//         pq.pop();
+
+//         // if not a terminal state, update the var map first
+//         if (*state == Type::UNKNOWN) {
+//             vmap = update_var_map(node, vmap);
+//             state = filter_expr->evaluate(vmap);
+//         }
+
+//         if (*state == Type::NONE) {
+//             continue;
+//         }
+
+//         if (*state == Type::SOME) {
+//             auto var = node->variance.get_mean();
+//             auto dist = score + this->variance_boost * var;
+//             buckets.emplace_back(dist, node, vmap, state);
+//             n_cand_vecs += state->short_list.size();
+//             continue;
+//         }
+
+//         if (node->children.empty()) {
+//             auto var = node->variance.get_mean();
+//             auto dist = score + this->variance_boost * var;
+
+//             switch (state->type) {
+//                 case Type::ALL:
+//                     buckets.emplace_back(dist, node, vmap, state);
+//                     n_cand_vecs += node->vector_indices.size();
+//                     break;
+//                 case Type::MOST:
+//                     buckets.emplace_back(dist, node, vmap, state);
+//                     n_cand_vecs += node->vector_indices.size();
+//                     n_cand_vecs -= state->exclude_list.size();
+//                     break;
+//                 default:
+//                     // should only reach here due to false positives
+//                     printf("False positive in bloom filter\n");
+//                     // FAISS_THROW_MSG("Invalid state");
+//             }
+//         } else {
+//             // state could be either ALL, MOST, or UNKNOWN
+//             // in any case, we need to recurse into the children nodes
+//             for (auto child : node->children) {
+//                 auto child_score = node_priority(child);
+//                 auto child_state = infer_child_state(state, child);
+//                 auto child_vmap = vmap;
+//                 if (*state == Type::UNKNOWN) {
+//                     child_vmap = infer_child_vmap(vmap, child);
+//                 }
+//                 pq.emplace(child_score, child, child_vmap, child_state);
+//             }
+//         }
+//     }
+
+//     heap_heapify<HeapForL2>(k, distances, labels);
+
+//     if (buckets.empty()) {
+//         return;
+//     }
+
+//     float min_buck_dist = std::get<0>(buckets[0]);
+//     for (auto [dist, node, vmap, state] : buckets) {
+//         if (dist > this->prune_thres * min_buck_dist) {
+//             break;
+//         }
+
+//         if (*state == Type::SOME) {
+//             add_buffer_to_heap(state->short_list);
+//         } else if (*state == Type::ALL) {
+//             add_buffer_to_heap(node->vector_indices);
+//         } else if (*state == Type::MOST) {
+//             auto node_vecs = node->vector_indices;
+//             std::sort(node_vecs.begin(), node_vecs.end());
+//             auto diff = buffer_difference(node_vecs, state->exclude_list);
+//             add_buffer_to_heap(diff);
+//         }
+//     }
+
+//     heap_reorder<HeapForL2>(k, distances, labels);
+// }
+
 void MultiTenantIndexIVFHierarchical::search_one(
         const float* x,
         idx_t k,
@@ -659,6 +865,17 @@ void MultiTenantIndexIVFHierarchical::search_one(
         const SearchParameters* params) const {
     using namespace complex_predicate;
     using Candidate = std::tuple<float, const TreeNode*, VarMap, State>;
+    using Bucket = std::tuple<float, const TreeNode*, State>;
+
+    static size_t n_invocations = 0;
+    static float update_var_map_time = 0;
+    static float eval_filter_time = 0;
+    static float infer_child_time = 0;
+    static float heap_time = 0;
+    static float dist_time = 0;
+    static float total_time = 0;
+
+    auto start0 = getmillisecs();
 
     // update var map based on short lists and bloom filter of current node
     auto update_var_map = [&](const TreeNode* node, VarMap var_map) -> VarMap {
@@ -668,70 +885,55 @@ void MultiTenantIndexIVFHierarchical::search_one(
             tid_t tid = std::stoi(var);
             auto it = node->shortlists.find(tid);
             if (it != node->shortlists.end()) {
-                new_var_map[var] = make_state(Type::SOME, it->second);
+                new_var_map[var] = make_state(Type::SOME, true, it->second);
             } else if (!node->bf.contains(tid)) {
-                new_var_map[var] = make_state(Type::NONE);
+                new_var_map[var] = STATE_NONE;
             }
         }
 
         return var_map->update(new_var_map);
     };
 
-    // infer the state of child based on that of the parent
-    auto infer_child_state = [&](State state, const TreeNode* child) -> State {
-        if (*state == Type::ALL || *state == Type::NONE ||
-            *state == Type::UNKNOWN) {
-            return state;
-        }
+    // remove vectors in buffer that are not in the subtree rooted at node
+    auto remove_external_vecs = [&](const TreeNode* node,
+                                    const Buffer& buffer) -> Buffer {
+        auto shift = sizeof(vid_t) * 8 -
+                CURATOR_MAX_BRANCH_FACTOR_LOG2 * node->level;
+        auto shifted_node_id = node->node_id >> shift;
 
-        auto& buffer =
-                *state == Type::SOME ? state->short_list : state->exclude_list;
-        auto child_buffer = Buffer();
-
+        Buffer new_buffer;
         for (auto vid : buffer) {
-            auto leaf = label_to_leaf.at(id_allocator.get_label(vid));
-            while (leaf != nullptr) {
-                if (leaf == child) {
-                    child_buffer.push_back(vid);
-                    break;
-                }
-                leaf = leaf->parent;
+            if ((vid >> shift) == shifted_node_id) {
+                new_buffer.push_back(vid);
             }
         }
 
-        return make_state(state->type, child_buffer);
-    };
-
-    auto infer_child_vmap = [&](VarMap var_map,
-                                const TreeNode* child) -> VarMap {
-        auto new_vmap = std::unordered_map<std::string, State>();
-
-        for (const auto& [varname, state] : var_map->get()) {
-            if (*state == Type::SOME || *state == Type::MOST) {
-                new_vmap[varname] = infer_child_state(state, child);
-            }
-        }
-
-        return var_map->update(new_vmap);
+        return new_buffer;
     };
 
     // helper functions for updating the result heap
     auto add_buffer_to_heap = [&](const Buffer& buffer) {
         for (auto vid : buffer) {
+            auto start = getmillisecs();
             auto label = id_allocator.get_label(vid);
             auto vec = vec_store.get_vec(vid);
             auto dist = fvec_L2sqr(x, vec, d);
+            dist_time += getmillisecs() - start;
 
+            auto start2 = getmillisecs();
             if (dist < distances[0]) {
                 maxheap_replace_top(k, distances, labels, dist, label);
             }
+            heap_time += getmillisecs() - start2;
         }
     };
 
     auto node_priority = [&](TreeNode* node) {
+        auto start = getmillisecs();
         float dist = fvec_L2sqr(x, node->centroid, d);
         float var = node->variance.get_mean();
         float score = dist - this->variance_boost * var;
+        dist_time += getmillisecs() - start;
         return score;
     };
 
@@ -743,10 +945,10 @@ void MultiTenantIndexIVFHierarchical::search_one(
     // initialize the search frontier and result heap
     MinHeap<Candidate> pq;
     float root_priority = node_priority(tree_root);
-    pq.emplace(root_priority, tree_root, var_map, make_state(Type::UNKNOWN));
+    pq.emplace(root_priority, tree_root, var_map, STATE_UNKNOWN);
 
     int n_cand_vecs = 0;
-    std::vector<Candidate> buckets;
+    std::vector<Bucket> buckets;
 
     while (!pq.empty() && n_cand_vecs < nprobe) {
         auto [score, node, vmap, state] = pq.top();
@@ -754,8 +956,13 @@ void MultiTenantIndexIVFHierarchical::search_one(
 
         // if not a terminal state, update the var map first
         if (*state == Type::UNKNOWN) {
+            auto start = getmillisecs();
             vmap = update_var_map(node, vmap);
-            state = filter_expr->evaluate(vmap);
+            update_var_map_time += getmillisecs() - start;
+
+            auto start2 = getmillisecs();
+            state = filter_expr->evaluate(vmap, false);
+            eval_filter_time += getmillisecs() - start2;
         }
 
         if (*state == Type::NONE) {
@@ -763,10 +970,24 @@ void MultiTenantIndexIVFHierarchical::search_one(
         }
 
         if (*state == Type::SOME) {
-            auto var = node->variance.get_mean();
-            auto dist = score + this->variance_boost * var;
-            buckets.emplace_back(dist, node, vmap, state);
-            n_cand_vecs += state->short_list.size();
+            auto start = getmillisecs();
+            state = filter_expr->evaluate(vmap, true);
+            eval_filter_time += getmillisecs() - start;
+
+            auto start2 = getmillisecs();
+            state = make_state(
+                    Type::SOME,
+                    true,
+                    remove_external_vecs(node, state->short_list));
+            infer_child_time += getmillisecs() - start2;
+
+            if (*state == Type::SOME) {
+                auto var = node->variance.get_mean();
+                auto dist = score + this->variance_boost * var;
+                buckets.emplace_back(dist, node, state);
+                n_cand_vecs += state->short_list.size();
+            }
+
             continue;
         }
 
@@ -776,14 +997,26 @@ void MultiTenantIndexIVFHierarchical::search_one(
 
             switch (state->type) {
                 case Type::ALL:
-                    buckets.emplace_back(dist, node, vmap, state);
+                    buckets.emplace_back(dist, node, state);
                     n_cand_vecs += node->vector_indices.size();
                     break;
-                case Type::MOST:
-                    buckets.emplace_back(dist, node, vmap, state);
+                case Type::MOST: {
+                    auto start = getmillisecs();
+                    state = filter_expr->evaluate(vmap, true);
+                    eval_filter_time += getmillisecs() - start;
+
+                    auto start2 = getmillisecs();
+                    state = make_state(
+                            Type::MOST,
+                            true,
+                            remove_external_vecs(node, state->exclude_list));
+                    infer_child_time += getmillisecs() - start2;
+
+                    buckets.emplace_back(dist, node, state);
                     n_cand_vecs += node->vector_indices.size();
                     n_cand_vecs -= state->exclude_list.size();
                     break;
+                }
                 default:
                     // should only reach here due to false positives
                     printf("False positive in bloom filter\n");
@@ -794,12 +1027,12 @@ void MultiTenantIndexIVFHierarchical::search_one(
             // in any case, we need to recurse into the children nodes
             for (auto child : node->children) {
                 auto child_score = node_priority(child);
-                auto child_state = infer_child_state(state, child);
-                auto child_vmap = vmap;
-                if (*state == Type::UNKNOWN) {
-                    child_vmap = infer_child_vmap(vmap, child);
-                }
-                pq.emplace(child_score, child, child_vmap, child_state);
+                // var map and state may contain vectors that are not in the
+                // subtree rooted at child
+
+                auto start = getmillisecs();
+                pq.emplace(child_score, child, vmap, state);
+                heap_time += getmillisecs() - start;
             }
         }
     }
@@ -811,7 +1044,7 @@ void MultiTenantIndexIVFHierarchical::search_one(
     }
 
     float min_buck_dist = std::get<0>(buckets[0]);
-    for (auto [dist, node, vmap, state] : buckets) {
+    for (auto [dist, node, state] : buckets) {
         if (dist > this->prune_thres * min_buck_dist) {
             break;
         }
@@ -822,13 +1055,28 @@ void MultiTenantIndexIVFHierarchical::search_one(
             add_buffer_to_heap(node->vector_indices);
         } else if (*state == Type::MOST) {
             auto node_vecs = node->vector_indices;
+            auto start = getmillisecs();
             std::sort(node_vecs.begin(), node_vecs.end());
             auto diff = buffer_difference(node_vecs, state->exclude_list);
+            eval_filter_time += getmillisecs() - start;
             add_buffer_to_heap(diff);
         }
     }
 
     heap_reorder<HeapForL2>(k, distances, labels);
+
+    total_time += getmillisecs() - start0;
+
+    if (++n_invocations % 50 == 0) {
+        printf("n_invocations: %zu\n", n_invocations);
+        printf("update_var_map_time: %.2f\n", update_var_map_time);
+        printf("eval_filter_time: %.2f\n", eval_filter_time);
+        printf("infer_child_time: %.2f\n", infer_child_time);
+        printf("heap_time: %.2f\n", heap_time);
+        printf("dist_time: %.2f\n", dist_time);
+        printf("total_time: %.2f\n", total_time);
+        printf("\n");
+    }
 }
 
 void MultiTenantIndexIVFHierarchical::search_one(
@@ -1111,7 +1359,7 @@ std::vector<vid_t> MultiTenantIndexIVFHierarchical::find_all_qualified_vecs(
     auto n_vecs = access_matrix.access_matrix.size();
 
     for (vid_t vid = 0; vid < n_vecs; vid++) {
-        if (evaluate_formula(tokens, access_matrix.access_matrix[vid])) {
+        if (evaluate_formula(tokens, access_matrix.get_access_list(vid))) {
             qualified_vecs.push_back(vid);
         }
     }

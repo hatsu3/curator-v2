@@ -13,6 +13,21 @@
 
 namespace faiss {
 
+/*
+ * We define the following constraints for the index because later we will
+ * use vector IDs (of type vid_t) to encode the location of vectors in the
+ * index. This leads to gaps in the vector ID space, which requires us to
+ * use a wider type for vector IDs than necessary.
+ */
+constexpr size_t CURATOR_MAX_BRANCH_FACTOR_LOG2 = 5;
+constexpr size_t CURATOR_MAX_LEAF_SIZE_LOG2 = 8;
+constexpr size_t CURATOR_MAX_TREE_DEPTH =
+        (sizeof(vid_t) * 8 - CURATOR_MAX_LEAF_SIZE_LOG2) /
+        CURATOR_MAX_BRANCH_FACTOR_LOG2;
+constexpr size_t CURATOR_MAX_BRANCH_FACTOR = 1
+        << CURATOR_MAX_BRANCH_FACTOR_LOG2;
+constexpr size_t CURATOR_MAX_LEAF_SIZE = 1 << CURATOR_MAX_LEAF_SIZE_LOG2;
+
 template <typename ExtLabel, typename IntLabel>
 struct IdAllocator {
     /*
@@ -64,24 +79,71 @@ struct IdAllocator {
     }
 
     const ExtLabel get_label(IntLabel id) const {
-        FAISS_THROW_IF_NOT_MSG(
-                id < id_to_label.size() || id_to_label[id] == INVALID_ID,
-                "id does not exist");
+        if (id >= id_to_label.size() || id_to_label[id] == INVALID_ID) {
+            FAISS_THROW_MSG("id does not exist");
+        }
         return id_to_label[id];
     }
 };
 
+// Unlike IdAllocator, IdMapping is not responsible for managing the allocation
+// of internal IDs. Useful when we want a customize allocation strategy.
+template <typename ExtLabel, typename IntLabel>
+struct IdMapping {
+    std::unordered_map<ExtLabel, IntLabel> label_to_id;
+    std::unordered_map<IntLabel, ExtLabel> id_to_label;
+
+    void add_mapping(ExtLabel label, IntLabel id) {
+        label_to_id[label] = id;
+        id_to_label[id] = label;
+    }
+
+    void remove_mapping(ExtLabel label) {
+        FAISS_THROW_IF_NOT_MSG(has_label(label), "label does not exist");
+        id_to_label.erase(label_to_id[label]);
+        label_to_id.erase(label);
+    }
+
+    bool has_label(ExtLabel label) const {
+        return label_to_id.find(label) != label_to_id.end();
+    }
+
+    bool has_id(IntLabel id) const {
+        return id_to_label.find(id) != id_to_label.end();
+    }
+
+    const IntLabel get_id(ExtLabel label) const {
+        FAISS_THROW_IF_NOT_MSG(has_label(label), "label does not exist");
+        return label_to_id.at(label);
+    }
+
+    const ExtLabel get_label(IntLabel id) const {
+        FAISS_THROW_IF_NOT_MSG(has_id(id), "id does not exist");
+        return id_to_label.at(id);
+    }
+};
+
 // TODO: use a string to represent external tenant label
-using VectorIdAllocator = IdAllocator<label_t, vid_t>;
+using VectorIdAllocator = IdMapping<label_t, vid_t>;
 using TenantIdAllocator = IdAllocator<tid_t, tid_t>;
 
 struct VectorStore {
+    virtual ~VectorStore() {}
+
+    virtual void add_vector(const float* vec, vid_t vid) = 0;
+
+    virtual void remove_vector(vid_t vid) = 0;
+
+    virtual const float* get_vec(vid_t vid) const = 0;
+};
+
+struct OrderedVectorStore: VectorStore {
     size_t d;
     std::vector<float> vecs;
 
-    VectorStore(size_t d) : d(d) {}
+    OrderedVectorStore(size_t d) : d(d) {}
 
-    void add_vector(const float* vec, vid_t vid) {
+    void add_vector(const float* vec, vid_t vid) override {
         size_t offset = vid * d;
         if (offset >= vecs.size()) {
             vecs.resize((vid + 1) * d);
@@ -91,7 +153,7 @@ struct VectorStore {
         std::memcpy(vecs.data() + offset, vec, sizeof(float) * d);
     }
 
-    void remove_vector(vid_t vid) {
+    void remove_vector(vid_t vid) override {
         size_t offset = vid * d;
 
         if (offset >= vecs.size()) {
@@ -103,7 +165,7 @@ struct VectorStore {
         }
     }
 
-    const float* get_vec(vid_t vid) const {
+    const float* get_vec(vid_t vid) const override {
         vid_t offset = vid * d;
         FAISS_THROW_IF_NOT_MSG(offset < vecs.size(), "vector does not exist");
 
@@ -112,8 +174,36 @@ struct VectorStore {
     }
 };
 
-struct AccessMatrix {
+struct UnorderedVectorStore: VectorStore {
+    size_t d;
+    std::unordered_map<vid_t, std::vector<float>> vecs;
+
+    UnorderedVectorStore(size_t d) : d(d) {}
+
+    void add_vector(const float* vec, vid_t vid) override {
+        vecs[vid] = std::vector<float>(vec, vec + d);
+    }
+
+    void remove_vector(vid_t vid) override {
+        vecs.erase(vid);
+    }
+
+    const float* get_vec(vid_t vid) const override {
+        auto it = vecs.find(vid);
+        FAISS_THROW_IF_NOT_MSG(it != vecs.end(), "vector does not exist");
+        return it->second.data();
+    }
+};
+
+struct OrderedAccessMatrix {
     std::vector<std::vector<tid_t>> access_matrix;
+
+    const std::vector<tid_t>& get_access_list(vid_t vid) const {
+        if (vid >= access_matrix.size()) {
+            FAISS_THROW_MSG("vector does not exist");
+        }
+        return access_matrix[vid];
+    }
 
     void add_vector(vid_t vid, tid_t tid) {
         if (vid >= access_matrix.size()) {
@@ -150,6 +240,57 @@ struct AccessMatrix {
 
         // we assume the slot contains a valid access list
         auto& access_list = access_matrix[vid];
+        return std::find(access_list.begin(), access_list.end(), tid) !=
+                access_list.end();
+    }
+};
+
+struct UnorderedAccessMatrix {
+    std::unordered_map<vid_t, std::vector<tid_t>> access_matrix;
+
+    const std::vector<tid_t>& get_access_list(vid_t vid) const {
+        auto it = access_matrix.find(vid);
+        FAISS_THROW_IF_NOT_MSG(it != access_matrix.end(), "vector does not exist");
+        return it->second;
+    } 
+
+    void add_vector(vid_t vid, tid_t tid) {
+        auto it = access_matrix.find(vid);
+        FAISS_THROW_IF_NOT_MSG(
+                it == access_matrix.end(), "vector already exists");
+        
+        access_matrix[vid] = std::vector<tid_t>{tid};
+    }
+
+    void remove_vector(vid_t vid, tid_t tid) {
+        auto it = access_matrix.find(vid);
+        FAISS_THROW_IF_NOT_MSG(it != access_matrix.end(), "vector does not exist");
+        access_matrix.erase(it);
+    }
+
+    void grant_access(vid_t vid, tid_t tid) {
+        auto it = access_matrix.find(vid);
+        FAISS_THROW_IF_NOT_MSG(it != access_matrix.end(), "vector does not exist");
+        it->second.push_back(tid);
+    }
+
+    void revoke_access(vid_t vid, tid_t tid) {
+        auto it = access_matrix.find(vid);
+        FAISS_THROW_IF_NOT_MSG(it != access_matrix.end(), "vector does not exist");
+        auto& access_list = it->second;
+        
+        auto it2 = std::find(access_list.begin(), access_list.end(), tid);
+        FAISS_THROW_IF_NOT_MSG(it2 != access_list.end(), "tenant does not have access");
+        access_list.erase(it2);
+    }
+
+    bool has_access(vid_t vid, tid_t tid) const {
+        auto it = access_matrix.find(vid);
+        if (it == access_matrix.end()) {
+            return false;
+        }
+
+        auto& access_list = it->second;
         return std::find(access_list.begin(), access_list.end(), tid) !=
                 access_list.end();
     }
@@ -193,6 +334,7 @@ struct TreeNode {
     size_t sibling_id; // the id of this node among its siblings
     TreeNode* parent;
     std::vector<TreeNode*> children;
+    vid_t node_id;
 
     /* information about the cluster */
     float* centroid;
@@ -243,8 +385,8 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
     TreeNode* tree_root;
     VectorIdAllocator id_allocator;
     TenantIdAllocator tid_allocator;
-    VectorStore vec_store;
-    AccessMatrix access_matrix;
+    UnorderedVectorStore vec_store;
+    UnorderedAccessMatrix access_matrix;
 
     /* auxiliary data structures */
     size_t update_bf_after;
@@ -310,7 +452,7 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
     void update_shortlists_helper(
             TreeNode* leaf,
             vid_t vid,
-            std::vector<tid_t>& tenants);
+            const std::vector<tid_t>& tenants);
 
     void update_bf_helper(TreeNode* leaf);
 
