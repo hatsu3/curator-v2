@@ -96,6 +96,22 @@ VarMap VarMapNode::update(
     return updated_var_map;
 }
 
+VarMap VarMapNode::sort() const {
+    VarMap updated_var_map = std::make_shared<VarMapNode>(*this);
+    for (auto& [name, state] : updated_var_map->var_map) {
+        if (*state == Type::SOME) {
+            Buffer sorted_list = state->short_list;
+            std::sort(sorted_list.begin(), sorted_list.end());
+            state->short_list = std::move(sorted_list);
+        } else if (*state == Type::MOST) {
+            Buffer sorted_list = state->exclude_list;
+            std::sort(sorted_list.begin(), sorted_list.end());
+            state->exclude_list = std::move(sorted_list);
+        }
+    }
+    return updated_var_map;
+}
+
 const State& VarMapNode::get(const std::string& name) const {
     if (var_map.find(name) == var_map.end()) {
         throw std::runtime_error("Variable " + name + " not found");

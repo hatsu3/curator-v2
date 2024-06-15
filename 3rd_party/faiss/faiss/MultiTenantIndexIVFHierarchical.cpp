@@ -971,7 +971,7 @@ void MultiTenantIndexIVFHierarchical::search_one(
 
         if (*state == Type::SOME) {
             auto start = getmillisecs();
-            state = filter_expr->evaluate(vmap, true);
+            state = filter_expr->evaluate(vmap->sort(), true);
             eval_filter_time += getmillisecs() - start;
 
             auto start2 = getmillisecs();
@@ -1002,7 +1002,7 @@ void MultiTenantIndexIVFHierarchical::search_one(
                     break;
                 case Type::MOST: {
                     auto start = getmillisecs();
-                    state = filter_expr->evaluate(vmap, true);
+                    state = filter_expr->evaluate(vmap->sort(), true);
                     eval_filter_time += getmillisecs() - start;
 
                     auto start2 = getmillisecs();

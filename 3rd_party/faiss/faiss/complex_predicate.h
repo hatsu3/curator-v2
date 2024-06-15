@@ -86,6 +86,8 @@ class VarMapNode {
     VarMap update(
             const std::unordered_map<std::string, State>& new_var_map) const;
 
+    VarMap sort() const;
+
     const State& get(const std::string& name) const;
 
     const std::unordered_map<std::string, State>& get() const {
