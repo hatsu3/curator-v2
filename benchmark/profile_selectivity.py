@@ -3,7 +3,6 @@ import pickle as pkl
 import time
 from dataclasses import dataclass
 from itertools import product
-from multiprocessing import Pool
 from pathlib import Path
 
 import fire
@@ -280,8 +279,8 @@ def eval_curator(
 
 def eval_curator_worker(args):
     dataset_dir, *args = args
-    dataset = load_synthesized_dataset(dataset_dir, verbose=False)
-    return eval_curator(dataset, *args, verbose=False)
+    dataset = load_synthesized_dataset(dataset_dir, verbose=True)
+    return eval_curator(dataset, *args, verbose=True)
 
 
 def eval_curator_sweep(
@@ -290,21 +289,17 @@ def eval_curator_sweep(
     prune_threses: list[float] = [1.2, 1.4, 1.6, 1.8, 2.0],
     dataset_dir: str = "data/selectivity/random_yfcc100m",
     output_path: str = "profile_selectivity_curator_sweep.csv",
-    num_workers: int = 8,
 ):
     tasks = [
         (dataset_dir, nlist, max_sl_size, prune_threses)
         for nlist, max_sl_size in product(nlists, max_sl_sizes)
     ]
 
-    with Pool(num_workers) as p:
-        results = list(
-            tqdm(
-                p.imap_unordered(eval_curator_worker, tasks),
-                total=len(tasks),
-                desc="Evaluating curator index",
-            )
-        )
+    results = []
+    for task in tqdm(tasks, total=len(tasks), desc="Evaluating curator index"):
+        result = eval_curator_worker(task)
+        print(result)
+        results.extend(result)
 
     print(f"Saving results to {output_path} ...", flush=True)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -381,8 +376,8 @@ def eval_shared_hnsw(
 
 def eval_shared_hnsw_worker(args):
     dataset_dir, *args = args
-    dataset = load_synthesized_dataset(dataset_dir, verbose=False)
-    return eval_shared_hnsw(dataset, *args, verbose=False)
+    dataset = load_synthesized_dataset(dataset_dir, verbose=True)
+    return eval_shared_hnsw(dataset, *args, verbose=True)
 
 
 def eval_shared_hnsw_sweep(
@@ -391,28 +386,24 @@ def eval_shared_hnsw_sweep(
     search_efs: list[int] = [16, 32, 64, 128, 256],
     dataset_dir: str = "data/selectivity/random_yfcc100m",
     output_path: str = "profile_selectivity_shared_hnsw_sweep.csv",
-    num_workers: int = 8,
 ):
     tasks = [
         (dataset_dir, construct_ef, m, search_efs)
         for construct_ef, m in product(construct_efs, ms)
     ]
 
-    with Pool(num_workers) as p:
-        results = list(
-            tqdm(
-                p.imap_unordered(eval_shared_hnsw_worker, tasks),
-                total=len(tasks),
-                desc="Evaluating shared HNSW index",
-            )
-        )
+    results = []
+    for task in tqdm(tasks, total=len(tasks), desc="Evaluating shared HNSW index"):
+        result = eval_shared_hnsw_worker(task)
+        print(result)
+        results.extend(result)
 
     print(f"Saving results to {output_path} ...", flush=True)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(results).to_csv(output_path, index=False)
 
 
-def plot_sweep_results(
+def plot_curator_sweep_results(
     results_path: str = "profile_selectivity_curator_sweep.csv",
     output_path: str = "profile_selectivity_curator_sweep.png",
 ):
@@ -426,6 +417,31 @@ def plot_sweep_results(
         y="n_dists",
         hue="nlist",
         style="max_sl_size",
+        markers=True,
+        dashes=False,
+    )
+    plt.xlabel("Recall@10")
+    plt.ylabel("# Distances Computed")
+
+    print(f"Saving plot to {output_path} ...", flush=True)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=200)
+
+
+def plot_shared_hnsw_sweep_results(
+    results_path: str = "profile_selectivity_shared_hnsw_sweep.csv",
+    output_path: str = "profile_selectivity_shared_hnsw_sweep.png",
+):
+    print(f"Loading results from {results_path} ...", flush=True)
+    results = pd.read_csv(results_path)
+
+    print("Plotting results...", flush=True)
+    sns.lineplot(
+        data=results,
+        x="recall",
+        y="n_dists",
+        hue="construct_ef",
+        style="m",
         markers=True,
         dashes=False,
     )
@@ -477,8 +493,6 @@ def select_shared_hnsw_best_config(
     json.dump(best_config, open(output_path, "w"), indent=4)
 
 
-# profile curator and hnsw using the best parameters
-# measure per-query ndists and latency and group by selectivity of query filter
 def profile_curator_ndists_vs_selectivity(
     prune_threses: list[float] = [1.2, 1.4, 1.6, 1.8, 2.0],
     best_config_path: str = "profile_selectivity_curator_best_config.json",
@@ -496,7 +510,10 @@ def profile_curator_ndists_vs_selectivity(
         flush=True,
     )
     best_config = json.load(open(best_config_path))
-    index = get_curator_index(dim, best_config["nlist"], best_config["max_sl_size"])
+    index = get_curator_index(
+        dim, int(best_config["nlist"]), int(best_config["max_sl_size"])
+    )
+    index.enable_stats_tracking()
 
     print("Training curator index...", flush=True)
     index.train(dataset.train_vecs)
@@ -518,6 +535,7 @@ def profile_curator_ndists_vs_selectivity(
 
     for prune_thres in prune_threses:
         ground_truth = iter(dataset.ground_truth)
+        index.search_params = {"prune_thres": prune_thres}
 
         for vec, access_list in tqdm(
             zip(dataset.test_vecs, dataset.test_mds),
@@ -535,7 +553,7 @@ def profile_curator_ndists_vs_selectivity(
 
                 results.append(
                     {
-                        "selectivity": label_to_sel[tenant],
+                        "selectivity": label_to_sel[str(tenant)],
                         "prune_thres": prune_thres,
                         "recall": recall,
                         "latency": latency,
@@ -564,7 +582,9 @@ def profile_shared_hnsw_ndists_vs_selectivity(
         flush=True,
     )
     best_config = json.load(open(best_config_path))
-    index = get_shared_hnsw_index(best_config["construct_ef"], best_config["m"])
+    index = get_shared_hnsw_index(
+        int(best_config["construct_ef"]), int(best_config["m"])
+    )
 
     for i, (vec, access_list) in tqdm(
         enumerate(zip(dataset.train_vecs, dataset.train_mds)),
@@ -583,6 +603,7 @@ def profile_shared_hnsw_ndists_vs_selectivity(
 
     for search_ef in search_efs:
         ground_truth = iter(dataset.ground_truth)
+        index.search_params = {"search_ef": search_ef}
 
         for vec, access_list in tqdm(
             zip(dataset.test_vecs, dataset.test_mds),
@@ -600,7 +621,7 @@ def profile_shared_hnsw_ndists_vs_selectivity(
 
                 results.append(
                     {
-                        "selectivity": label_to_sel[tenant],
+                        "selectivity": label_to_sel[str(tenant)],
                         "search_ef": search_ef,
                         "recall": recall,
                         "latency": latency,
@@ -616,16 +637,81 @@ def profile_shared_hnsw_ndists_vs_selectivity(
 def plot_ndists_vs_selectivity(
     curator_results_path: str = "profile_selectivity_curator_ndists_vs_selectivity.csv",
     shared_hnsw_results_path: str = "profile_selectivity_shared_hnsw_ndists_vs_selectivity.csv",
+    n_selectivities: int = 20,
+    recall_thres: float = 0.9,
     output_path: str = "profile_selectivity_ndists_vs_selectivity.png",
 ):
     print(f"Loading results from {curator_results_path} ...", flush=True)
     curator_results = pd.read_csv(curator_results_path)
+    curator_results["latency"] = curator_results["latency"] * 1000
 
     print(f"Loading results from {shared_hnsw_results_path} ...", flush=True)
     shared_hnsw_results = pd.read_csv(shared_hnsw_results_path)
+    shared_hnsw_results["latency"] = shared_hnsw_results["latency"] * 1000
+    shared_hnsw_results.rename(columns={"n_dist": "n_dists"}, inplace=True)
 
     print("Plotting results...", flush=True)
-    ...
+    curator_results["selectivity_bin"] = pd.cut(
+        curator_results["selectivity"], bins=n_selectivities, labels=False
+    )
+    shared_hnsw_results["selectivity_bin"] = pd.cut(
+        shared_hnsw_results["selectivity"], bins=n_selectivities, labels=False
+    )
+
+    curator_results = curator_results.groupby(["selectivity_bin", "prune_thres"]).mean()
+    shared_hnsw_results = shared_hnsw_results.groupby(
+        ["selectivity_bin", "search_ef"]
+    ).mean()
+
+    curator_results = curator_results[curator_results["recall"] >= recall_thres]
+    shared_hnsw_results = shared_hnsw_results[
+        shared_hnsw_results["recall"] >= recall_thres
+    ]
+
+    curator_results = curator_results.loc[
+        curator_results.groupby("selectivity_bin")["n_dists"].idxmin()
+    ]
+    shared_hnsw_results = shared_hnsw_results.loc[
+        shared_hnsw_results.groupby("selectivity_bin")["n_dists"].idxmin()
+    ]
+
+    curator_results["index"] = "Curator"
+    shared_hnsw_results["index"] = "Shared HNSW"
+    results = pd.concat([curator_results, shared_hnsw_results])
+    results = results.reset_index()
+
+    fig, axes = plt.subplots(1, 2, figsize=(8, 4))
+
+    sns.lineplot(
+        data=results,
+        x="selectivity",
+        y="n_dists",
+        hue="index",
+        markers=True,
+        dashes=False,
+        ax=axes[0],
+    )
+    axes[0].set_xlabel("Selectivity")
+    axes[0].set_ylabel("# Distances Computed")
+
+    sns.lineplot(
+        data=results,
+        x="selectivity",
+        y="latency",
+        hue="index",
+        markers=True,
+        dashes=False,
+        ax=axes[1],
+    )
+
+    axes[1].set_xlabel("Selectivity")
+    axes[1].set_ylabel("Latency (ms)")
+
+    fig.tight_layout()
+
+    print(f"Saving plot to {output_path} ...", flush=True)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=200)
 
 
 if __name__ == "__main__":

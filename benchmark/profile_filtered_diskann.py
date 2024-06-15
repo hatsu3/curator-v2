@@ -1,7 +1,6 @@
+import json
 import logging
 import os
-import shutil
-import uuid
 from functools import partial
 from itertools import product
 from pathlib import Path
@@ -210,30 +209,23 @@ def profile_filtered_diskann(
 
 
 def exp_filtered_diskann(
-    index_dir_prefix="index",
     ef_construct_space=[32, 64, 128],
     graph_degree_space=[16, 32, 64],
     alpha_space=[1.0, 1.5, 2.0],
     filter_ef_construct_space=[32, 64, 128],
     ef_search_space=[32, 64, 128],
-    construct_threads=None,
-    search_threads=1,
-    dataset_key="arxiv-small",
-    test_size=0.2,
-    num_runs=1,
-    timeout=600,
-    output_path: str | None = None,
-    cache_index=False,
+    construct_threads: int = 16,
+    search_threads: int = 1,
+    dataset_key: str = "yfcc100m",
+    test_size: float = 0.01,
+    num_runs: int = 1,
+    timeout: int = 600,
+    output_dir: str = "output/filtered_diskann/yfcc100m",
+    cache_index: bool = False,
 ):
-    construct_threads = construct_threads or os.environ.get("OMP_NUM_THREADS", 16)
-
-    if output_path is None:
-        output_path = f"output/filtered_diskann_{dataset_key}.csv"
-
     dataset_config, dim = get_dataset_config(dataset_key, test_size=test_size)
 
     index_configs = []
-    index_dirs = []
     for ef_construct, graph_degree, alpha, filter_ef_construct, ef_search in product(
         ef_construct_space,
         graph_degree_space,
@@ -241,16 +233,16 @@ def exp_filtered_diskann(
         filter_ef_construct_space,
         ef_search_space,
     ):
-        index_dir = f"{index_dir_prefix}_ef{ef_construct}_m{graph_degree}_a{alpha}_fef{filter_ef_construct}"
-        if not cache_index:
-            index_dir += f"_{uuid.uuid4().hex}"
-        index_dirs.append(index_dir)
+        index_dir = (
+            Path(output_dir)
+            / f"ef{ef_construct}_m{graph_degree}_a{alpha}_fef{filter_ef_construct}.index"
+        )
 
         index_configs.append(
             IndexConfig(
                 index_cls=FilteredDiskANN,
                 index_params={
-                    "index_dir": index_dir,
+                    "index_dir": str(index_dir),
                     "d": dim,
                     "ef_construct": ef_construct,
                     "graph_degree": graph_degree,
@@ -277,23 +269,39 @@ def exp_filtered_diskann(
         index_configs, [dataset_config], num_runs=num_runs, timeout=timeout
     )
 
-    if output_path is not None:
-        df = pd.DataFrame(
-            [
-                {
-                    **config.index_params,
-                    **config.search_params,
-                    **res,
-                }
-                for res, config in zip(results, index_configs)
-            ]
+    print(f"Saving results to {output_dir} ...", flush=True)
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    results_path = Path(output_dir) / "results.csv"
+    df = pd.DataFrame(
+        [
+            {
+                **config.index_params,
+                **config.search_params,
+                **res,
+            }
+            for res, config in zip(results, index_configs)
+        ]
+    )
+    df.to_csv(results_path, index=False)
+
+    config_path = Path(output_dir) / "config.json"
+    with config_path.open("w") as f:
+        json.dump(
+            {
+                "ef_construct_space": ef_construct_space,
+                "graph_degree_space": graph_degree_space,
+                "alpha_space": alpha_space,
+                "filter_ef_construct_space": filter_ef_construct_space,
+                "ef_search_space": ef_search_space,
+                "construct_threads": construct_threads,
+                "search_threads": search_threads,
+                "dataset_key": dataset_key,
+                "test_size": test_size,
+            },
+            f,
+            indent=4,
         )
-        df.to_csv(output_path, index=False)
-
-    for index_dir in index_dirs:
-        shutil.rmtree(index_dir, ignore_errors=True)
-
-    return results
 
 
 def exp_filtered_diskann_py(
