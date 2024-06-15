@@ -6,6 +6,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import parse
+
 proj_root = Path(__file__).resolve().parents[1]
 parlay_path = proj_root / "3rd_party/ParlayANN/python"
 if not Path(parlay_path).is_dir():
@@ -37,7 +39,7 @@ class ParlayIVF(Index):
         search_threads: int = 1,
     ):
         self.index_dir = index_dir
-        
+
         if index_dir:
             print(f"Initializing index directory at {index_dir} ...")
             Path(index_dir).mkdir(parents=True, exist_ok=False)
@@ -223,6 +225,31 @@ class ParlayIVF(Index):
         results, __ = self.index.batch_filter_search(
             X_expanded, filters, X_expanded.shape[0], k
         )
+        self.index.reset()
+
+        return results
+
+    def batch_and_query(
+        self,
+        X: np.ndarray,
+        k: int,
+        filters: list[str],
+    ) -> list[list[int]]:
+        assert self.index is not None, "Index must be trained before querying"
+
+        self._set_num_threads(self.search_threads)
+        self._set_query_params(k)
+
+        parsed_filters = list()
+        for filter in filters:
+            res = parse.parse("AND {} {}", filter)
+            if res is None:
+                raise ValueError(f"Invalid filter: {filter}")
+            assert isinstance(res, parse.Result)
+            t1, t2 = res.fixed
+            parsed_filters.append(wp.QueryFilter(int(t1), int(t2)))  # type: ignore
+
+        results, __ = self.index.batch_filter_search(X, parsed_filters, X.shape[0], k)
         self.index.reset()
 
         return results

@@ -11,4 +11,4 @@ python -m benchmark.profile_parlay_ivf \
         --ivf_cluster_size $ivf_cluster_size \
         --ivf_max_iter $ivf_max_iter \
         --graph_degree $graph_degree \
-        --output_path "output/parlay_ivf/parlay_ivf_param_sweep.csv" &
+        --output_path "output/parlay_ivf/parlay_ivf_param_sweep.csv"

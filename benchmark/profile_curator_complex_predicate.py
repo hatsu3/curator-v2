@@ -15,6 +15,7 @@ from benchmark.config import IndexConfig
 from benchmark.utils import get_dataset_config, load_dataset, recall
 from indexes.hnsw_mt_hnswlib import HNSWMultiTenantHnswlib
 from indexes.ivf_hier_faiss import IVFFlatMultiTenantBFHierFaiss
+from indexes.parlay_ivf import ParlayIVF
 
 
 def evaluate_predicate(formula: str, mds: list[int]):
@@ -282,6 +283,33 @@ def get_shared_hnsw_index(
     return index
 
 
+def get_parlay_ivf_index(
+    index_dir: str,
+    ivf_cluster_size: int = 500,
+    ivf_max_iter: int = 10,
+    graph_degree: int = 16,
+    ivf_search_radius: int = 1000,
+    graph_search_L: int = 50,
+    build_threads: int = 16,
+) -> ParlayIVF:
+    if not index_dir.endswith("/"):
+        index_dir += "/"
+
+    return ParlayIVF(
+        index_dir=index_dir,
+        cluster_size=ivf_cluster_size,
+        max_iter=ivf_max_iter,
+        weight_classes=[100000, 400000],
+        max_degrees=[graph_degree] * 3,
+        bitvector_cutoff=10000,
+        target_points=ivf_search_radius,
+        tiny_cutoff=1000,
+        beam_widths=[graph_search_L] * 3,
+        search_limits=[100000, 400000, 3000000],
+        build_threads=build_threads,
+    )
+
+
 def exp_curator_complex_predicate(
     num_filters_per_template: int,
     num_queries: int,
@@ -445,6 +473,129 @@ def exp_shared_hnsw_complex_predicate(
         pd.DataFrame(results).to_csv(output_path, index=False)
 
     return results
+
+
+def exp_parlay_ivf_complex_predicate(
+    num_filters_per_template: int,
+    num_queries: int,
+    ivf_cluster_size: int = 500,
+    ivf_max_iter: int = 10,
+    graph_degree: int = 16,
+    ivf_search_radius: int = 1000,
+    graph_search_L: int = 50,
+    dataset_key: str = "yfcc100m",
+    test_size: float = 0.01,
+    gt_cache_dir: str | None = None,
+    output_dir: str = "output/complex_predicate/parlay_ivf",
+    seed: int = 42,
+):
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    index_dir = Path(output_dir) / "parlay_ivf.index"
+
+    print("Generating dataset...", flush=True)
+    train_vecs, query_vecs, train_mds, filters, ground_truths, selectivities, dim = (
+        generate_dataset(
+            num_filters_per_template,
+            num_queries,
+            dataset_key,
+            test_size,
+            gt_cache_dir,
+            seed,
+        )
+    )
+
+    print("Initializing index...", flush=True)
+    index = get_parlay_ivf_index(
+        str(index_dir),
+        ivf_cluster_size,
+        ivf_max_iter,
+        graph_degree,
+        ivf_search_radius,
+        graph_search_L,
+    )
+
+    print("Training index...", flush=True)
+    index.train(train_vecs, train_mds)
+
+    results = []
+    n_filters = len(filters["AND {0} {1}"])
+    pbar = tqdm(total=n_filters * num_queries, desc="Querying index")
+
+    for filter in filters["AND {0} {1}"]:
+        query_results = []
+        query_latencies = []
+
+        for qv in query_vecs:
+            pbar.update(1)
+            query_start = time.time()
+            labels = index.batch_and_query(qv[None], 10, [filter])[0]
+            query_latencies.append(time.time() - query_start)
+            query_results.append(labels)
+
+        avg_recall = recall(query_results, ground_truths[filter]).item()
+        avg_search_lat = np.array(query_latencies).mean()
+
+        results.append(
+            {
+                "template": "AND {0} {1}",
+                "filter": filter,
+                "selectivity": selectivities[filter],
+                "ivf_cluster_size": ivf_cluster_size,
+                "ivf_max_iter": ivf_max_iter,
+                "graph_degree": graph_degree,
+                "ivf_search_radius": ivf_search_radius,
+                "graph_search_L": graph_search_L,
+                "avg_recall": avg_recall,
+                "avg_search_lat": avg_search_lat,
+            }
+        )
+
+    print(f"Saving results to {output_dir} ...")
+    Path(output_dir).parent.mkdir(parents=True, exist_ok=True)
+    results_path = Path(output_dir) / "results.csv"
+    pd.DataFrame(results).to_csv(results_path, index=False)
+
+    config_path = Path(output_dir) / "config.json"
+    with open(config_path, "w") as f:
+        json.dump(
+            {
+                "num_filters_per_template": num_filters_per_template,
+                "num_queries": num_queries,
+                "ivf_cluster_size": ivf_cluster_size,
+                "ivf_max_iter": ivf_max_iter,
+                "graph_degree": graph_degree,
+                "ivf_search_radius": ivf_search_radius,
+                "graph_search_L": graph_search_L,
+                "dataset_key": dataset_key,
+                "test_size": test_size,
+                "seed": seed,
+            },
+            f,
+            indent=4,
+        )
+
+
+def plot_complex_predicate_results(
+    results_path: str = "output/complex_predicate/parlay_ivf/results.csv",
+    output_path: str = "output/complex_predicate/parlay_ivf/results.png",
+):
+    print(f"Loading results from {results_path} ...")
+    results = pd.read_csv(results_path)
+    results["avg_search_lat"] *= 1000
+
+    print("Plotting results ...")
+    sns.scatterplot(
+        data=results,
+        x="avg_recall",
+        y="avg_search_lat",
+        hue="template",
+    )
+    plt.xlabel("Recall@10")
+    plt.ylabel("Search latency (ms)")
+
+    print(f"Saving plot to {output_path} ...")
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=200)
 
 
 def test_indexing_subexpression(

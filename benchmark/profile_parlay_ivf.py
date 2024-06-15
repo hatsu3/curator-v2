@@ -1,4 +1,3 @@
-import multiprocessing
 import time
 from itertools import product
 from pathlib import Path
@@ -9,8 +8,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from tqdm import tqdm
 
-from benchmark.utils import get_dataset_config, load_dataset, get_memory_usage
+from benchmark.utils import get_dataset_config, get_memory_usage, load_dataset
 from indexes.parlay_ivf import ParlayIVF
 
 
@@ -93,20 +93,6 @@ class CSVLogger:
 
     def __del__(self):
         self.file.close()
-
-
-""" Command:
-python -m benchmark.profile_parlay_ivf \
-    exp_parlay_ivf_param_sweep \
-        --dataset_key "yfcc100m" \
-        --test_size 0.01 \
-        --ivf_cluster_size_space "[100, 500, 1000]" \
-        --ivf_max_iter_space "[10, 20]" \
-        --graph_degree_space "[8, 12, 16]" \
-        --ivf_search_radius_space "[1000, 3000, 5000]" \
-        --graph_search_L_space "[50, 100, 200]" \
-        --output_path "parlay_ivf_param_sweep.csv"
-"""
 
 
 def exp_parlay_ivf_param_sweep_worker(
@@ -200,95 +186,72 @@ def exp_parlay_ivf_param_sweep_worker(
     return results
 
 
-"""
-python -m benchmark.profile_parlay_ivf \
-    exp_parlay_ivf_param_sweep \
-        --dataset_key "yfcc100m" \
-        --test_size 0.01 \
-        --ivf_cluster_size_space "[100, 500, 1000]" \
-        --ivf_max_iter_space "[10, 20]" \
-        --graph_degree_space "[8, 12, 16]" \
-        --output_path "parlay_ivf_param_sweep.csv" \
-        --num_workers 4
-"""
+def exp_parlay_ivf_param_sweep(
+    dataset_key: str = "yfcc100m",
+    test_size: float = 0.01,
+    ivf_cluster_size_space: list[int] = [100, 500, 1000],
+    ivf_max_iter_space: list[int] = [10, 20],
+    graph_degree_space: list[int] = [8, 12, 16],
+    ivf_search_radius_space: list[int] = [1000, 3000, 5000],
+    graph_search_L_space: list[int] = [50, 100, 200],
+    output_path: str = "output/parlay_ivf/parlay_ivf_param_sweep.csv",
+    cpu_mask: str = "0xff",
+):
+    import subprocess
 
-
-"""
-Or equivalently using shell scripts:
-Command line parameters:
-0. rank
-1. cpu mask (used in taskset)
-2. ivf_cluster_size
-3. ivf_max_iter
-4. graph_degree
-
-```bash
-rank=$1
-cpu_mask=$2
-ivf_cluster_size=$3
-ivf_max_iter=$4
-graph_degree=$5
-
-taskset -c $cpu_mask \
-python -m benchmark.profile_parlay_ivf \
-    exp_parlay_ivf_param_sweep_worker \
-        --rank $rank \
-        --ivf_cluster_size $ivf_cluster_size \
-        --ivf_max_iter $ivf_max_iter \
-        --graph_degree $graph_degree \
-        --output_path "parlay_ivf_param_sweep.csv"
-```
-"""
-
-
-# def exp_parlay_ivf_param_sweep(
-#     dataset_key: str = "yfcc100m",
-#     test_size: float = 0.01,
-#     ivf_cluster_size_space: list[int] = [100, 500, 1000],
-#     ivf_max_iter_space: list[int] = [10, 20],
-#     graph_degree_space: list[int] = [8, 12, 16],
-#     output_path: str = "parlay_ivf_param_sweep.csv",
-#     num_workers: int = 4,
-# ):
-#     with multiprocessing.Pool(num_workers) as pool:
-#         results = [
-#             pool.apply_async(
-#                 exp_parlay_ivf_param_sweep_worker,
-#                 (
-#                     {
-#                         "rank": rank,
-#                         "dataset_key": dataset_key,
-#                         "test_size": test_size,
-#                         "ivf_cluster_size": ivf_cluster_size,
-#                         "ivf_max_iter": ivf_max_iter,
-#                         "graph_degree": graph_degree,
-#                         "output_path": output_path,
-#                     }
-#                 ),
-#             )
-#             for rank, (ivf_cluster_size, ivf_max_iter, graph_degree) in enumerate(
-#                 product(ivf_cluster_size_space, ivf_max_iter_space, graph_degree_space)
-#             )
-#         ]
-
-#     results = sum([result.get() for result in results], [])
-#     print("Results:", pd.DataFrame(results))
+    for rank, (ivf_cluster_size, ivf_max_iter, graph_degree) in tqdm(
+        enumerate(
+            product(ivf_cluster_size_space, ivf_max_iter_space, graph_degree_space)
+        ),
+        total=len(ivf_cluster_size_space)
+        * len(ivf_max_iter_space)
+        * len(graph_degree_space),
+    ):
+        subprocess.run(
+            [
+                "taskset",
+                "-c",
+                cpu_mask,
+                "python",
+                "-m",
+                "benchmark.profile_parlay_ivf",
+                "exp_parlay_ivf_param_sweep_worker",
+                "--rank",
+                str(rank),
+                "--dataset_key",
+                dataset_key,
+                "--test_size",
+                str(test_size),
+                "--ivf_cluster_size",
+                str(ivf_cluster_size),
+                "--ivf_max_iter",
+                str(ivf_max_iter),
+                "--graph_degree",
+                str(graph_degree),
+                "--ivf_search_radius_space",
+                f'"{str(ivf_search_radius_space)}"',
+                "--graph_search_L_space",
+                f'"{str(graph_search_L_space)}"',
+                "--output_path",
+                output_path,
+            ]
+        )
 
 
 def plot_parlay_ivf_param_sweep(
-    results_path: str = "parlay_ivf_param_sweep.csv",
-    output_path: str = "parlay_ivf_param_sweep.png",
+    results_path: str = "output/parlay_ivf/parlay_ivf_param_sweep.csv",
+    output_path: str = "output/parlay_ivf/parlay_ivf_param_sweep.png",
 ):
     print(f"Loading results from {results_path} ...", flush=True)
     results = pd.read_csv(results_path)
-    results["latency"] = results["latency"] * 1000
+    results["latency_ms"] = results["latency"] * 1000
 
     print("Plotting results ...", flush=True)
     fig, axes = plt.subplots(2, 2, figsize=(8, 8))
 
     sns.scatterplot(
         data=results,
-        x="latency",
+        x="latency_ms",
         y="recall",
         hue="ivf_cluster_size",
         style="ivf_max_iter",
@@ -297,7 +260,7 @@ def plot_parlay_ivf_param_sweep(
 
     sns.scatterplot(
         data=results,
-        x="latency",
+        x="latency_ms",
         y="recall",
         hue="graph_degree",
         ax=axes[0, 1],
@@ -305,7 +268,7 @@ def plot_parlay_ivf_param_sweep(
 
     sns.scatterplot(
         data=results,
-        x="latency",
+        x="latency_ms",
         y="recall",
         hue="ivf_search_radius",
         ax=axes[1, 0],
@@ -313,7 +276,7 @@ def plot_parlay_ivf_param_sweep(
 
     sns.scatterplot(
         data=results,
-        x="latency",
+        x="latency_ms",
         y="recall",
         hue="graph_search_L",
         ax=axes[1, 1],
@@ -324,6 +287,32 @@ def plot_parlay_ivf_param_sweep(
     print(f"Saving plot to {output_path} ...", flush=True)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(output_path, dpi=200)
+
+
+def select_parlay_ivf_param(
+    recall_thres: float = 0.95,
+    results_path: str = "output/parlay_ivf/parlay_ivf_param_sweep.csv",
+    output_path: str = "output/parlay_ivf/best_index_config.json",
+):
+    print(f"Loading results from {results_path} ...", flush=True)
+    results = pd.read_csv(results_path)
+    results["latency_ms"] = results["latency"] * 1000
+
+    print("Selecting best config ...", flush=True)
+    best_config = (
+        results[
+            (results["recall"] >= recall_thres)
+            & (results["latency_ms"] <= results["latency_ms"].quantile(0.95))
+        ]
+        .sort_values("latency_ms")
+        .head(1)
+    )
+
+    print(f"Best config: {best_config.to_dict(orient='records')[0]}", flush=True)
+    
+    print(f"Saving best config to {output_path} ...", flush=True)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    best_config.to_json(output_path, orient="records")
 
 
 if __name__ == "__main__":
