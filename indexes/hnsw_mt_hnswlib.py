@@ -75,16 +75,22 @@ class HNSWMultiTenantHnswlib(Index):
         self.index.revoke_access(label, tenant_id)  # type: ignore
 
     def query(self, x: np.ndarray, k: int, tenant_id: int | None = None) -> list[int]:
+        assert self.index is not None, "Index must be constructed before querying"
+        self.index.ef = self.search_ef
         _, top_ids = self.index.search(x[None], k, tenant_id)  # type: ignore
         return top_ids[0].tolist()
 
     def query_with_filter(self, x: np.ndarray, k: int, filter: str) -> list[int]:
+        assert self.index is not None, "Index must be constructed before querying"
+        self.index.ef = self.search_ef
         top_dists, top_ids = self.index.search(x[None], k, filter)  # type: ignore
         return top_ids[0].tolist()
 
     def batch_query(
         self, X: np.ndarray, k: int, tenant_id: int | None = None, num_threads: int = 1
     ) -> list[list[int]]:
+        assert self.index is not None, "Index must be constructed before querying"
+        self.index.ef = self.search_ef
         _, top_ids = self.index.search(X, k, tenant_id)  # type: ignore
         return top_ids.tolist()
 

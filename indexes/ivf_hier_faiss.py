@@ -93,10 +93,13 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
     def search_params(self, params: dict[str, Any]) -> None:
         if "nprobe" in params:
             self.nprobe = params["nprobe"]
+            self.index.nprobe = self.nprobe
         if "prune_thres" in params:
             self.prune_thres = params["prune_thres"]
+            self.index.prune_thres = self.prune_thres
         if "variance_boost" in params:
             self.variance_boost = params["variance_boost"]
+            self.index.variance_boost = self.variance_boost
 
     def train(
         self, X: np.ndarray, tenant_ids: Metadata | None = None, **train_params

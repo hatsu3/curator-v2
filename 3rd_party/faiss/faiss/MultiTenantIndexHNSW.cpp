@@ -96,6 +96,8 @@ void MultiTenantIndexHNSW::search(
     size_t num_threads =
             getenv("OMP_NUM_THREADS") ? atoi(getenv("OMP_NUM_THREADS")) : 1;
 
+    index->setEf(ef);
+
     ParallelFor(0, n, num_threads, [&](size_t i, size_t threadId) {
         long n_dists_before = index->metric_distance_computations.load();
         std::vector<std::pair<float, hnswlib::labeltype>> result =
@@ -121,6 +123,8 @@ void MultiTenantIndexHNSW::search(
     ComplexPredicateCheck checker(filter, access_map);
     size_t num_threads =
             getenv("OMP_NUM_THREADS") ? atoi(getenv("OMP_NUM_THREADS")) : 1;
+
+    index->setEf(ef);
 
     ParallelFor(0, n, num_threads, [&](size_t i, size_t threadId) {
         std::vector<std::pair<float, hnswlib::labeltype>> result =
