@@ -137,7 +137,7 @@ struct VectorStore {
     virtual const float* get_vec(vid_t vid) const = 0;
 };
 
-struct OrderedVectorStore: VectorStore {
+struct OrderedVectorStore : VectorStore {
     size_t d;
     std::vector<float> vecs;
 
@@ -174,7 +174,7 @@ struct OrderedVectorStore: VectorStore {
     }
 };
 
-struct UnorderedVectorStore: VectorStore {
+struct UnorderedVectorStore : VectorStore {
     size_t d;
     std::unordered_map<vid_t, std::vector<float>> vecs;
 
@@ -250,37 +250,42 @@ struct UnorderedAccessMatrix {
 
     const std::vector<tid_t>& get_access_list(vid_t vid) const {
         auto it = access_matrix.find(vid);
-        FAISS_THROW_IF_NOT_MSG(it != access_matrix.end(), "vector does not exist");
+        FAISS_THROW_IF_NOT_MSG(
+                it != access_matrix.end(), "vector does not exist");
         return it->second;
-    } 
+    }
 
     void add_vector(vid_t vid, tid_t tid) {
         auto it = access_matrix.find(vid);
         FAISS_THROW_IF_NOT_MSG(
                 it == access_matrix.end(), "vector already exists");
-        
+
         access_matrix[vid] = std::vector<tid_t>{tid};
     }
 
     void remove_vector(vid_t vid, tid_t tid) {
         auto it = access_matrix.find(vid);
-        FAISS_THROW_IF_NOT_MSG(it != access_matrix.end(), "vector does not exist");
+        FAISS_THROW_IF_NOT_MSG(
+                it != access_matrix.end(), "vector does not exist");
         access_matrix.erase(it);
     }
 
     void grant_access(vid_t vid, tid_t tid) {
         auto it = access_matrix.find(vid);
-        FAISS_THROW_IF_NOT_MSG(it != access_matrix.end(), "vector does not exist");
+        FAISS_THROW_IF_NOT_MSG(
+                it != access_matrix.end(), "vector does not exist");
         it->second.push_back(tid);
     }
 
     void revoke_access(vid_t vid, tid_t tid) {
         auto it = access_matrix.find(vid);
-        FAISS_THROW_IF_NOT_MSG(it != access_matrix.end(), "vector does not exist");
+        FAISS_THROW_IF_NOT_MSG(
+                it != access_matrix.end(), "vector does not exist");
         auto& access_list = it->second;
-        
+
         auto it2 = std::find(access_list.begin(), access_list.end(), tid);
-        FAISS_THROW_IF_NOT_MSG(it2 != access_list.end(), "tenant does not have access");
+        FAISS_THROW_IF_NOT_MSG(
+                it2 != access_list.end(), "tenant does not have access");
         access_list.erase(it2);
     }
 
@@ -328,6 +333,83 @@ struct RunningMean {
     }
 };
 
+template <typename T>
+struct SortedList {
+    std::vector<T> data;
+
+    SortedList() {}
+
+    SortedList(const std::vector<T>& data_) : data(data_) {
+        std::sort(data.begin(), data.end());
+    }
+
+    SortedList(const SortedList& other) : data(other.data) {}
+
+    SortedList(SortedList&& other) noexcept : data(std::move(other.data)) {}
+
+    SortedList& operator=(const SortedList& other) {
+        if (this != &other) {
+            data = other.data;
+        }
+        return *this;
+    }
+
+    SortedList& operator=(SortedList&& other) noexcept {
+        if (this != &other) {
+            data = std::move(other.data);
+        }
+        return *this;
+    }
+
+    typename std::vector<T>::iterator begin() {
+        return data.begin();
+    }
+
+    typename std::vector<T>::iterator end() {
+        return data.end();
+    }
+
+    typename std::vector<T>::const_iterator begin() const {
+        return data.begin();
+    }
+
+    typename std::vector<T>::const_iterator end() const {
+        return data.end();
+    }
+
+    void insert(const T& item) {
+        auto it = std::lower_bound(data.begin(), data.end(), item);
+        data.insert(it, item);
+    }
+
+    void erase(const T& item) {
+        auto it = std::lower_bound(data.begin(), data.end(), item);
+        FAISS_ASSERT_MSG(it != data.end() && *it == item, "item not found");
+        data.erase(it);
+    }
+
+    bool contains(const T& item) const {
+        return std::binary_search(data.begin(), data.end(), item);
+    }
+
+    size_t size() const {
+        return data.size();
+    }
+
+    SortedList merge(const SortedList& other) {
+        SortedList result;
+        std::merge(
+                data.begin(),
+                data.end(),
+                other.data.begin(),
+                other.data.end(),
+                std::back_inserter(result.data));
+        return result;
+    }
+};
+
+using ShortList = SortedList<vid_t>;
+
 struct TreeNode {
     /* information about the tree structure */
     size_t level;      // the level of this node in the tree
@@ -343,11 +425,12 @@ struct TreeNode {
 
     /* available for all nodes */
     bloom_filter bf;
-    std::unordered_map<tid_t, std::vector<vid_t>> shortlists;
+    std::unordered_map<tid_t, ShortList> shortlists;
 
     /* only for leaf nodes */
-    std::vector<vid_t> vector_indices; // vectors assigned to this leaf node
-    std::unordered_map<tid_t, uint32_t> n_vectors_per_tenant;
+    ShortList vector_indices; // vectors assigned to this leaf node
+    std::unordered_map<tid_t, uint32_t>
+            n_vectors_per_tenant; // TODO: remove this attribute
 
     TreeNode(
             size_t level,
@@ -390,7 +473,6 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
 
     /* auxiliary data structures */
     size_t update_bf_after;
-    std::unordered_map<label_t, TreeNode*> label_to_leaf;
     std::unordered_map<std::string, tid_t> filter_to_label;
 
     bool track_stats = false;
@@ -519,8 +601,6 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
 
     bool merge_short_list_recursively(TreeNode* node, tid_t tid);
 
-    std::vector<size_t> get_node_path(const TreeNode* node) const;
-
     void locate_vector(label_t label) const;
 
     void print_tree_info() const;
@@ -539,6 +619,8 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
     void build_index_for_filter(const std::string& filter);
 
     void sanity_check() const;
+
+    TreeNode* find_assigned_leaf(label_t label) const;
 };
 
 } // namespace faiss
