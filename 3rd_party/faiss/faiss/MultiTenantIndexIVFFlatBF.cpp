@@ -64,33 +64,19 @@ void MultiTenantIndexIVFFlatBF::train(idx_t n, const float* x, tid_t tid) {
 void MultiTenantIndexIVFFlatBF::add_vector_with_ids(
         idx_t n,
         const float* x,
-        const idx_t* xids,
-        tid_t tid) {
+        const idx_t* xids) {
     
     // update access map
     for (idx_t i = 0; i < n; i++) {
         size_t xid = xids ? xids[i] : ntotal + i;
         auto access_list_it = access_map.find(xid);
         FAISS_THROW_IF_NOT_MSG(access_list_it == access_map.end(), "vector already exists in the index");
-        access_map[xid].insert(tid);
-        vector_owners[xid] = tid;
     }
     
     // add vectors to inverted lists and direct map
     idx_t* coarse_idx = new idx_t[n];
     quantizer->assign(n, x, coarse_idx);
     add_core(n, x, xids, coarse_idx);
-    
-    // update the counters at each bucket
-    for (idx_t i = 0; i < n; i++) {
-        idx_t list_no = coarse_idx[i];
-        tenant_nvecs[list_no][tid] += 1;
-    }
-
-    // update the bloom filters
-    for (idx_t i = 0; i < n; i++) {
-        ivf_bfs[coarse_idx[i]].insert(tid);
-    }
 }
 
 void MultiTenantIndexIVFFlatBF::grant_access(idx_t xid, tid_t tid) {
@@ -107,13 +93,7 @@ void MultiTenantIndexIVFFlatBF::grant_access(idx_t xid, tid_t tid) {
     ivf_bfs[bucket_idx].insert(tid);
 }
 
-bool MultiTenantIndexIVFFlatBF::remove_vector(idx_t xid, tid_t tid) {
-    // check if the vector is accessible by the tenant
-    if (!vector_owners.at(xid) == tid) {
-        return false;
-    }
-    vector_owners.erase(xid);
-
+bool MultiTenantIndexIVFFlatBF::remove_vector(idx_t xid) {
     // update the counters
     bool update_bf = false;
     idx_t bucket_idx = lo_listno(direct_map.get(xid));

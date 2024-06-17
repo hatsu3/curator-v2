@@ -54,21 +54,18 @@ class HNSWMultiTenantHnswlib(Index):
     ) -> None:
         raise NotImplementedError("hnswlib does not require training")
 
-    def create(self, x: np.ndarray, label: int, tenant_id: int) -> None:
+    def create(self, x: np.ndarray, label: int) -> None:
         if self.index is None:
             self.index = faiss.MultiTenantIndexHNSW(
                 len(x), self.m, self.construction_ef, self.search_ef, self.max_elements
             )
 
-        self.index.add_vector_with_ids(x[None], [label], tenant_id)  # type: ignore
+        self.index.add_vector_with_ids(x[None], [label])  # type: ignore
 
     def grant_access(self, label: int, tenant_id: int) -> None:
         self.index.grant_access(label, tenant_id)  # type: ignore
 
-    def delete(self, label: int, tenant_id: int | None = None) -> None:
-        raise NotImplementedError("Use delete_vector instead")
-
-    def delete_vector(self, label: int, tenant_id: int) -> None:
+    def delete_vector(self, label: int) -> None:
         self.index.remove_vector(label, tenant_id)  # type: ignore
 
     def revoke_access(self, label: int, tenant_id: int) -> None:
@@ -103,11 +100,11 @@ class HNSWMultiTenantHnswlib(Index):
 
 if __name__ == "__main__":
     index = HNSWMultiTenantHnswlib()
-    index.create(np.random.rand(10), label=0, tenant_id=0)
-    index.create(np.random.rand(10), label=1, tenant_id=1)
+    index.create(np.random.rand(10), label=0)
+    index.create(np.random.rand(10), label=1)
     index.grant_access(label=0, tenant_id=1)
     index.grant_access(label=1, tenant_id=0)
     index.grant_access(label=1, tenant_id=2)
     print(index.query(np.random.rand(10), k=2, tenant_id=0))
-    index.delete_vector(label=1, tenant_id=1)
+    index.delete_vector(label=1)
     print(index.query(np.random.rand(10), k=1, tenant_id=0))

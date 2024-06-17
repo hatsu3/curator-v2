@@ -123,181 +123,27 @@ struct IdMapping {
     }
 };
 
-// TODO: use a string to represent external tenant label
 using VectorIdAllocator = IdMapping<label_t, vid_t>;
 using TenantIdAllocator = IdAllocator<tid_t, tid_t>;
 
 struct VectorStore {
-    virtual ~VectorStore() {}
-
-    virtual void add_vector(const float* vec, vid_t vid) = 0;
-
-    virtual void remove_vector(vid_t vid) = 0;
-
-    virtual const float* get_vec(vid_t vid) const = 0;
-};
-
-struct OrderedVectorStore : VectorStore {
-    size_t d;
-    std::vector<float> vecs;
-
-    OrderedVectorStore(size_t d) : d(d) {}
-
-    void add_vector(const float* vec, vid_t vid) override {
-        size_t offset = vid * d;
-        if (offset >= vecs.size()) {
-            vecs.resize((vid + 1) * d);
-        }
-
-        // we assume that the slot is not occupied
-        std::memcpy(vecs.data() + offset, vec, sizeof(float) * d);
-    }
-
-    void remove_vector(vid_t vid) override {
-        size_t offset = vid * d;
-
-        if (offset >= vecs.size()) {
-            return;
-        } else if (offset == vecs.size() - d) {
-            vecs.resize(offset);
-        } else {
-            std::memset(vecs.data() + offset, 0, sizeof(float) * d);
-        }
-    }
-
-    const float* get_vec(vid_t vid) const override {
-        vid_t offset = vid * d;
-        FAISS_THROW_IF_NOT_MSG(offset < vecs.size(), "vector does not exist");
-
-        // we assume the slot contains a valid vector
-        return vecs.data() + offset;
-    }
-};
-
-struct UnorderedVectorStore : VectorStore {
     size_t d;
     std::unordered_map<vid_t, std::vector<float>> vecs;
 
-    UnorderedVectorStore(size_t d) : d(d) {}
+    VectorStore(size_t d) : d(d) {}
 
-    void add_vector(const float* vec, vid_t vid) override {
+    void add_vector(const float* vec, vid_t vid) {
         vecs[vid] = std::vector<float>(vec, vec + d);
     }
 
-    void remove_vector(vid_t vid) override {
+    void remove_vector(vid_t vid) {
         vecs.erase(vid);
     }
 
-    const float* get_vec(vid_t vid) const override {
+    const float* get_vec(vid_t vid) const {
         auto it = vecs.find(vid);
         FAISS_THROW_IF_NOT_MSG(it != vecs.end(), "vector does not exist");
         return it->second.data();
-    }
-};
-
-struct OrderedAccessMatrix {
-    std::vector<std::vector<tid_t>> access_matrix;
-
-    const std::vector<tid_t>& get_access_list(vid_t vid) const {
-        if (vid >= access_matrix.size()) {
-            FAISS_THROW_MSG("vector does not exist");
-        }
-        return access_matrix[vid];
-    }
-
-    void add_vector(vid_t vid, tid_t tid) {
-        if (vid >= access_matrix.size()) {
-            access_matrix.resize(vid + 1);
-        }
-
-        // we assume the slot is not occupied
-        access_matrix[vid].push_back(tid);
-    }
-
-    void remove_vector(vid_t vid, tid_t tid) {
-        // we assume the slot contains a valid access list
-        access_matrix[vid].clear();
-    }
-
-    void grant_access(vid_t vid, tid_t tid) {
-        // we assume the slot contains a valid access list
-        access_matrix[vid].push_back(tid);
-    }
-
-    void revoke_access(vid_t vid, tid_t tid) {
-        // we assume the slot contains a valid access list and tid is in the
-        // list
-        auto& access_list = access_matrix[vid];
-        access_list.erase(
-                std::remove(access_list.begin(), access_list.end(), tid),
-                access_list.end());
-    }
-
-    bool has_access(vid_t vid, tid_t tid) const {
-        if (vid >= access_matrix.size()) {
-            return false;
-        }
-
-        // we assume the slot contains a valid access list
-        auto& access_list = access_matrix[vid];
-        return std::find(access_list.begin(), access_list.end(), tid) !=
-                access_list.end();
-    }
-};
-
-struct UnorderedAccessMatrix {
-    std::unordered_map<vid_t, std::vector<tid_t>> access_matrix;
-
-    const std::vector<tid_t>& get_access_list(vid_t vid) const {
-        auto it = access_matrix.find(vid);
-        FAISS_THROW_IF_NOT_MSG(
-                it != access_matrix.end(), "vector does not exist");
-        return it->second;
-    }
-
-    void add_vector(vid_t vid, tid_t tid) {
-        auto it = access_matrix.find(vid);
-        FAISS_THROW_IF_NOT_MSG(
-                it == access_matrix.end(), "vector already exists");
-
-        access_matrix[vid] = std::vector<tid_t>{tid};
-    }
-
-    void remove_vector(vid_t vid, tid_t tid) {
-        auto it = access_matrix.find(vid);
-        FAISS_THROW_IF_NOT_MSG(
-                it != access_matrix.end(), "vector does not exist");
-        access_matrix.erase(it);
-    }
-
-    void grant_access(vid_t vid, tid_t tid) {
-        auto it = access_matrix.find(vid);
-        FAISS_THROW_IF_NOT_MSG(
-                it != access_matrix.end(), "vector does not exist");
-        it->second.push_back(tid);
-    }
-
-    void revoke_access(vid_t vid, tid_t tid) {
-        auto it = access_matrix.find(vid);
-        FAISS_THROW_IF_NOT_MSG(
-                it != access_matrix.end(), "vector does not exist");
-        auto& access_list = it->second;
-
-        auto it2 = std::find(access_list.begin(), access_list.end(), tid);
-        FAISS_THROW_IF_NOT_MSG(
-                it2 != access_list.end(), "tenant does not have access");
-        access_list.erase(it2);
-    }
-
-    bool has_access(vid_t vid, tid_t tid) const {
-        auto it = access_matrix.find(vid);
-        if (it == access_matrix.end()) {
-            return false;
-        }
-
-        auto& access_list = it->second;
-        return std::find(access_list.begin(), access_list.end(), tid) !=
-                access_list.end();
     }
 };
 
@@ -409,6 +255,58 @@ struct SortedList {
 };
 
 using ShortList = SortedList<vid_t>;
+using AccessList = SortedList<tid_t>; // TODO: could be removed
+
+struct AccessMatrix {
+    std::unordered_map<vid_t, AccessList> access_matrix;
+
+    const AccessList& get_access_list(vid_t vid) const {
+        auto it = access_matrix.find(vid);
+        FAISS_THROW_IF_NOT_MSG(
+                it != access_matrix.end(), "vector does not exist");
+        return it->second;
+    }
+
+    void add_vector(vid_t vid) {
+        FAISS_THROW_IF_NOT_MSG(
+                access_matrix.find(vid) == access_matrix.end(),
+                "vector already exists");
+
+        access_matrix.emplace(vid, AccessList());
+    }
+
+    void remove_vector(vid_t vid) {
+        auto it = access_matrix.find(vid);
+        FAISS_THROW_IF_NOT_MSG(
+                it != access_matrix.end(), "vector does not exist");
+
+        access_matrix.erase(it);
+    }
+
+    void grant_access(vid_t vid, tid_t tid) {
+        auto it = access_matrix.find(vid);
+        FAISS_THROW_IF_NOT_MSG(
+                it != access_matrix.end(), "vector does not exist");
+
+        it->second.insert(tid);
+    }
+
+    void revoke_access(vid_t vid, tid_t tid) {
+        auto it = access_matrix.find(vid);
+        FAISS_THROW_IF_NOT_MSG(
+                it != access_matrix.end(), "vector does not exist");
+
+        it->second.erase(tid);
+    }
+
+    bool has_access(vid_t vid, tid_t tid) const {
+        auto it = access_matrix.find(vid);
+        FAISS_THROW_IF_NOT_MSG(
+                it != access_matrix.end(), "vector does not exist");
+
+        return it->second.contains(tid);
+    }
+};
 
 struct TreeNode {
     /* information about the tree structure */
@@ -424,13 +322,13 @@ struct TreeNode {
     RunningMean variance;
 
     /* available for all nodes */
+    size_t bf_capacity;
+    float bf_false_pos;
     bloom_filter bf;
     std::unordered_map<tid_t, ShortList> shortlists;
 
     /* only for leaf nodes */
     ShortList vector_indices; // vectors assigned to this leaf node
-    std::unordered_map<tid_t, uint32_t>
-            n_vectors_per_tenant; // TODO: remove this attribute
 
     TreeNode(
             size_t level,
@@ -447,6 +345,29 @@ struct TreeNode {
             delete child;
         }
     }
+
+    bloom_filter init_bloom_filter() const {
+        bloom_parameters bf_params;
+        bf_params.projected_element_count = bf_capacity;
+        bf_params.false_positive_probability = bf_false_pos;
+        bf_params.random_seed = 0xA5A5A5A5;
+        bf_params.compute_optimal_parameters();
+        return bloom_filter(bf_params);
+    }
+
+    bloom_filter recompute_bloom_filter() const {
+        auto bf = init_bloom_filter();
+
+        for (const auto& [tid, shortlist] : shortlists) {
+            bf.insert(tid);
+        }
+
+        for (const auto& child : children) {
+            bf |= child->bf;
+        }
+
+        return bf;
+    }
 };
 
 struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
@@ -456,7 +377,6 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
     size_t max_sl_size;
     size_t n_clusters;
     size_t clus_niter;
-    size_t update_bf_interval;
     size_t max_leaf_size;
 
     /* search parameters */
@@ -468,13 +388,10 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
     TreeNode* tree_root;
     VectorIdAllocator id_allocator;
     TenantIdAllocator tid_allocator;
-    UnorderedVectorStore vec_store;
-    UnorderedAccessMatrix access_matrix;
+    VectorStore vec_store;
 
     /* auxiliary data structures */
-    size_t update_bf_after;
     std::unordered_map<std::string, tid_t> filter_to_label;
-
     bool track_stats = false;
     mutable std::vector<int> search_stats;
 
@@ -486,7 +403,6 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
             size_t bf_capacity = 1000,
             float bf_false_pos = 0.01,
             size_t max_sl_size = 128,
-            size_t update_bf_interval = 100,
             size_t clus_niter = 20,
             size_t max_leaf_size = 128,
             size_t nprobe = 3000,
@@ -513,30 +429,16 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
 
     void train_helper(TreeNode* node, idx_t n, const float* x);
 
-    void add_vector_with_ids(
-            idx_t n,
-            const float* x,
-            const idx_t* labels,
-            tid_t tid) override;
+    void add_vector_with_ids(idx_t n, const float* x, const idx_t* labels)
+            override;
 
     void grant_access(idx_t label, tid_t tid) override;
 
-    void grant_access_helper(
-            TreeNode* node,
-            label_t label,
-            tid_t tid,
-            std::vector<idx_t>& path);
+    void grant_access_helper(TreeNode* node, vid_t vid, tid_t tid);
 
-    bool remove_vector(idx_t label, tid_t tid) override;
+    bool remove_vector(idx_t label) override;
 
     bool revoke_access(idx_t label, tid_t tid) override;
-
-    void update_shortlists_helper(
-            TreeNode* leaf,
-            vid_t vid,
-            const std::vector<tid_t>& tenants);
-
-    void update_bf_helper(TreeNode* leaf);
 
     void search(
             idx_t n,
@@ -599,8 +501,6 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
 
     bool merge_short_list(TreeNode* node, tid_t tid);
 
-    bool merge_short_list_recursively(TreeNode* node, tid_t tid);
-
     void locate_vector(label_t label) const;
 
     void print_tree_info() const;
@@ -610,11 +510,6 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
     std::vector<vid_t> find_all_qualified_vecs(const std::string& filter) const;
 
     void batch_grant_access(const std::vector<vid_t>& vids, tid_t tid);
-
-    void batch_grant_access_helper(
-            TreeNode* node,
-            const std::vector<vid_t>& vids,
-            tid_t tid);
 
     void build_index_for_filter(const std::string& filter);
 

@@ -28,8 +28,7 @@ class Index(ABC):
 
     @search_params.setter
     @abstractmethod
-    def search_params(self, params: dict[str, Any]) -> None:
-        ...
+    def search_params(self, params: dict[str, Any]) -> None: ...
 
     def train(
         self, X: np.ndarray, tenant_ids: Metadata | None = None, **train_params
@@ -45,25 +44,7 @@ class Index(ABC):
         """
         return
 
-    def insert(
-        self, x: np.ndarray, label: int, tenant_ids: list[int] | None = None
-    ) -> None:
-        """Insert a vector into the index for the specified tenants.
-
-        Parameters
-        ----------
-        x : np.ndarray
-            The vector to insert.
-        label : int
-            The external label of the vector, which is used by the user to identify it.
-        tenant_ids : Optional[list[int]], optional
-            The list of tenant IDs that have access to the vector.
-            If None, the vector is accessible to all tenants (no multi-tenancy).
-            This is possible only if multi-tenancy is disabled or it's a query from the admin tenant.
-        """
-        raise NotImplementedError
-
-    def create(self, x: np.ndarray, label: int, tenant_id: int) -> None:
+    def create(self, x: np.ndarray, label: int) -> None:
         """Insert a new vector into the index.
 
         Parameters
@@ -76,8 +57,10 @@ class Index(ABC):
             ID of the tenant that is creating the vector
         """
         raise NotImplementedError
-    
-    def batch_create(self, X: np.ndarray, labels: list[int], tenant_ids: list[list[int]]) -> None:
+
+    def batch_create(
+        self, X: np.ndarray, labels: list[int], tenant_ids: list[list[int]]
+    ) -> None:
         """Insert multiple vectors into the index.
 
         Parameters
@@ -103,23 +86,7 @@ class Index(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
-    def delete(self, label: int, tenant_id: int | None = None) -> None:
-        """Delete a vector from the index.
-
-        Parameters
-        ----------
-        label : int
-            The external label of the vector to delete.
-        tenant_id : Optional[int], optional
-            The ID of the querying tenant.
-            If None, the corresponding vector is deleted from all tenants.
-            This is possible only if multi-tenancy is disabled or it's a query from the admin tenant.
-            Otherwise, the vector is deleted only from the specified tenant.
-        """
-        ...
-
-    def delete_vector(self, label: int, tenant_id: int) -> None:
+    def delete_vector(self, label: int) -> None:
         """Delete a vector from the index.
 
         Parameters

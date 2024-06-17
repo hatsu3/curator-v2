@@ -9,6 +9,7 @@
 #include <faiss/IndexFlat.h>
 #include <faiss/IndexIVFFlat.h>
 #include <faiss/MultiTenantIndexIVFFlat.h>
+#include <faiss/impl/FaissAssert.h>
 
 namespace faiss {
 
@@ -34,11 +35,22 @@ struct MultiTenantIndexIVFFlatSep : MultiTenantIndexIVFFlat {
             idx_t n,
             const float* x,
             const idx_t* xids,
-            tid_t tid) override;
+            tid_t tid);
+
+    void add_vector_with_ids(
+            idx_t n,
+            const float* x,
+            const idx_t* xids) override {
+        FAISS_THROW_MSG("add_vector_with_ids must be called with a tenant id");
+    }
 
     void grant_access(idx_t xid, tid_t tid) override;
 
-    bool remove_vector(idx_t xid, tid_t tid) override;
+    bool remove_vector(idx_t xid, tid_t tid);
+
+    bool remove_vector(idx_t xid) override {
+        FAISS_THROW_MSG("remove_vector must be called with a tenant id");
+    }
 
     bool revoke_access(idx_t xid, tid_t tid) override;
 

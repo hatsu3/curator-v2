@@ -105,7 +105,6 @@ struct MultiTenantIndexHNSW : MultiTenantIndex {
     size_t d, M, ef_construction, ef, max_elements;
 
     AccessMap access_map;
-    std::unordered_map<idx_t, tid_t> vector_owners;
 
     hnswlib::L2Space* space;
     hnswlib::HierarchicalNSW<float>* index;
@@ -126,12 +125,11 @@ struct MultiTenantIndexHNSW : MultiTenantIndex {
     void add_vector_with_ids(
             idx_t n,
             const float* x,
-            const idx_t* xids,
-            tid_t tid) override;
+            const idx_t* xids) override;
 
     void grant_access(idx_t xid, tid_t tid) override;
 
-    bool remove_vector(idx_t xid, tid_t tid) override;
+    bool remove_vector(idx_t xid) override;
 
     bool revoke_access(idx_t xid, tid_t tid) override;
 
@@ -153,7 +151,7 @@ struct MultiTenantIndexHNSW : MultiTenantIndex {
             idx_t* labels,
             const SearchParameters* params = nullptr) const;
 
-    void add_vector(idx_t n, const float* x, tid_t tid) override;
+    void add_vector(idx_t n, const float* x) override;
 
     void range_search(
             idx_t n,

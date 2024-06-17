@@ -49,24 +49,21 @@ MultiTenantIndexIVF::MultiTenantIndexIVF(
 
 MultiTenantIndexIVF::MultiTenantIndexIVF() {}
 
-void MultiTenantIndexIVF::add_vector(idx_t n, const float* x, tid_t tid) {
+void MultiTenantIndexIVF::add_vector(idx_t n, const float* x) {
     // we assume all vectors in x have the same associated tenants
-    add_vector_with_ids(n, x, nullptr, tid);
+    add_vector_with_ids(n, x, nullptr);
 }
 
 void MultiTenantIndexIVF::add_vector_with_ids(
         idx_t n,
         const float* x,
-        const idx_t* xids,
-        tid_t tid) {
+        const idx_t* xids) {
     
     // update access map
     for (idx_t i = 0; i < n; i++) {
         idx_t xid = xids ? xids[i] : ntotal + i;
         auto access_list_it = access_map.find(xid);
         FAISS_THROW_IF_NOT_MSG(access_list_it == access_map.end(), "vector already exists in the index");
-        access_map[xid].insert(tid);
-        vector_owners[xid] = tid;
     }
 
     // add vectors to inverted lists and direct map
@@ -930,13 +927,7 @@ void MultiTenantIndexIVF::reset() {
     ntotal = 0;
 }
 
-bool MultiTenantIndexIVF::remove_vector(idx_t xid, tid_t tid) {
-    // check if the querying tenant is the owner of the vector
-    if (vector_owners.at(xid) != tid) {
-        return false;
-    }
-    vector_owners.erase(xid);
-
+bool MultiTenantIndexIVF::remove_vector(idx_t xid) {
     // remove the vector from the access map
     access_map.erase(xid);
 

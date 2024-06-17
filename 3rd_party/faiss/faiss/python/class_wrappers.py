@@ -776,7 +776,7 @@ def handle_Index(the_class):
 
 
 def handle_MultiTenantIndex(the_class):
-    def replacement_add_vector(self, x, tid):
+    def replacement_add_vector(self, x):
         """Adds vectors to the index.
         The index must be trained before vectors can be added to it.
         The vectors are implicitly numbered in sequence. When `n` vectors are
@@ -795,9 +795,9 @@ def handle_MultiTenantIndex(the_class):
         n, d = x.shape
         assert d == self.d
         x = np.ascontiguousarray(x, dtype="float32")
-        self.add_vector_c(n, swig_ptr(x), tid)
+        self.add_vector_c(n, swig_ptr(x))
 
-    def replacement_add_vector_with_ids(self, x, ids, tid):
+    def replacement_add_vector_with_ids(self, x, ids):
         """Adds vectors with arbitrary ids to the index (not all indexes support this).
         The index must be trained before vectors can be added to it.
         Vector `i` is stored in `x[i]` and has id `ids[i]`.
@@ -819,13 +819,13 @@ def handle_MultiTenantIndex(the_class):
         x = np.ascontiguousarray(x, dtype="float32")
         ids = np.ascontiguousarray(ids, dtype="int64")
         assert ids.shape == (n,), "not same nb of vectors as ids"
-        self.add_vector_with_ids_c(n, swig_ptr(x), swig_ptr(ids), tid)
+        self.add_vector_with_ids_c(n, swig_ptr(x), swig_ptr(ids))
 
     def replacement_grant_access(self, id, tid):
         self.grant_access_c(id, tid)
 
-    def replacement_remove_vector(self, id, tid):
-        self.remove_vector_c(id, tid)
+    def replacement_remove_vector(self, id):
+        self.remove_vector_c(id)
 
     def replacement_revoke_access(self, id, tid):
         self.revoke_access_c(id, tid)

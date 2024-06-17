@@ -119,9 +119,6 @@ class FilteredDiskANN(Index):
     def grant_access(self, label: int, tenant_id: int) -> None:
         raise NotImplementedError("diskann does not support access control")
 
-    def delete(self, label: int, tenant_id: int | None = None) -> None:
-        raise NotImplementedError("diskann does not support deletion")
-
     def delete_vector(self, label: int, tenant_id: int) -> None:
         raise NotImplementedError("diskann does not support deletion")
 

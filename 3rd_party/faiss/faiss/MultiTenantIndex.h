@@ -59,7 +59,7 @@ struct MultiTenantIndex {
      * @param x      input matrix, size n * d
      * @param tid    id of the creator of the vectors
      */
-    virtual void add_vector(idx_t n, const float* x, tid_t tid) = 0;
+    virtual void add_vector(idx_t n, const float* x) = 0;
 
     /** Same as add, but stores xids instead of sequential ids.
      *
@@ -68,7 +68,7 @@ struct MultiTenantIndex {
      *
      * @param xids if non-null, ids to store for the vectors (size n)
      */
-    virtual void add_vector_with_ids(idx_t n, const float* x, const idx_t* xids, tid_t tid) = 0;
+    virtual void add_vector_with_ids(idx_t n, const float* x, const idx_t* xids) = 0;
 
     /** Grant access to a tenant to a vector.
      * 
@@ -136,7 +136,7 @@ struct MultiTenantIndex {
      * @param xid    id of the vector to remove
      * @param tid    id of the tenant that is removing the vector
      */
-    virtual bool remove_vector(idx_t xid, tid_t tid) = 0;
+    virtual bool remove_vector(idx_t xid) = 0;
 
     /** Revokes access to a vector from a tenant.
      *

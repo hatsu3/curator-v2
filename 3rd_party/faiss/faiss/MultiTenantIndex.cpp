@@ -27,7 +27,12 @@ void MultiTenantIndex::range_search(
     FAISS_THROW_MSG("range search not implemented");
 }
 
-void MultiTenantIndex::assign(idx_t n, const float* x, tid_t tid, idx_t* labels, idx_t k) const {
+void MultiTenantIndex::assign(
+        idx_t n,
+        const float* x,
+        tid_t tid,
+        idx_t* labels,
+        idx_t k) const {
     std::vector<float> distances(n * k);
     search(n, x, k, tid, distances.data(), labels);
 }
@@ -35,13 +40,13 @@ void MultiTenantIndex::assign(idx_t n, const float* x, tid_t tid, idx_t* labels,
 void MultiTenantIndex::add_vector_with_ids(
         idx_t /*n*/,
         const float* /*x*/,
-        const idx_t* /*xids*/,
-        tid_t /*tid*/) {
-    FAISS_THROW_MSG("add_vector_with_ids not implemented for this type of index");
+        const idx_t* /*xids*/) {
+    FAISS_THROW_MSG(
+            "add_vector_with_ids not implemented for this type of index");
 }
 
-bool MultiTenantIndex::remove_vector(idx_t xid, tid_t tid) {
-    FAISS_THROW_MSG("remove_vector not implemented for this type of index");    
+bool MultiTenantIndex::remove_vector(idx_t xid) {
+    FAISS_THROW_MSG("remove_vector not implemented for this type of index");
 }
 
 bool MultiTenantIndex::revoke_access(idx_t xid, tid_t tid) {
@@ -52,7 +57,10 @@ void MultiTenantIndex::reconstruct(idx_t, float*) const {
     FAISS_THROW_MSG("reconstruct not implemented for this type of index");
 }
 
-void MultiTenantIndex::reconstruct_batch(idx_t n, const idx_t* keys, float* recons) const {
+void MultiTenantIndex::reconstruct_batch(
+        idx_t n,
+        const idx_t* keys,
+        float* recons) const {
     std::mutex exception_mutex;
     std::string exception_string;
 #pragma omp parallel for if (n > 1000)
@@ -103,7 +111,10 @@ void MultiTenantIndex::search_and_reconstruct(
     }
 }
 
-void MultiTenantIndex::compute_residual(const float* x, float* residual, idx_t key) const {
+void MultiTenantIndex::compute_residual(
+        const float* x,
+        float* residual,
+        idx_t key) const {
     reconstruct(key, residual);
     for (size_t i = 0; i < d; i++) {
         residual[i] = x[i] - residual[i];
@@ -142,7 +153,8 @@ struct GenericDistanceComputer : DistanceComputer {
     std::vector<float> buf;
     const float* q;
 
-    explicit GenericDistanceComputer(const MultiTenantIndex& storage) : storage(storage) {
+    explicit GenericDistanceComputer(const MultiTenantIndex& storage)
+            : storage(storage) {
         d = storage.d;
         buf.resize(d * 2);
     }
@@ -173,11 +185,14 @@ DistanceComputer* MultiTenantIndex::get_distance_computer() const {
     }
 }
 
-void MultiTenantIndex::merge_from(MultiTenantIndex& /* otherIndex */, idx_t /* add_id */) {
+void MultiTenantIndex::merge_from(
+        MultiTenantIndex& /* otherIndex */,
+        idx_t /* add_id */) {
     FAISS_THROW_MSG("merge_from() not implemented");
 }
 
-void MultiTenantIndex::check_compatible_for_merge(const MultiTenantIndex& /* otherIndex */) const {
+void MultiTenantIndex::check_compatible_for_merge(
+        const MultiTenantIndex& /* otherIndex */) const {
     FAISS_THROW_MSG("check_compatible_for_merge() not implemented");
 }
 

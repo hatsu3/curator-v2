@@ -37,44 +37,26 @@ void MultiTenantIndexHNSW::train(idx_t n, const float* x, tid_t tid) {
 void MultiTenantIndexHNSW::add_vector_with_ids(
         idx_t n,
         const float* x,
-        const idx_t* xids,
-        tid_t tid) {
+        const idx_t* xids) {
     for (size_t i = 0; i < n; i++) {
         idx_t label = xids[i];
-
-        // add the vector to the index
         index->addPoint((void*)(x + i * d), label, /*replace_deleted=*/true);
-
-        // update the access map
-        auto it = access_map.find(label);
-        FAISS_THROW_IF_NOT_MSG(it == access_map.end(), "Vector already exists");
-        access_map[label].insert(tid);
-        vector_owners[label] = tid;
+        access_map.emplace(label, std::unordered_set<tid_t>{});
     }
 }
 
 void MultiTenantIndexHNSW::grant_access(idx_t xid, tid_t tid) {
-    // update the access map
     auto it = access_map.find(xid);
     FAISS_THROW_IF_NOT_MSG(it != access_map.end(), "Vector not found");
     it->second.insert(tid);
 }
 
-bool MultiTenantIndexHNSW::remove_vector(idx_t xid, tid_t tid) {
-    // check if the vector is owned by the tenant
-    auto it = vector_owners.find(xid);
-    FAISS_THROW_IF_NOT_MSG(it != vector_owners.end(), "Vector not found");
-    if (it->second != tid) {
-        return false;
-    }
+bool MultiTenantIndexHNSW::remove_vector(idx_t xid) {
+    FAISS_THROW_IF_NOT_MSG(
+            access_map.find(xid) != access_map.end(), "Vector not found");
 
-    // update the access map
-    vector_owners.erase(it);
     access_map.erase(xid);
-
-    // remove the vector from the index
     index->markDelete(xid);
-
     return true;
 }
 
@@ -137,7 +119,7 @@ void MultiTenantIndexHNSW::search(
     });
 }
 
-void MultiTenantIndexHNSW::add_vector(idx_t n, const float* x, tid_t tid) {
+void MultiTenantIndexHNSW::add_vector(idx_t n, const float* x) {
     FAISS_THROW_MSG("Not implemented");
 }
 

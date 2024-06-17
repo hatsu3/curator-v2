@@ -31,8 +31,7 @@ logging.basicConfig(
 
 
 class IndexProfiler:
-    def __init__(self, multi_tenant=True) -> None:
-        self.multi_tenant = multi_tenant
+    def __init__(self):
         self.loaded_dataset = None
 
     def profile(
@@ -74,22 +73,15 @@ class IndexProfiler:
         logging.info("Training index...")
         train_latency = time()
         if index_config.train_params is not None:
-            index.train(
-                train_vecs,
-                train_mds if self.multi_tenant else None,
-                **index_config.train_params,
-            )
+            index.train(train_vecs, train_mds, **index_config.train_params)
         train_latency = time() - train_latency
 
         # insert vectors into the index
         logging.info("Inserting vectors...")
-        (
-            insert_latencies,
-            access_grant_latencies,
-            insert_grant_latencies,
-            vector_creator,
-        ) = self.run_insert(index, train_vecs, train_mds, verbose, log_file)
-        
+        insert_latencies, access_grant_latencies = self.run_insert(
+            index, train_vecs, train_mds, verbose, log_file
+        )
+
         index_size = get_memory_usage() - mem_before_init
 
         # query the index
@@ -112,39 +104,25 @@ class IndexProfiler:
             )
 
         logging.info("Deleting vectors...")
-        delete_latencies, update_latencies = self.run_delete(
-            index, train_vecs, train_mds, vector_creator, verbose, log_file
+        delete_latencies, revoke_access_latencies = self.run_delete(
+            index, train_vecs, train_mds, verbose, log_file
         )
 
-        if self.multi_tenant:
-            res = {
-                "train_latency": train_latency,
-                "index_size_kb": index_size,
-                "query_results": query_results,
-                "insert_latencies": insert_latencies,
-                "access_grant_latencies": access_grant_latencies,
-                "insert_grant_latencies": insert_grant_latencies,
-                "query_latencies": query_latencies,
-                "delete_latencies": delete_latencies,
-                "update_latencies": update_latencies,
-            }
-            return res
-        else:
-            res = {
-                "train_latency": train_latency,
-                "index_size_kb": index_size,
-                "query_results": query_results,
-                "insert_latencies": insert_latencies,
-                "query_latencies": query_latencies,
-                "delete_latencies": delete_latencies,
-            }
-            return res
+        res = {
+            "train_latency": train_latency,
+            "index_size_kb": index_size,
+            "query_results": query_results,
+            "insert_latencies": insert_latencies,
+            "access_grant_latencies": access_grant_latencies,
+            "query_latencies": query_latencies,
+            "delete_latencies": delete_latencies,
+            "revoke_access_latencies": revoke_access_latencies,
+        }
+        return res
 
     def run_insert(self, index, train_vecs, train_mds, verbose, log_file):
         insert_latencies = list()
         access_grant_latencies = list()
-        insert_grant_latencies = list()
-        vector_creator = dict()
 
         # shuffle the order of insertion
         insert_order = np.arange(len(train_vecs))
@@ -155,50 +133,28 @@ class IndexProfiler:
         ):
             label = int(label)
             vec = train_vecs[label]
-            tenant_ids = train_mds[label]
+            access_list = train_mds[label]
 
-            if self.multi_tenant:
-                if len(tenant_ids) == 0:
-                    continue
+            if len(access_list) == 0:
+                continue
 
-                insert_grant_lat = 0
+            insert_start = time()
+            index.create(vec, label)
+            duration = time() - insert_start
+            insert_latencies.append(duration)
 
-                # randomly select a tenant as the creator
-                creator = int(np.random.choice(tenant_ids))  # type: ignore
-                vector_creator[label] = creator
-                others = [tenant_id for tenant_id in tenant_ids if tenant_id != creator]
-
-                insert_start = time()
-                index.create(vec, label, creator)
-                duration = time() - insert_start
-                insert_latencies.append(duration)
-                insert_grant_lat += duration
-
-                if len(others) > 0:
-                    access_grant_start = time()
-                    for tenant_id in others:
-                        index.grant_access(label, int(tenant_id))  # type: ignore
-                    duration = time() - access_grant_start
-                    access_grant_latencies.append(duration / len(others))
-                    insert_grant_lat += duration
-
-                insert_grant_latencies.append(insert_grant_lat)
-            else:
-                insert_start = time()
-                index.insert(vec, label, tenant_ids=None)
-                insert_latencies.append(time() - insert_start)
+            for tenant in access_list:
+                access_grant_start = time()
+                index.grant_access(label, int(tenant))  # type: ignore
+                duration = time() - access_grant_start
+                access_grant_latencies.append(duration)
 
         try:
             index.shrink_to_fit()
         except NotImplementedError:
             pass
 
-        return (
-            insert_latencies,
-            access_grant_latencies,
-            insert_grant_latencies,
-            vector_creator,
-        )
+        return insert_latencies, access_grant_latencies
 
     def run_query(self, index, k, test_vecs, test_mds, verbose, log_file, timeout):
         query_results = list()
@@ -218,15 +174,9 @@ class IndexProfiler:
                 logging.info("Querying is taking too long. Stopping...")
                 break
 
-            if self.multi_tenant:
-                for tenant_id in tenant_ids:
-                    query_start = time()
-                    ids = index.query(vec, k=k, tenant_id=int(tenant_id))
-                    query_latencies.append(time() - query_start)
-                    query_results.append(ids)
-            else:
+            for tenant_id in tenant_ids:
                 query_start = time()
-                ids = index.query(vec, k=k)
+                ids = index.query(vec, k=k, tenant_id=int(tenant_id))
                 query_latencies.append(time() - query_start)
                 query_results.append(ids)
 
@@ -244,10 +194,6 @@ class IndexProfiler:
         log_file,
         timeout,
     ):
-        assert (
-            self.multi_tenant
-        ), "Batch query is only supported for multi-tenant indexes"
-
         query_latencies = list()
 
         pbar = tqdm(
@@ -282,13 +228,12 @@ class IndexProfiler:
         index,
         train_vecs,
         train_mds,
-        vector_creator,
         verbose,
         log_file,
         delete_pct=0.01,
     ):
         delete_latencies = list()
-        update_latencies = list()
+        revoke_access_latencies = list()
 
         delete_order = np.arange(len(train_vecs))
         np.random.shuffle(delete_order)
@@ -299,26 +244,21 @@ class IndexProfiler:
             delete_order, total=len(delete_order), disable=not verbose, file=log_file
         ):
             label = int(label)
-            vec = train_vecs[label]
-            tenant_ids = train_mds[label]
+            access_list = train_mds[label]
 
-            if self.multi_tenant:
-                if len(tenant_ids) == 0:
-                    continue
+            if len(access_list) == 0:
+                continue
 
-                creator = vector_creator[label]
+            for tenant in access_list:
+                revoke_access_start = time()
+                index.revoke_access(label, int(tenant))
+                revoke_access_latencies.append(time() - revoke_access_start)
 
-                delete_start = time()
-                index.delete_vector(label, creator)
-                delete_latencies.append(time() - delete_start)
-                index.create(vec, label, creator)
-                update_latencies.append(time() - delete_start)
-            else:
-                delete_start = time()
-                index.delete(label, tenant_id=None)
-                delete_latencies.append(time() - delete_start)
+            delete_start = time()
+            index.delete_vector(label)
+            delete_latencies.append(time() - delete_start)
 
-        return delete_latencies, update_latencies
+        return delete_latencies, revoke_access_latencies
 
     def profile_worker(self, queue, args):
         index_config, dataset_config, k, __, log_file_path, timeout = args
@@ -530,7 +470,7 @@ class IndexProfiler:
             test_mds,
             k=k,
             metric=metadata["metric"],
-            multi_tenant=self.multi_tenant,
+            multi_tenant=True,
         )
         logging.info("Loading sampled metadata...")
         train_mds, test_mds = load_sampled_metadata(train_mds, test_mds, train_cates)

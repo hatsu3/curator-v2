@@ -143,9 +143,6 @@ struct MultiTenantIndexIVF : MultiTenantIndex, MultiTenantIndexIVFInterface {
     /// maintains the access metadata of vectors
     AccessMap access_map;
 
-    /// keeps track of the creator of each vector
-    std::unordered_map<idx_t, tid_t> vector_owners;
-
     /** The Inverted file takes a quantizer (an Index) on input,
      * which implements the function mapping a vector to a list
      * identifier.
@@ -163,14 +160,13 @@ struct MultiTenantIndexIVF : MultiTenantIndex, MultiTenantIndexIVFInterface {
     void train(idx_t n, const float* x, tid_t tid) override;
 
     /// Calls add_with_ids with NULL ids
-    void add_vector(idx_t n, const float* x, tid_t tid) override;
+    void add_vector(idx_t n, const float* x) override;
 
     /// default implementation that calls encode_vectors
     void add_vector_with_ids(
             idx_t n,
             const float* x,
-            const idx_t* xids,
-            tid_t tid) override;
+            const idx_t* xids) override;
 
     void grant_access(idx_t xid, tid_t tid) override;
 
@@ -330,7 +326,7 @@ struct MultiTenantIndexIVF : MultiTenantIndex, MultiTenantIndexIVFInterface {
 
     /// Dataset manipulation functions
 
-    bool remove_vector(idx_t xid, tid_t tid) override;
+    bool remove_vector(idx_t xid) override;
 
     bool revoke_access(idx_t xid, tid_t tid) override;
 

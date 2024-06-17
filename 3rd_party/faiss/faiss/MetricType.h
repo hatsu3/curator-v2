@@ -50,7 +50,7 @@ constexpr bool is_similarity_metric(MetricType metric_type) {
 }
 
 /// multi-tenancy-related types
-using tid_t = int16_t;    // tenant id
+using tid_t = int16_t;    // internal & external tenant id
 using vid_t = uint64_t;   // internal vector id
 using label_t = uint32_t; // external vector id
 using Buffer = std::vector<vid_t>;

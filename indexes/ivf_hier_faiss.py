@@ -17,7 +17,6 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         bf_capacity: int = 1000,
         bf_error_rate: float = 0.001,
         max_sl_size: int = 128,
-        update_bf_interval: int = 100,
         clus_niter: int = 20,
         max_leaf_size: int = 128,
         nprobe: int = 1200,
@@ -44,7 +43,6 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         self.bf_capacity = bf_capacity
         self.bf_error_rate = bf_error_rate
         self.max_sl_size = max_sl_size
-        self.update_bf_interval = update_bf_interval
         self.clus_niter = clus_niter
         self.max_leaf_size = max_leaf_size
         self.nprobe = nprobe
@@ -60,7 +58,6 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
             self.bf_capacity,
             self.bf_error_rate,
             self.max_sl_size,
-            self.update_bf_interval,
             self.clus_niter,
             self.max_leaf_size,
             self.nprobe,
@@ -76,7 +73,6 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
             "bf_capacity": self.bf_capacity,
             "bf_error_rate": self.bf_error_rate,
             "max_sl_size": self.max_sl_size,
-            "update_bf_interval": self.update_bf_interval,
             "clus_niter": self.clus_niter,
             "max_leaf_size": self.max_leaf_size,
         }
@@ -106,17 +102,14 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
     ) -> None:
         self.index.train(X, 0)  # type: ignore
 
-    def create(self, x: np.ndarray, label: int, tenant_id: int) -> None:
-        self.index.add_vector_with_ids(x[None], [label], tenant_id)  # type: ignore
+    def create(self, x: np.ndarray, label: int) -> None:
+        self.index.add_vector_with_ids(x[None], [label])  # type: ignore
 
     def grant_access(self, label: int, tenant_id: int) -> None:
         self.index.grant_access(label, tenant_id)  # type: ignore
 
-    def delete(self, label: int, tenant_id: int | None = None) -> None:
-        raise NotImplementedError("Use delete_vector instead")
-
-    def delete_vector(self, label: int, tenant_id: int) -> None:
-        self.index.remove_vector(label, tenant_id)  # type: ignore
+    def delete_vector(self, label: int) -> None:
+        self.index.remove_vector(label)  # type: ignore
 
     def revoke_access(self, label: int, tenant_id: int) -> None:
         self.index.revoke_access(label, tenant_id)  # type: ignore
@@ -169,9 +162,9 @@ if __name__ == "__main__":
     print("Testing IVFFlatMultiTenantBFHierFaiss...")
     index = IVFFlatMultiTenantBFHierFaiss(10, 10)
     index.train(np.random.random((400, 10)))
-    index.create(np.random.rand(10), 0, 0)
-    index.create(np.random.rand(10), 1, 0)
-    index.create(np.random.rand(10), 2, 1)
+    index.create(np.random.rand(10), 0)
+    index.create(np.random.rand(10), 1)
+    index.create(np.random.rand(10), 2)
     index.grant_access(2, 2)
     index.enable_stats_tracking(True)
     res = index.query(np.random.rand(10), 2, 0)

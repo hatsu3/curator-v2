@@ -38,12 +38,11 @@ struct MultiTenantIndexIVFFlatBF : MultiTenantIndexIVFFlat {
     void add_vector_with_ids(
             idx_t n,
             const float* x,
-            const idx_t* xids,
-            tid_t tid) override;
+            const idx_t* xids) override;
 
     void grant_access(idx_t xid, tid_t tid) override;
 
-    bool remove_vector(idx_t xid, tid_t tid) override;
+    bool remove_vector(idx_t xid) override;
 
     bool revoke_access(idx_t xid, tid_t tid) override;
 
