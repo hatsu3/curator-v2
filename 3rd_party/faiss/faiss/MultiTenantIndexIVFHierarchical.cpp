@@ -16,7 +16,7 @@
 namespace faiss {
 
 template <>
-const tid_t TenantIdAllocator::INVALID_ID = -1;
+const int_lid_t TenantIdAllocator::INVALID_ID = -1;
 
 template <typename ExtLabel, typename IntLabel>
 IntLabel IdAllocator<ExtLabel, IntLabel>::allocate_id(ExtLabel label) {
@@ -71,7 +71,7 @@ TreeNode::TreeNode(
           bf_false_pos(bf_false_pos) {
     if (parent != nullptr) {
         auto offset =
-                sizeof(vid_t) * 8 - level * CURATOR_MAX_BRANCH_FACTOR_LOG2;
+                sizeof(int_vid_t) * 8 - level * CURATOR_MAX_BRANCH_FACTOR_LOG2;
         this->node_id = parent->node_id | (sibling_id << offset);
     } else {
         this->node_id = 0;
@@ -128,7 +128,7 @@ MultiTenantIndexIVFHierarchical::MultiTenantIndexIVFHierarchical(
 void MultiTenantIndexIVFHierarchical::train(
         idx_t n,
         const float* x,
-        tid_t tid) {
+        ext_lid_t tid) {
     train_helper(tree_root, n, x);
 }
 
@@ -221,16 +221,17 @@ void MultiTenantIndexIVFHierarchical::add_vector_with_ids(
         const float* x,
         const idx_t* labels) {
     for (size_t i = 0; i < n; i++) {
-        label_t label = labels[i];
+        ext_vid_t label = labels[i];
         const float* xi = x + i * d;
 
         // add the vector to the leaf node
         TreeNode* leaf = assign_vec_to_leaf(xi);
-        auto offset = sizeof(vid_t) * 8 -
+        auto offset = sizeof(int_vid_t) * 8 -
                 leaf->level * CURATOR_MAX_BRANCH_FACTOR_LOG2 -
                 CURATOR_MAX_LEAF_SIZE_LOG2;
-        auto local_vid = static_cast<vid_t>(leaf->vector_indices.size());
-        auto vid = leaf->node_id | (local_vid << offset);
+        int_vid_t local_vid =
+                static_cast<int_vid_t>(leaf->vector_indices.size());
+        int_vid_t vid = leaf->node_id | (local_vid << offset);
 
         // add the vector to the vector store and access matrix
         id_allocator.add_mapping(label, vid);
@@ -246,22 +247,22 @@ void MultiTenantIndexIVFHierarchical::add_vector_with_ids(
     }
 }
 
-void MultiTenantIndexIVFHierarchical::grant_access(idx_t label, tid_t tid) {
-    vid_t vid = id_allocator.get_id(label);
-    tid = tid_allocator.get_or_create_id(tid);
-    grant_access_helper(tree_root, vid, tid);
+void MultiTenantIndexIVFHierarchical::grant_access(idx_t label, ext_lid_t ext_tid) {
+    int_vid_t vid = id_allocator.get_id(label);
+    int_lid_t int_tid = tid_allocator.get_or_create_id(ext_tid);
+    grant_access_helper(tree_root, vid, int_tid);
 }
 
 void MultiTenantIndexIVFHierarchical::grant_access_helper(
         TreeNode* node,
-        vid_t vid,
-        tid_t tid) {
+        int_vid_t vid,
+        int_lid_t tid) {
     if (node->children.empty()) {
         auto it = node->shortlists.find(tid);
         if (it != node->shortlists.end()) {
             it->second.insert(vid);
         } else {
-            node->shortlists.emplace(tid, std::vector<vid_t>{vid});
+            node->shortlists.emplace(tid, std::vector<int_vid_t>{vid});
         }
 
         node->bf.insert(tid);
@@ -273,9 +274,9 @@ void MultiTenantIndexIVFHierarchical::grant_access_helper(
                 split_short_list(node, tid);
             }
         } else if (!node->bf.contains(tid)) {
-            node->shortlists.emplace(tid, std::vector<vid_t>{vid});
+            node->shortlists.emplace(tid, std::vector<int_vid_t>{vid});
         } else {
-            auto offset = sizeof(vid_t) * 8 -
+            auto offset = sizeof(int_vid_t) * 8 -
                     (node->level + 1) * CURATOR_MAX_BRANCH_FACTOR_LOG2;
             auto child_id = (vid >> offset) & (CURATOR_MAX_BRANCH_FACTOR - 1);
             grant_access_helper(node->children[child_id], vid, tid);
@@ -286,7 +287,7 @@ void MultiTenantIndexIVFHierarchical::grant_access_helper(
 }
 
 bool MultiTenantIndexIVFHierarchical::remove_vector(idx_t label) {
-    vid_t vid = id_allocator.get_id(label);
+    int_vid_t vid = id_allocator.get_id(label);
     auto leaf = find_assigned_leaf(label);
 
     // update the variance of the tree nodes along the path
@@ -305,15 +306,17 @@ bool MultiTenantIndexIVFHierarchical::remove_vector(idx_t label) {
     return true;
 }
 
-bool MultiTenantIndexIVFHierarchical::revoke_access(idx_t label, tid_t tid) {
-    tid = tid_allocator.get_id(tid);
-    vid_t vid = id_allocator.get_id(label);
+bool MultiTenantIndexIVFHierarchical::revoke_access(
+        idx_t label,
+        ext_lid_t tid) {
+    int_lid_t int_tid = tid_allocator.get_id(tid);
+    int_vid_t vid = id_allocator.get_id(label);
     auto leaf = find_assigned_leaf(label);
 
     // phase 1: find the node that contain shortlist
     auto curr = leaf;
     while (curr != nullptr) {
-        if (curr->shortlists.find(tid) != curr->shortlists.end()) {
+        if (curr->shortlists.find(int_tid) != curr->shortlists.end()) {
             break;
         }
         curr = curr->parent;
@@ -324,15 +327,15 @@ bool MultiTenantIndexIVFHierarchical::revoke_access(idx_t label, tid_t tid) {
             "Cannot find the node that contains the shortlist of the tenant");
 
     // phase 2: remove the vector from the shortlist
-    auto& shortlist = curr->shortlists.at(tid);
+    auto& shortlist = curr->shortlists.at(int_tid);
     shortlist.erase(vid);
     if (shortlist.size() == 0) {
-        curr->shortlists.erase(tid);
+        curr->shortlists.erase(int_tid);
         curr->bf = curr->recompute_bloom_filter();
     }
 
     // phase 3: recursively merge shortlists and update bloom filters
-    while (curr && merge_short_list(curr, tid)) {
+    while (curr && merge_short_list(curr, int_tid)) {
         curr = curr->parent;
     }
 
@@ -343,7 +346,7 @@ void MultiTenantIndexIVFHierarchical::search(
         idx_t n,
         const float* x,
         idx_t k,
-        tid_t tid,
+        ext_lid_t tid,
         float* distances,
         idx_t* labels,
         const SearchParameters* params) const {
@@ -353,7 +356,7 @@ void MultiTenantIndexIVFHierarchical::search(
         return;
     }
 
-    tid = tid_allocator.get_id(tid);
+    int_lid_t int_tid = tid_allocator.get_id(tid);
 
     bool inter_query_parallel = getenv("BATCH_QUERY") != nullptr;
     if (inter_query_parallel) {
@@ -362,7 +365,7 @@ void MultiTenantIndexIVFHierarchical::search(
             search_one(
                     x + i * d,
                     k,
-                    tid,
+                    int_tid,
                     distances + i * k,
                     labels + i * k,
                     params);
@@ -372,7 +375,7 @@ void MultiTenantIndexIVFHierarchical::search(
             search_one(
                     x + i * d,
                     k,
-                    tid,
+                    int_tid,
                     distances + i * k,
                     labels + i * k,
                     params);
@@ -393,7 +396,7 @@ void MultiTenantIndexIVFHierarchical::search(
     // matching in the future
     auto filter_label = filter_to_label.find(filter);
     if (filter_label != filter_to_label.end()) {
-        auto tid = filter_label->second;
+        ext_lid_t tid = filter_label->second;
         search(n, x, k, tid, distances, labels, params);
         return;
     }
@@ -430,7 +433,7 @@ using HeapForL2 = CMax<float, idx_t>;
 void MultiTenantIndexIVFHierarchical::search_one(
         const float* x,
         idx_t k,
-        tid_t tid,
+        int_lid_t tid,
         float* distances,
         idx_t* labels,
         const SearchParameters* params) const {
@@ -552,7 +555,7 @@ void MultiTenantIndexIVFHierarchical::search_one(
         auto new_var_map = std::unordered_map<std::string, State>();
 
         for (const auto& var : var_map->unresolved_vars()) {
-            tid_t tid = std::stoi(var);
+            int_lid_t tid = std::stoi(var);
             auto it = node->shortlists.find(tid);
             if (it != node->shortlists.end()) {
                 new_var_map[var] =
@@ -568,7 +571,7 @@ void MultiTenantIndexIVFHierarchical::search_one(
     // remove vectors in buffer that are not in the subtree rooted at node
     auto remove_external_vecs = [&](const TreeNode* node,
                                     const Buffer& buffer) -> Buffer {
-        auto shift = sizeof(vid_t) * 8 -
+        auto shift = sizeof(int_vid_t) * 8 -
                 CURATOR_MAX_BRANCH_FACTOR_LOG2 * node->level;
         auto shifted_node_id = node->node_id >> shift;
 
@@ -784,11 +787,11 @@ TreeNode* MultiTenantIndexIVFHierarchical::assign_vec_to_leaf(const float* x) {
 }
 
 std::vector<idx_t> MultiTenantIndexIVFHierarchical::get_vector_path(
-        label_t label) const {
+        ext_vid_t label) const {
     std::vector<idx_t> path;
-    auto vid = id_allocator.get_id(label);
+    int_vid_t vid = id_allocator.get_id(label);
     auto curr = tree_root;
-    auto shift = sizeof(vid_t) * 8 - CURATOR_MAX_BRANCH_FACTOR_LOG2;
+    auto shift = sizeof(int_vid_t) * 8 - CURATOR_MAX_BRANCH_FACTOR_LOG2;
     while (!curr->children.empty()) {
         auto child_id = (vid >> shift) & (CURATOR_MAX_BRANCH_FACTOR - 1);
         path.push_back(child_id);
@@ -800,15 +803,15 @@ std::vector<idx_t> MultiTenantIndexIVFHierarchical::get_vector_path(
 
 void MultiTenantIndexIVFHierarchical::split_short_list(
         TreeNode* node,
-        tid_t tid) {
+        int_lid_t tid) {
     if (node->children.empty() ||
         node->shortlists.at(tid).size() <= max_sl_size) {
         return;
     }
 
-    std::vector<std::vector<vid_t>> child_sls(node->children.size());
-    for (vid_t vid : node->shortlists.at(tid)) {
-        auto offset = sizeof(vid_t) * 8 -
+    std::vector<std::vector<int_vid_t>> child_sls(node->children.size());
+    for (int_vid_t vid : node->shortlists.at(tid)) {
+        auto offset = sizeof(int_vid_t) * 8 -
                 CURATOR_MAX_BRANCH_FACTOR_LOG2 * (node->level + 1);
         auto child_id = (vid >> offset) & (CURATOR_MAX_BRANCH_FACTOR - 1);
         child_sls[child_id].push_back(vid);
@@ -836,7 +839,7 @@ void MultiTenantIndexIVFHierarchical::split_short_list(
 
 bool MultiTenantIndexIVFHierarchical::merge_short_list(
         TreeNode* node,
-        tid_t tid) {
+        int_lid_t tid) {
     if (node->parent == nullptr) {
         return false;
     }
@@ -869,7 +872,7 @@ bool MultiTenantIndexIVFHierarchical::merge_short_list(
     return true;
 }
 
-void MultiTenantIndexIVFHierarchical::locate_vector(label_t label) const {
+void MultiTenantIndexIVFHierarchical::locate_vector(ext_vid_t label) const {
     auto path = get_vector_path(label);
 
     printf("Found vector %u at path: ", label);
@@ -948,7 +951,7 @@ std::string MultiTenantIndexIVFHierarchical::convert_complex_predicate(
         auto token = tokens[i];
 
         if (token != "AND" && token != "OR" && token != "NOT") {
-            auto tenant_id = tid_allocator.get_id(std::stol(token));
+            int_lid_t tenant_id = tid_allocator.get_id(std::stol(token));
             token = std::to_string(tenant_id);
         }
 
@@ -961,7 +964,7 @@ std::string MultiTenantIndexIVFHierarchical::convert_complex_predicate(
     return converted_filter;
 }
 
-std::vector<vid_t> MultiTenantIndexIVFHierarchical::find_all_qualified_vecs(
+std::vector<int_vid_t> MultiTenantIndexIVFHierarchical::find_all_qualified_vecs(
         const std::string& filter) const {
     using namespace complex_predicate;
     using Candidate = std::tuple<const TreeNode*, VarMap, State>;
@@ -970,7 +973,7 @@ std::vector<vid_t> MultiTenantIndexIVFHierarchical::find_all_qualified_vecs(
         auto new_var_map = std::unordered_map<std::string, State>();
 
         for (const auto& var : var_map->unresolved_vars()) {
-            tid_t tid = std::stoi(var);
+            int_lid_t tid = std::stoi(var);
             auto it = node->shortlists.find(tid);
             if (it != node->shortlists.end()) {
                 auto state = make_state(Type::SOME, true, it->second.data);
@@ -985,7 +988,7 @@ std::vector<vid_t> MultiTenantIndexIVFHierarchical::find_all_qualified_vecs(
 
     auto remove_external_vecs = [&](const TreeNode* node,
                                     const Buffer& buffer) -> Buffer {
-        auto shift = sizeof(vid_t) * 8 -
+        auto shift = sizeof(int_vid_t) * 8 -
                 CURATOR_MAX_BRANCH_FACTOR_LOG2 * node->level;
         auto shifted_node_id = node->node_id >> shift;
 
@@ -1003,7 +1006,7 @@ std::vector<vid_t> MultiTenantIndexIVFHierarchical::find_all_qualified_vecs(
     auto filter_expr = parse_formula(filter, &var_map_data);
     auto var_map = make_var_map(std::move(var_map_data));
 
-    std::vector<vid_t> qual_vecs;
+    std::vector<int_vid_t> qual_vecs;
     std::queue<Candidate> frontier;
     frontier.emplace(tree_root, var_map, STATE_UNKNOWN);
 
@@ -1051,9 +1054,8 @@ std::vector<vid_t> MultiTenantIndexIVFHierarchical::find_all_qualified_vecs(
 }
 
 void MultiTenantIndexIVFHierarchical::batch_grant_access(
-        const std::vector<vid_t>& vids,
-        tid_t tid) {
-    tid = tid_allocator.get_or_create_id(tid);
+        const std::vector<int_vid_t>& vids,
+        int_lid_t tid) {
     tree_root->shortlists.emplace(tid, vids);
     tree_root->bf.insert(tid);
     split_short_list(tree_root, tid);
@@ -1061,16 +1063,23 @@ void MultiTenantIndexIVFHierarchical::batch_grant_access(
 
 void MultiTenantIndexIVFHierarchical::build_index_for_filter(
         const std::string& filter) {
+    printf("Building index for filter: %s\n", filter.c_str());
     auto converted_filter = convert_complex_predicate(filter);
+
     auto qualified_vecs = find_all_qualified_vecs(converted_filter);
+    printf("Found %lu qualified vectors\n", qualified_vecs.size());
     if (qualified_vecs.empty()) {
         return;
     }
 
-    auto reserved_label = tid_allocator.allocate_reserved_label();
-    auto reserved_tid = tid_allocator.allocate_id(reserved_label);
-    filter_to_label.emplace(filter, reserved_label);
-    batch_grant_access(qualified_vecs, reserved_tid);
+    ext_lid_t filter_label = tid_allocator.allocate_reserved_label();
+    int_lid_t filter_tid = tid_allocator.allocate_id(filter_label);
+    printf("Assigned external ID: %u, internal ID: %u\n",
+           filter_label,
+           filter_tid);
+    filter_to_label.emplace(filter, filter_label);
+
+    batch_grant_access(qualified_vecs, filter_tid);
 }
 
 namespace {
@@ -1087,12 +1096,12 @@ bool check_bloom_filter(
     return node.bf == expected_bf;
 }
 
-std::pair<bool, std::set<tid_t>> check_shortlists(
+std::pair<bool, std::set<int_lid_t>> check_shortlists(
         const MultiTenantIndexIVFHierarchical& index,
         const TreeNode& node) {
     // recursively check the shortlists in the descendant nodes
 
-    std::set<tid_t> shortlists_in_desc;
+    std::set<int_lid_t> shortlists_in_desc;
     for (auto child : node.children) {
         auto [success, sls] = check_shortlists(index, *child);
         if (!success) {
@@ -1113,7 +1122,7 @@ std::pair<bool, std::set<tid_t>> check_shortlists(
     // check 2. shortlist merging should be done correctly
 
     if (!node.children.empty()) {
-        std::set<tid_t> all_tenants;
+        std::set<int_lid_t> all_tenants;
         for (auto child : node.children) {
             for (const auto& [tenant, shortlist] : child->shortlists) {
                 all_tenants.insert(tenant);
@@ -1145,12 +1154,12 @@ std::pair<bool, std::set<tid_t>> check_shortlists(
     // check 3. there should not be two shortlists of the same tenant in any
     // path
 
-    std::set<tid_t> shortlists_in_node;
+    std::set<int_lid_t> shortlists_in_node;
     for (const auto& [tenant, shortlist] : node.shortlists) {
         shortlists_in_node.insert(tenant);
     }
 
-    std::set<tid_t> intersect;
+    std::set<int_lid_t> intersect;
     std::set_intersection(
             shortlists_in_desc.begin(),
             shortlists_in_desc.end(),
@@ -1163,7 +1172,7 @@ std::pair<bool, std::set<tid_t>> check_shortlists(
         return {false, {}};
     }
 
-    std::set<tid_t> all_shortlists;
+    std::set<int_lid_t> all_shortlists;
     std::set_union(
             shortlists_in_desc.begin(),
             shortlists_in_desc.end(),
@@ -1184,10 +1193,10 @@ void MultiTenantIndexIVFHierarchical::sanity_check() const {
 }
 
 TreeNode* MultiTenantIndexIVFHierarchical::find_assigned_leaf(
-        label_t label) const {
-    auto vid = id_allocator.get_id(label);
+        ext_vid_t label) const {
+    int_vid_t vid = id_allocator.get_id(label);
     auto curr = tree_root;
-    auto shift = sizeof(vid_t) * 8 - CURATOR_MAX_BRANCH_FACTOR_LOG2;
+    auto shift = sizeof(int_vid_t) * 8 - CURATOR_MAX_BRANCH_FACTOR_LOG2;
     while (!curr->children.empty()) {
         auto child_id = (vid >> shift) & (CURATOR_MAX_BRANCH_FACTOR - 1);
         curr = curr->children[child_id];

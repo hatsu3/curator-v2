@@ -13,6 +13,11 @@
 
 namespace faiss {
 
+using ext_vid_t = label_t; // external vector ID
+using int_vid_t = vid_t;   // internal vector ID
+using ext_lid_t = tid_t;   // external label/tenant ID
+using int_lid_t = tid_t;   // internal label/tenant ID
+
 /*
  * We define the following constraints for the index because later we will
  * use vector IDs (of type vid_t) to encode the location of vectors in the
@@ -123,24 +128,24 @@ struct IdMapping {
     }
 };
 
-using VectorIdAllocator = IdMapping<label_t, vid_t>;
-using TenantIdAllocator = IdAllocator<tid_t, tid_t>;
+using VectorIdAllocator = IdMapping<ext_vid_t, int_vid_t>;
+using TenantIdAllocator = IdAllocator<ext_lid_t, int_lid_t>;
 
 struct VectorStore {
     size_t d;
-    std::unordered_map<vid_t, std::vector<float>> vecs;
+    std::unordered_map<int_vid_t, std::vector<float>> vecs;
 
     VectorStore(size_t d) : d(d) {}
 
-    void add_vector(const float* vec, vid_t vid) {
+    void add_vector(const float* vec, int_vid_t vid) {
         vecs[vid] = std::vector<float>(vec, vec + d);
     }
 
-    void remove_vector(vid_t vid) {
+    void remove_vector(int_vid_t vid) {
         vecs.erase(vid);
     }
 
-    const float* get_vec(vid_t vid) const {
+    const float* get_vec(int_vid_t vid) const {
         auto it = vecs.find(vid);
         FAISS_THROW_IF_NOT_MSG(it != vecs.end(), "vector does not exist");
         return it->second.data();
@@ -254,59 +259,7 @@ struct SortedList {
     }
 };
 
-using ShortList = SortedList<vid_t>;
-using AccessList = SortedList<tid_t>; // TODO: could be removed
-
-struct AccessMatrix {
-    std::unordered_map<vid_t, AccessList> access_matrix;
-
-    const AccessList& get_access_list(vid_t vid) const {
-        auto it = access_matrix.find(vid);
-        FAISS_THROW_IF_NOT_MSG(
-                it != access_matrix.end(), "vector does not exist");
-        return it->second;
-    }
-
-    void add_vector(vid_t vid) {
-        FAISS_THROW_IF_NOT_MSG(
-                access_matrix.find(vid) == access_matrix.end(),
-                "vector already exists");
-
-        access_matrix.emplace(vid, AccessList());
-    }
-
-    void remove_vector(vid_t vid) {
-        auto it = access_matrix.find(vid);
-        FAISS_THROW_IF_NOT_MSG(
-                it != access_matrix.end(), "vector does not exist");
-
-        access_matrix.erase(it);
-    }
-
-    void grant_access(vid_t vid, tid_t tid) {
-        auto it = access_matrix.find(vid);
-        FAISS_THROW_IF_NOT_MSG(
-                it != access_matrix.end(), "vector does not exist");
-
-        it->second.insert(tid);
-    }
-
-    void revoke_access(vid_t vid, tid_t tid) {
-        auto it = access_matrix.find(vid);
-        FAISS_THROW_IF_NOT_MSG(
-                it != access_matrix.end(), "vector does not exist");
-
-        it->second.erase(tid);
-    }
-
-    bool has_access(vid_t vid, tid_t tid) const {
-        auto it = access_matrix.find(vid);
-        FAISS_THROW_IF_NOT_MSG(
-                it != access_matrix.end(), "vector does not exist");
-
-        return it->second.contains(tid);
-    }
-};
+using ShortList = SortedList<int_vid_t>;
 
 struct TreeNode {
     /* information about the tree structure */
@@ -314,7 +267,7 @@ struct TreeNode {
     size_t sibling_id; // the id of this node among its siblings
     TreeNode* parent;
     std::vector<TreeNode*> children;
-    vid_t node_id;
+    int_vid_t node_id;
 
     /* information about the cluster */
     float* centroid;
@@ -325,7 +278,7 @@ struct TreeNode {
     size_t bf_capacity;
     float bf_false_pos;
     bloom_filter bf;
-    std::unordered_map<tid_t, ShortList> shortlists;
+    std::unordered_map<int_lid_t, ShortList> shortlists;
 
     /* only for leaf nodes */
     ShortList vector_indices; // vectors assigned to this leaf node
@@ -391,7 +344,7 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
     VectorStore vec_store;
 
     /* auxiliary data structures */
-    std::unordered_map<std::string, tid_t> filter_to_label;
+    std::unordered_map<std::string, ext_lid_t> filter_to_label;
     bool track_stats = false;
     mutable std::vector<int> search_stats;
 
@@ -425,26 +378,26 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
      * API functions
      */
 
-    void train(idx_t n, const float* x, tid_t tid) override;
+    void train(idx_t n, const float* x, ext_lid_t tid) override;
 
     void train_helper(TreeNode* node, idx_t n, const float* x);
 
     void add_vector_with_ids(idx_t n, const float* x, const idx_t* labels)
             override;
 
-    void grant_access(idx_t label, tid_t tid) override;
+    void grant_access(idx_t label, ext_lid_t tid) override;
 
-    void grant_access_helper(TreeNode* node, vid_t vid, tid_t tid);
+    void grant_access_helper(TreeNode* node, int_vid_t vid, int_lid_t tid);
 
     bool remove_vector(idx_t label) override;
 
-    bool revoke_access(idx_t label, tid_t tid) override;
+    bool revoke_access(idx_t label, ext_lid_t tid) override;
 
     void search(
             idx_t n,
             const float* x,
             idx_t k,
-            tid_t tid,
+            ext_lid_t tid,
             float* distances,
             idx_t* labels,
             const SearchParameters* params = nullptr) const override;
@@ -469,7 +422,7 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
     void search_one(
             const float* x,
             idx_t k,
-            tid_t tid,
+            int_lid_t tid,
             float* distances,
             idx_t* labels,
             const SearchParameters* params = nullptr) const;
@@ -495,27 +448,28 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
 
     TreeNode* assign_vec_to_leaf(const float* x);
 
-    std::vector<idx_t> get_vector_path(label_t label) const;
+    std::vector<idx_t> get_vector_path(ext_vid_t label) const;
 
-    void split_short_list(TreeNode* node, tid_t tid);
+    void split_short_list(TreeNode* node, int_lid_t tid);
 
-    bool merge_short_list(TreeNode* node, tid_t tid);
+    bool merge_short_list(TreeNode* node, int_lid_t tid);
 
-    void locate_vector(label_t label) const;
+    void locate_vector(ext_vid_t label) const;
 
     void print_tree_info() const;
 
     std::string convert_complex_predicate(const std::string& filter) const;
 
-    std::vector<vid_t> find_all_qualified_vecs(const std::string& filter) const;
+    std::vector<int_vid_t> find_all_qualified_vecs(
+            const std::string& filter) const;
 
-    void batch_grant_access(const std::vector<vid_t>& vids, tid_t tid);
+    void batch_grant_access(const std::vector<int_vid_t>& vids, int_lid_t tid);
 
     void build_index_for_filter(const std::string& filter);
 
     void sanity_check() const;
 
-    TreeNode* find_assigned_leaf(label_t label) const;
+    TreeNode* find_assigned_leaf(ext_vid_t label) const;
 };
 
 } // namespace faiss
