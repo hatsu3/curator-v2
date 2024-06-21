@@ -27,7 +27,7 @@ using int_lid_t = tid_t;   // internal label/tenant ID
 constexpr size_t CURATOR_MAX_BRANCH_FACTOR_LOG2 = 5;
 constexpr size_t CURATOR_MAX_LEAF_SIZE_LOG2 = 8;
 constexpr size_t CURATOR_MAX_TREE_DEPTH =
-        (sizeof(vid_t) * 8 - CURATOR_MAX_LEAF_SIZE_LOG2) /
+        (sizeof(int_vid_t) * 8 - CURATOR_MAX_LEAF_SIZE_LOG2) /
         CURATOR_MAX_BRANCH_FACTOR_LOG2;
 constexpr size_t CURATOR_MAX_BRANCH_FACTOR = 1
         << CURATOR_MAX_BRANCH_FACTOR_LOG2;
@@ -271,7 +271,6 @@ struct TreeNode {
 
     /* information about the cluster */
     float* centroid;
-    IndexFlatL2 quantizer;
     RunningMean variance;
 
     /* available for all nodes */

@@ -41,8 +41,11 @@ MultiTenantIndexIVF::MultiTenantIndexIVF(
           invlists(new ArrayInvertedLists(nlist, code_size)),
           own_invlists(true),
           code_size(code_size) {
-    FAISS_THROW_IF_NOT_MSG(d == quantizer->d, "vector dim mismatch between index and quantizer");
-    FAISS_THROW_IF_NOT_MSG(metric_type == METRIC_L2, "only L2 distance supported");
+    FAISS_THROW_IF_NOT_MSG(
+            d == quantizer->d,
+            "vector dim mismatch between index and quantizer");
+    FAISS_THROW_IF_NOT_MSG(
+            metric_type == METRIC_L2, "only L2 distance supported");
     is_trained = quantizer->is_trained && (quantizer->ntotal == nlist);
     set_direct_map_type(DirectMap::Hashtable);
 }
@@ -58,12 +61,14 @@ void MultiTenantIndexIVF::add_vector_with_ids(
         idx_t n,
         const float* x,
         const idx_t* xids) {
-    
     // update access map
     for (idx_t i = 0; i < n; i++) {
         idx_t xid = xids ? xids[i] : ntotal + i;
         auto access_list_it = access_map.find(xid);
-        FAISS_THROW_IF_NOT_MSG(access_list_it == access_map.end(), "vector already exists in the index");
+        FAISS_THROW_IF_NOT_MSG(
+                access_list_it == access_map.end(),
+                "vector already exists in the index");
+        access_map.emplace(xids[i], std::unordered_set<tid_t>());
     }
 
     // add vectors to inverted lists and direct map
@@ -74,11 +79,16 @@ void MultiTenantIndexIVF::add_vector_with_ids(
 
 void MultiTenantIndexIVF::grant_access(idx_t xid, tid_t tid) {
     auto access_list_it = access_map.find(xid);
-    FAISS_THROW_IF_NOT_MSG(access_list_it != access_map.end(), "vector does not exist in the index");
+    FAISS_THROW_IF_NOT_MSG(
+            access_list_it != access_map.end(),
+            "vector does not exist in the index");
     access_list_it->second.insert(tid);
 }
 
-void MultiTenantIndexIVF::add_sa_codes(idx_t n, const uint8_t* codes, const idx_t* xids) {
+void MultiTenantIndexIVF::add_sa_codes(
+        idx_t n,
+        const uint8_t* codes,
+        const idx_t* xids) {
     size_t coarse_size = coarse_code_size();
     DirectMapAdd dm_adder(direct_map, n, xids);
 
@@ -806,7 +816,8 @@ void MultiTenantIndexIVF::reconstruct(idx_t key, float* recons) const {
     reconstruct_from_offset(lo_listno(lo), lo_offset(lo), recons);
 }
 
-void MultiTenantIndexIVF::reconstruct_n(idx_t i0, idx_t ni, float* recons) const {
+void MultiTenantIndexIVF::reconstruct_n(idx_t i0, idx_t ni, float* recons)
+        const {
     FAISS_THROW_IF_NOT(ni == 0 || (i0 >= 0 && i0 + ni <= ntotal));
 
     for (idx_t list_no = 0; list_no < nlist; list_no++) {
@@ -846,7 +857,8 @@ size_t MultiTenantIndexIVF::sa_code_size() const {
     return code_size + coarse_size;
 }
 
-void MultiTenantIndexIVF::sa_encode(idx_t n, const float* x, uint8_t* bytes) const {
+void MultiTenantIndexIVF::sa_encode(idx_t n, const float* x, uint8_t* bytes)
+        const {
     FAISS_THROW_IF_NOT(is_trained);
     std::unique_ptr<int64_t[]> idx(new int64_t[n]);
     quantizer->assign(n, x, idx.get());
@@ -944,7 +956,11 @@ bool MultiTenantIndexIVF::revoke_access(idx_t xid, tid_t tid) {
     return success;
 }
 
-void MultiTenantIndexIVF::update_vectors(int n, const idx_t* new_ids, const float* x, tid_t tid) {
+void MultiTenantIndexIVF::update_vectors(
+        int n,
+        const idx_t* new_ids,
+        const float* x,
+        tid_t tid) {
     FAISS_THROW_MSG("update_vectors not implemented");
 }
 
@@ -997,7 +1013,8 @@ void MultiTenantIndexIVF::train_encoder(
     }
 }
 
-void MultiTenantIndexIVF::check_compatible_for_merge(const MultiTenantIndex& otherIndex) const {
+void MultiTenantIndexIVF::check_compatible_for_merge(
+        const MultiTenantIndex& otherIndex) const {
     // minimal sanity checks
     const IndexIVF* other = dynamic_cast<const IndexIVF*>(&otherIndex);
     FAISS_THROW_IF_NOT(other);
@@ -1023,7 +1040,9 @@ void MultiTenantIndexIVF::check_compatible_for_merge(const MultiTenantIndex& oth
     }
 }
 
-void MultiTenantIndexIVF::merge_from(MultiTenantIndex& otherIndex, idx_t add_id) {
+void MultiTenantIndexIVF::merge_from(
+        MultiTenantIndex& otherIndex,
+        idx_t add_id) {
     check_compatible_for_merge(otherIndex);
     MultiTenantIndexIVF* other = static_cast<MultiTenantIndexIVF*>(&otherIndex);
     invlists->merge_from(other->invlists, add_id);

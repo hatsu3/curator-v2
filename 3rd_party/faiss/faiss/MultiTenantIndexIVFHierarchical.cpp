@@ -66,7 +66,6 @@ TreeNode::TreeNode(
         : level(level),
           sibling_id(sibling_id),
           parent(parent),
-          quantizer(d),
           bf_capacity(bf_capacity),
           bf_false_pos(bf_false_pos) {
     if (parent != nullptr) {
@@ -159,16 +158,16 @@ void MultiTenantIndexIVFHierarchical::train_helper(
     }
 
     // partition the data into n_clusters clusters
-    node->quantizer.reset();
+    IndexFlatL2 quantizer(d);
     ClusteringParameters cp;
     cp.niter = clus_niter;
     cp.min_points_per_centroid = 1;
     Clustering clus(d, n_clusters, cp);
-    clus.train(n, x, node->quantizer);
-    node->quantizer.is_trained = true;
+    clus.train(n, x, quantizer);
+    quantizer.is_trained = true;
 
     std::vector<idx_t> cluster_ids(n);
-    node->quantizer.assign(n, x, cluster_ids.data());
+    quantizer.assign(n, x, cluster_ids.data());
 
     // sort the vectors by cluster
     std::vector<float> sorted_x(n * d);
@@ -247,7 +246,9 @@ void MultiTenantIndexIVFHierarchical::add_vector_with_ids(
     }
 }
 
-void MultiTenantIndexIVFHierarchical::grant_access(idx_t label, ext_lid_t ext_tid) {
+void MultiTenantIndexIVFHierarchical::grant_access(
+        idx_t label,
+        ext_lid_t ext_tid) {
     int_vid_t vid = id_allocator.get_id(label);
     int_lid_t int_tid = tid_allocator.get_or_create_id(ext_tid);
     grant_access_helper(tree_root, vid, int_tid);
@@ -777,11 +778,21 @@ void MultiTenantIndexIVFHierarchical::search_one(
 
 TreeNode* MultiTenantIndexIVFHierarchical::assign_vec_to_leaf(const float* x) {
     TreeNode* curr = tree_root;
-    idx_t cluster_id;
 
     while (!curr->children.empty()) {
-        curr->quantizer.assign(1, x, &cluster_id);
-        curr = curr->children[cluster_id];
+        idx_t child_id;
+        float min_dist = std::numeric_limits<float>::max();
+
+        for (auto i = 0; i < curr->children.size(); i++) {
+            auto child_centroid = curr->children[i]->centroid;
+            float dist = fvec_L2sqr(x, child_centroid, d);
+            if (dist < min_dist) {
+                min_dist = dist;
+                child_id = i;
+            }
+        }
+
+        curr = curr->children[child_id];
     }
     return curr;
 }
