@@ -1216,4 +1216,121 @@ TreeNode* MultiTenantIndexIVFHierarchical::find_assigned_leaf(
     return curr;
 }
 
+void MultiTenantIndexIVFHierarchical::memory_usage() const {
+    auto unordered_map_memory_usage = [](const auto& map) {
+        const auto& [key, value] = *map.begin();
+        size_t per_elem = sizeof(key) + sizeof(value) + sizeof(void*);
+        return map.bucket_count() * sizeof(void*) + map.size() * per_elem;
+    };
+
+    auto vector_memory_usage = [](const auto& vec) {
+        return vec.capacity() * sizeof(*vec.begin());
+    };
+
+    auto vector_payload_size = [](const auto& vec) {
+        return vec.size() * sizeof(*vec.begin());
+    };
+
+    auto bloom_filter_size = [](bloom_filter& bf) {
+        return sizeof(unsigned int) * bf.hash_count() + bf.size() / 8 +
+                sizeof(unsigned int) + 4 * sizeof(unsigned long long int) +
+                sizeof(double);
+    };
+
+    auto short_list_size = [&](const ShortList& sl) {
+        return vector_memory_usage(sl.data);
+    };
+
+    auto short_lists_size = [&](const auto& shortlists) {
+        size_t size = unordered_map_memory_usage(shortlists);
+        for (const auto& [lid, sl] : shortlists) {
+            size += short_list_size(sl);
+        }
+        return size;
+    };
+
+    auto short_lists_payload_size = [&](const auto& shortlists) {
+        size_t size = 0;
+        for (const auto& [lid, sl] : shortlists) {
+            size += vector_payload_size(sl.data);
+        }
+        return size;
+    };
+
+    auto node_attrs_size = [&](const TreeNode* node) {
+        return sizeof(size_t) * 3 + sizeof(void*) * 2 + sizeof(int_vid_t) +
+                sizeof(float) + sizeof(RunningMean) + sizeof(node->children) +
+                sizeof(node->shortlists);
+    };
+
+    size_t vec_store_total_size = unordered_map_memory_usage(vec_store.vecs);
+    for (const auto& [vid, vec] : vec_store.vecs) {
+        vec_store_total_size += vector_memory_usage(vec);
+    }
+
+    size_t id_allocator_size =
+            unordered_map_memory_usage(id_allocator.label_to_id) +
+            unordered_map_memory_usage(id_allocator.id_to_label);
+
+    size_t tid_allocator_size =
+            unordered_map_memory_usage(tid_allocator.label_to_id) +
+            vector_memory_usage(tid_allocator.id_to_label);
+
+    size_t id_allocator_total_size = id_allocator_size + tid_allocator_size;
+
+    size_t num_tree_nodes = 0;
+    size_t bloom_filter_total_size = 0;
+    size_t short_lists_total_size = 0;
+    size_t short_lists_payload_total_size = 0;
+    size_t vector_indices_total_size = 0;
+    size_t centroid_total_size = 0;
+    size_t node_attrs_total_size = 0;
+
+    std::queue<TreeNode*> q;
+    q.push(tree_root);
+
+    while (!q.empty()) {
+        TreeNode* node = q.front();
+        q.pop();
+
+        num_tree_nodes++;
+        bloom_filter_total_size += bloom_filter_size(node->bf);
+        short_lists_total_size += short_lists_size(node->shortlists);
+        short_lists_payload_total_size +=
+                short_lists_payload_size(node->shortlists);
+        centroid_total_size += sizeof(float) * this->d;
+        node_attrs_total_size += node_attrs_size(node);
+
+        if (node->children.empty()) {
+            vector_indices_total_size += short_list_size(node->vector_indices);
+        } else {
+            for (TreeNode* child : node->children) {
+                q.push(child);
+            }
+        }
+    }
+
+    size_t total_memory_usage = 0;
+    total_memory_usage = sizeof(MultiTenantIndexIVFHierarchical);
+    total_memory_usage += vec_store_total_size;
+    total_memory_usage += id_allocator_total_size;
+    total_memory_usage += bloom_filter_total_size;
+    total_memory_usage += short_lists_total_size;
+    total_memory_usage += vector_indices_total_size;
+    total_memory_usage += centroid_total_size;
+    total_memory_usage += node_attrs_total_size;
+
+    printf("Memory usage breakdown:\n");
+    printf("Number of tree nodes: %lu\n", num_tree_nodes);
+    printf("Total memory usage: %lu bytes\n", total_memory_usage);
+    printf("Vector store: %lu bytes\n", vec_store_total_size);
+    printf("ID allocator: %lu bytes\n", id_allocator_total_size);
+    printf("Bloom filters: %lu bytes\n", bloom_filter_total_size);
+    printf("Short lists: %lu bytes\n", short_lists_total_size);
+    printf("Short lists payload: %lu bytes\n", short_lists_payload_total_size);
+    printf("Vector indices: %lu bytes\n", vector_indices_total_size);
+    printf("Centroids: %lu bytes\n", centroid_total_size);
+    printf("Node attributes: %lu bytes\n", node_attrs_total_size);
+}
+
 } // namespace faiss

@@ -469,6 +469,8 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
     void sanity_check() const;
 
     TreeNode* find_assigned_leaf(ext_vid_t label) const;
+
+    void memory_usage() const;
 };
 
 } // namespace faiss
