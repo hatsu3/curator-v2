@@ -101,10 +101,7 @@ MultiTenantIndexIVFHierarchical::MultiTenantIndexIVFHierarchical(
         float prune_thres,
         float variance_boost,
         size_t search_ef,
-        size_t beam_size,
-        bool approx_dists,
-        size_t search_frontier_capacity,
-        bool two_stage)
+        size_t beam_size)
         : MultiTenantIndexIVFFlat(quantizer, d, n_clusters, metric),
           n_clusters(n_clusters),
           bf_capacity(bf_capacity),
@@ -117,10 +114,7 @@ MultiTenantIndexIVFHierarchical::MultiTenantIndexIVFHierarchical(
           prune_thres(prune_thres),
           variance_boost(variance_boost),
           search_ef(search_ef),
-          beam_size(beam_size),
-          approx_dists(approx_dists),
-          search_frontier_capacity(search_frontier_capacity),
-          two_stage(two_stage) {
+          beam_size(beam_size) {
     FAISS_ASSERT_FMT(
             n_clusters <= CURATOR_MAX_BRANCH_FACTOR,
             "n_clusters should be less than or equal to %zu",
@@ -542,48 +536,6 @@ struct RunningList {
 
 using Candidate = std::pair<float, const TreeNode*>;
 
-struct SearchFrontier {
-    std::multiset<Candidate> nodes;
-    int capacity;
-
-    SearchFrontier(int capacity) : capacity(capacity) {}
-
-    bool empty() {
-        return nodes.empty();
-    }
-
-    void push(const Candidate& cand) {
-        auto [score, node] = cand;
-        if (nodes.size() < capacity) {
-            nodes.emplace(score, node);
-        } else {
-            auto back_it = std::prev(nodes.end());
-            if (score < back_it->first) {
-                nodes.erase(back_it);
-                nodes.emplace(score, node);
-            }
-        }
-    }
-
-    void emplace(float score, const TreeNode* node) {
-        push({score, node});
-    }
-
-    Candidate top() {
-        return *nodes.begin();
-    }
-
-    void pop() {
-        if (!nodes.empty()) {
-            nodes.erase(nodes.begin());
-        }
-    }
-
-    void reset() {
-        nodes.clear();
-    }
-};
-
 inline float node_score(
         const TreeNode* node,
         const float* x,
@@ -664,36 +616,6 @@ inline std::vector<Candidate> beam_search(
     return beam;
 }
 
-inline void compute_approx_dists_with_prefetch(
-        const TreeNode* node,
-        const std::vector<int_vid_t>& buffer,
-        const float* x,
-        int d,
-        std::vector<float>& child_dists,
-        std::vector<std::pair<float, int_vid_t>>& output) {
-    FAISS_ASSERT_MSG(
-            !node->children.empty(),
-            "calc_approx_dists should only be called on non-leaf nodes");
-
-    child_dists.resize(node->children.size());
-
-    auto centroid = node->children[0]->centroid;
-    for (size_t i = 0; i < node->children.size() - 1; i++) {
-        auto next_centroid = node->children[i + 1]->centroid;
-        prefetch_L1(next_centroid);
-        child_dists[i] = fvec_L2sqr(x, centroid, d);
-        centroid = next_centroid;
-    }
-    child_dists.back() = fvec_L2sqr(x, centroid, d);
-
-    auto offset = sizeof(int_vid_t) * 8 -
-            (node->level + 1) * CURATOR_MAX_BRANCH_FACTOR_LOG2;
-    for (auto vid : buffer) {
-        auto child_id = (vid >> offset) & (CURATOR_MAX_BRANCH_FACTOR - 1);
-        output.emplace_back(child_dists[child_id], vid);
-    }
-}
-
 inline void compute_dists_with_prefetch(
         const MultiTenantIndexIVFHierarchical& index,
         const std::vector<int_vid_t>& vids,
@@ -703,16 +625,82 @@ inline void compute_dists_with_prefetch(
         return;
     }
 
-    auto vec = index.vec_store.get_vec(vids[0]);
-    for (size_t i = 0; i < vids.size() - 1; i++) {
-        auto next_vec = index.vec_store.get_vec(vids[i + 1]);
+    size_t n_vids = vids.size();
+
+    if (n_vids >= 8) {
+        std::array<const float*, 4> vecs;
+        std::array<const float*, 4> next_vecs;
+        std::array<float, 4> dists;
+
+        vecs[0] = index.vec_store.get_vec(vids[0]);
+        vecs[1] = index.vec_store.get_vec(vids[1]);
+        vecs[2] = index.vec_store.get_vec(vids[2]);
+        vecs[3] = index.vec_store.get_vec(vids[3]);
+
+        size_t limit = (n_vids / 4 - 1) * 4;
+        for (size_t i = 0; i < limit; i += 4) {
+            next_vecs[0] = index.vec_store.get_vec(vids[i + 4]);
+            prefetch_L1(next_vecs[0]);
+            next_vecs[1] = index.vec_store.get_vec(vids[i + 5]);
+            prefetch_L1(next_vecs[1]);
+            next_vecs[2] = index.vec_store.get_vec(vids[i + 6]);
+            prefetch_L1(next_vecs[2]);
+            next_vecs[3] = index.vec_store.get_vec(vids[i + 7]);
+            prefetch_L1(next_vecs[3]);
+
+            fvec_L2sqr_batch_4(
+                    x,
+                    vecs[0],
+                    vecs[1],
+                    vecs[2],
+                    vecs[3],
+                    index.d,
+                    dists[0],
+                    dists[1],
+                    dists[2],
+                    dists[3]);
+
+            output.emplace_back(dists[0], vids[i]);
+            output.emplace_back(dists[1], vids[i + 1]);
+            output.emplace_back(dists[2], vids[i + 2]);
+            output.emplace_back(dists[3], vids[i + 3]);
+
+            std::swap(vecs, next_vecs);
+        }
+
+        fvec_L2sqr_batch_4(
+                x,
+                vecs[0],
+                vecs[1],
+                vecs[2],
+                vecs[3],
+                index.d,
+                dists[0],
+                dists[1],
+                dists[2],
+                dists[3]);
+
+        output.emplace_back(dists[0], vids[limit]);
+        output.emplace_back(dists[1], vids[limit + 1]);
+        output.emplace_back(dists[2], vids[limit + 2]);
+        output.emplace_back(dists[3], vids[limit + 3]);
+    }
+
+    size_t i = n_vids < 8 ? 0 : n_vids / 4 * 4;
+    if (i == n_vids) {
+        return;
+    }
+
+    const float* vec = index.vec_store.get_vec(vids[i]);
+    for (; i < n_vids - 1; i++) {
+        const float* next_vec = index.vec_store.get_vec(vids[i + 1]);
         prefetch_L1(next_vec);
-        auto dist = fvec_L2sqr(x, vec, index.d);
+        float dist = fvec_L2sqr(x, vec, index.d);
         output.emplace_back(dist, vids[i]);
         vec = next_vec;
     }
 
-    auto dist = fvec_L2sqr(x, vec, index.d);
+    float dist = fvec_L2sqr(x, vec, index.d);
     output.emplace_back(dist, vids.back());
 }
 
@@ -720,7 +708,7 @@ inline void compute_child_scores_with_prefetch(
         const MultiTenantIndexIVFHierarchical& index,
         const TreeNode* node,
         const float* x,
-        SearchFrontier& output) {
+        MinHeap<Candidate>& output) {
     if (node->children.empty()) {
         return;
     }
@@ -748,10 +736,8 @@ void filtered_search_experimental(
         float* distances,
         idx_t* labels,
         int search_ef,
-        int beam_size = 0,
-        bool approx_dists = false,
-        int search_frontier_capacity = 16) {
-    SearchFrontier frontier(search_frontier_capacity);
+        int beam_size = 0) {
+    MinHeap<Candidate> frontier;
 
     if (beam_size > 0) {
         std::vector<Candidate> unexpanded;
@@ -780,13 +766,8 @@ void filtered_search_experimental(
 
         auto it = node->shortlists.find(tid);
         if (it != node->shortlists.end()) {
-            auto& buffer = it->second.data;
-            if (approx_dists && !node->children.empty()) {
-                compute_approx_dists_with_prefetch(
-                        node, buffer, x, index.d, child_dists, sorted_cands);
-            } else {
-                compute_dists_with_prefetch(index, buffer, x, sorted_cands);
-            }
+            compute_dists_with_prefetch(
+                    index, it->second.data, x, sorted_cands);
             std::sort(sorted_cands.begin(), sorted_cands.end());
 
             bool updated = cand_vectors.batch_insert(sorted_cands);
@@ -801,85 +782,6 @@ void filtered_search_experimental(
 
     heap_heapify<HeapForL2>(k, distances, labels);
 
-    auto n_results = std::min(static_cast<size_t>(k), cand_vectors.vids.size());
-    if (approx_dists) {
-        sorted_cands.reserve(cand_vectors.vids.size());
-        compute_dists_with_prefetch(index, cand_vectors.vids, x, sorted_cands);
-        std::sort(sorted_cands.begin(), sorted_cands.end());
-
-        for (size_t i = 0; i < n_results; i++) {
-            labels[i] = index.id_allocator.get_label(sorted_cands[i].second);
-            distances[i] = sorted_cands[i].first;
-        }
-    } else {
-        for (size_t i = 0; i < n_results; i++) {
-            labels[i] = index.id_allocator.get_label(cand_vectors.vids[i]);
-            distances[i] = cand_vectors.dists[i];
-        }
-    }
-}
-
-void filtered_search_experimental_two_stage(
-        const MultiTenantIndexIVFHierarchical& index,
-        const float* x,
-        idx_t k,
-        int_lid_t tid,
-        float* distances,
-        idx_t* labels,
-        int search_ef,
-        int beam_size = 0,
-        int search_frontier_capacity = 16) {
-    SearchFrontier frontier(search_frontier_capacity);
-
-    if (beam_size > 0) {
-        std::vector<Candidate> unexpanded;
-        auto beam = beam_search(index, x, tid, beam_size, unexpanded);
-        for (auto& cand : unexpanded) {
-            frontier.push(cand);
-        }
-        for (auto& cand : beam) {
-            frontier.push(cand);
-        }
-    } else {
-        float score =
-                node_score(index.tree_root, x, index.d, index.variance_boost);
-        frontier.emplace(score, index.tree_root);
-    }
-
-    std::vector<Candidate> buckets;
-
-    while (!frontier.empty()) {
-        auto [score, node] = frontier.top();
-        frontier.pop();
-
-        auto it = node->shortlists.find(tid);
-        if (it != node->shortlists.end()) {
-            buckets.emplace_back(score, node);
-        } else if (node->bf.contains(tid)) {
-            compute_child_scores_with_prefetch(index, node, x, frontier);
-        }
-    }
-
-    std::sort(buckets.begin(), buckets.end());
-
-    RunningList cand_vectors(search_ef);
-    std::vector<std::pair<float, int_vid_t>> sorted_cands;
-    sorted_cands.reserve(index.max_sl_size);
-    std::vector<float> child_dists;
-    child_dists.reserve(index.nlist);
-
-    for (auto [score, node] : buckets) {
-        auto& buffer = node->shortlists.at(tid).data;
-        compute_dists_with_prefetch(index, buffer, x, sorted_cands);
-        std::sort(sorted_cands.begin(), sorted_cands.end());
-        bool updated = cand_vectors.batch_insert(sorted_cands);
-        sorted_cands.clear();
-        if (!updated) {
-            break;
-        }
-    }
-
-    heap_heapify<HeapForL2>(k, distances, labels);
     auto n_results = std::min(static_cast<size_t>(k), cand_vectors.vids.size());
     for (size_t i = 0; i < n_results; i++) {
         labels[i] = index.id_allocator.get_label(cand_vectors.vids[i]);
@@ -898,32 +800,9 @@ void MultiTenantIndexIVFHierarchical::search_one(
     using Candidate = std::pair<float, const TreeNode*>;
 
     if (search_ef > 0) {
-        if (two_stage) {
-            filtered_search_experimental_two_stage(
-                    *this,
-                    x,
-                    k,
-                    tid,
-                    distances,
-                    labels,
-                    search_ef,
-                    beam_size,
-                    search_frontier_capacity);
-            return;
-        } else {
-            filtered_search_experimental(
-                    *this,
-                    x,
-                    k,
-                    tid,
-                    distances,
-                    labels,
-                    search_ef,
-                    beam_size,
-                    approx_dists,
-                    search_frontier_capacity);
-            return;
-        }
+        filtered_search_experimental(
+                *this, x, k, tid, distances, labels, search_ef, beam_size);
+        return;
     }
 
     int n_dists = 0;

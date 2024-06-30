@@ -24,8 +24,8 @@ using int_lid_t = tid_t;   // internal label/tenant ID
  * index. This leads to gaps in the vector ID space, which requires us to
  * use a wider type for vector IDs than necessary.
  */
-constexpr size_t CURATOR_MAX_BRANCH_FACTOR_LOG2 = 5;
-constexpr size_t CURATOR_MAX_LEAF_SIZE_LOG2 = 8;
+constexpr size_t CURATOR_MAX_BRANCH_FACTOR_LOG2 = 6;
+constexpr size_t CURATOR_MAX_LEAF_SIZE_LOG2 = 10;
 constexpr size_t CURATOR_MAX_TREE_DEPTH =
         (sizeof(int_vid_t) * 8 - CURATOR_MAX_LEAF_SIZE_LOG2) /
         CURATOR_MAX_BRANCH_FACTOR_LOG2;
@@ -357,9 +357,6 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
     /* experimental */
     size_t search_ef;
     size_t beam_size;
-    bool approx_dists;
-    size_t search_frontier_capacity;
-    bool two_stage;
 
     MultiTenantIndexIVFHierarchical(
             Index* quantizer,
@@ -375,10 +372,7 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
             float prune_thres = 1.6,
             float variance_boost = 0.4,
             size_t search_ef = 0,
-            size_t beam_size = 2,
-            bool approx_dists = false, 
-            size_t search_frontier_capacity = 16, 
-            bool two_stage = false);
+            size_t beam_size = 2);
 
     ~MultiTenantIndexIVFHierarchical() override {
         delete tree_root;
