@@ -133,12 +133,21 @@ using TenantIdAllocator = IdAllocator<ext_lid_t, int_lid_t>;
 
 struct VectorStore {
     size_t d;
-    std::unordered_map<int_vid_t, std::vector<float>> vecs;
+    size_t alignment;
+    std::unordered_map<int_vid_t, float*> vecs;
 
-    VectorStore(size_t d) : d(d) {}
+    VectorStore(size_t d, size_t alignment = 64) : d(d), alignment(alignment) {}
+
+    ~VectorStore() {
+        for (auto& [vid, vec] : vecs) {
+            free(vec);
+        }
+    }
 
     void add_vector(const float* vec, int_vid_t vid) {
-        vecs[vid] = std::vector<float>(vec, vec + d);
+        auto ptr = std::aligned_alloc(alignment, d * sizeof(float));
+        memcpy(ptr, vec, d * sizeof(float));
+        vecs[vid] = static_cast<float*>(ptr);
     }
 
     void remove_vector(int_vid_t vid) {
@@ -146,9 +155,7 @@ struct VectorStore {
     }
 
     const float* get_vec(int_vid_t vid) const {
-        auto it = vecs.find(vid);
-        FAISS_THROW_IF_NOT_MSG(it != vecs.end(), "vector does not exist");
-        return it->second.data();
+        return vecs.at(vid);
     }
 };
 
@@ -292,7 +299,7 @@ struct TreeNode {
             float bf_false_pos);
 
     ~TreeNode() {
-        delete[] centroid;
+        free(centroid);
         for (TreeNode* child : children) {
             delete child;
         }
@@ -347,6 +354,13 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
     bool track_stats = false;
     mutable std::vector<int> search_stats;
 
+    /* experimental */
+    size_t search_ef;
+    size_t beam_size;
+    bool approx_dists;
+    size_t search_frontier_capacity;
+    bool two_stage;
+
     MultiTenantIndexIVFHierarchical(
             Index* quantizer,
             size_t d,
@@ -359,7 +373,12 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
             size_t max_leaf_size = 128,
             size_t nprobe = 3000,
             float prune_thres = 1.6,
-            float variance_boost = 0.4);
+            float variance_boost = 0.4,
+            size_t search_ef = 0,
+            size_t beam_size = 2,
+            bool approx_dists = false, 
+            size_t search_frontier_capacity = 16, 
+            bool two_stage = false);
 
     ~MultiTenantIndexIVFHierarchical() override {
         delete tree_root;
