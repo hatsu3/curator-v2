@@ -1,8 +1,6 @@
-# Curator: Efficient Indexing for Multi-Tenant Vector Databases
+# Curator: Efficient Tree-Based Vector Indexing for Filtered Search
 
-Curator is an in-memory vector index tailored for multi-tenant queries that simultaneously achieves low memory overhead and high query performance. Curator indexes each tenant’s vectors with a tenant-specific clustering tree and encodes these trees compactly as sub-trees of a shared clustering tree. Each tenant’s clustering tree dynamically adapts to its unique vector distribution, while maintaining a low per-tenant memory footprint. 
-
-Please refer to our paper for more details: [Curator: Efficient Indexing for Multi-Tenant Vector Databases](https://arxiv.org/abs/2401.07119).
+At its core, Curator constructs a memory-efficient clustering tree that indexes all vectors and embeds multiple per-label indexes as sub-trees. These per-label indexes are not only extremely lightweight but also capture the unique vector distribution of each label, leading to high search performance and a low memory footprint. Furthermore, each per-label index can be constructed and updated independently with minimal cost, and multiple per-label indexes can be flexibly composed to handle queries with complex filter predicates.
 
 ## Repository Structure
 
@@ -25,18 +23,8 @@ Please refer to our paper for more details: [Curator: Efficient Indexing for Mul
 
   - `arxiv_dataset.py`: arXiv dataset
   - `yfcc100m_dataset.py`: YFCC100M dataset
-  - `randperm_dataset.py`: synthetic dataset with randomized access metadata (used in ablation study)
 
 - `benchmark`: code for running benchmarks
-
-- `scripts`: scripts for running experiments
-
-  - `run_ablation.sh`: run ablation study experiments
-  - `run_mt_search.sh`: run multi-threaded search experiments
-  - `run_overall_exp.sh`: evaluate overall performance of indexes (query, insert, delete, index size)
-  - `run_param_sweep.sh`: run parameter sweep experiments
-
-- `plotting`: results of experiments and scripts for plotting
 
 ## How to Use
 
