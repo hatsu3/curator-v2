@@ -19,7 +19,7 @@ def recall(results, ground_truth):
             recall.append(0 if len(gt) != 0 else 1)
         else:
             recall.append(len(res.intersection(gt)) / len(res))
-    return np.mean(recall)
+    return np.mean(recall).item()
 
 
 def get_memory_usage():

@@ -1,347 +1,434 @@
-import logging
-import os
-import pickle as pkl
+import subprocess
+import threading
+import time
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from itertools import chain
-from multiprocessing import Process, Queue
-from tempfile import TemporaryDirectory
-from time import time
-from typing import IO, Sequence
+from pathlib import Path
+from queue import Queue
+from typing import Any
 
 import numpy as np
 from tqdm import tqdm
 
 from benchmark.config import DatasetConfig, IndexConfig
-from benchmark.utils import get_memory_usage, recall
+from benchmark.utils import get_dataset_config, get_memory_usage, recall
 from dataset import get_dataset, get_metadata
 from dataset.utils import compute_ground_truth, load_sampled_metadata
 from indexes.base import Index
 
-# if OMP_NUM_THREADS is not set, set it to 1
-if "OMP_NUM_THREADS" not in os.environ:
-    print("OMP_NUM_THREADS not set. Setting it to 1.")
-    os.environ["OMP_NUM_THREADS"] = "1"
-else:
-    print("OMP_NUM_THREADS:", os.environ["OMP_NUM_THREADS"])
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+class Dataset:
+    def __init__(
+        self,
+        train_vecs: np.ndarray,
+        train_mds: list[list[int]],
+        test_vecs: np.ndarray,
+        test_mds: list[list[int]],
+        ground_truth: np.ndarray,
+        all_labels: set[int],
+    ):
+        self.train_vecs = train_vecs
+        self.train_mds = train_mds
+        self.test_vecs = test_vecs
+        self.test_mds = test_mds
+        self.ground_truth = ground_truth
+        self.all_labels = all_labels
+
+    @property
+    def dim(self):
+        return self.train_vecs.shape[1]
+
+    @property
+    def num_labels(self):
+        return len(self.all_labels)
+
+    @property
+    def label_selectivities(self):
+        counter = Counter()
+        for access_list in self.train_mds:
+            counter.update(access_list)
+        return {label: count / len(self.train_vecs) for label, count in counter.items()}
+
+    @property
+    def largest_cardinality(self):
+        return int(max(self.label_selectivities.values()) * len(self.train_vecs))
+
+    def num_vector_label_pairs(self, split: str = "train"):
+        if split == "train":
+            return sum(len(access_list) for access_list in self.train_mds)
+        elif split == "test":
+            return sum(len(access_list) for access_list in self.test_mds)
+        else:
+            raise ValueError(f"Invalid split: {split}")
+
+    def avg_labels_per_vector(self, split: str = "train"):
+        if split == "train":
+            return self.num_vector_label_pairs(split) / len(self.train_vecs)
+        elif split == "test":
+            return self.num_vector_label_pairs(split) / len(self.test_vecs)
+        else:
+            raise ValueError(f"Invalid split: {split}")
+
+    def get_random_split(
+        self, split_n_labels: int, seed: int = 42, remap_labels: bool = False
+    ) -> "Dataset":
+        np.random.seed(seed)
+        split_labels = set(
+            np.random.choice(
+                list(self.all_labels), split_n_labels, replace=False
+            ).tolist()
+        )
+
+        split_train_mds = [
+            [label for label in access_list if label in split_labels]
+            for access_list in self.train_mds
+        ]
+        split_test_mds = [
+            [label for label in access_list if label in split_labels]
+            for access_list in self.test_mds
+        ]
+
+        split_ground_truth = list()
+        orig_gt_gen = iter(self.ground_truth)
+        for access_list in self.test_mds:
+            for label in access_list:
+                gt = next(orig_gt_gen)
+                if label in split_labels:
+                    split_ground_truth.append(gt)
+        split_ground_truth = np.array(split_ground_truth)
+
+        if remap_labels:
+            label_map = {label: i for i, label in enumerate(sorted(split_labels))}
+            split_train_mds = [
+                [label_map[label] for label in access_list]
+                for access_list in split_train_mds
+            ]
+            split_test_mds = [
+                [label_map[label] for label in access_list]
+                for access_list in split_test_mds
+            ]
+
+        return Dataset(
+            train_vecs=self.train_vecs,
+            train_mds=split_train_mds,
+            test_vecs=self.test_vecs,
+            test_mds=split_test_mds,
+            ground_truth=split_ground_truth,
+            all_labels=split_labels,
+        )
+
+    @classmethod
+    def from_dataset_key(
+        cls,
+        dataset_key: str,
+        test_size: float,
+        k: int = 10,
+        verbose: bool = True,
+    ):
+        dataset_config, __ = get_dataset_config(dataset_key, test_size=test_size)
+        return cls.from_config(dataset_config, k=k, verbose=verbose)
+
+    @classmethod
+    def from_config(
+        cls, dataset_config: DatasetConfig, k: int = 10, verbose: bool = True
+    ):
+        if verbose:
+            print("Loading dataset...")
+        train_vecs, test_vecs, metadata = get_dataset(
+            dataset_name=dataset_config.dataset_name, **dataset_config.dataset_params
+        )
+
+        if verbose:
+            print("Loading metadata...")
+        train_mds, test_mds = get_metadata(
+            synthesized=dataset_config.synthesize_metadata,
+            train_vecs=train_vecs,
+            test_vecs=test_vecs,
+            dataset_name=dataset_config.dataset_name,
+            **dataset_config.metadata_params,
+        )
+
+        if verbose:
+            print("Computing/loading ground truth...")
+        ground_truth, all_labels = compute_ground_truth(
+            train_vecs,
+            train_mds,
+            test_vecs,
+            test_mds,
+            k=k,
+            metric=metadata["metric"],
+            multi_tenant=True,
+        )
+
+        if verbose:
+            print("Loading sampled metadata...")
+        train_mds, test_mds = load_sampled_metadata(train_mds, test_mds, all_labels)
+
+        if verbose:
+            print(f"Dataset statistics:")
+            print(f"  # train vectors: {len(train_vecs)}")
+            print(f"  # test vectors: {len(test_vecs)}")
+            print(f"  # labels: {len(all_labels)}")
+
+        return cls(train_vecs, train_mds, test_vecs, test_mds, ground_truth, all_labels)
 
 
 class IndexProfiler:
-    def __init__(self):
-        self.loaded_dataset = None
+    def __init__(self, seed: int = 42):
+        self.seed = seed
+        np.random.seed(self.seed)
 
-    def profile(
-        self,
-        index_config: IndexConfig,
-        dataset_config: DatasetConfig,
-        k=10,
-        verbose: bool = True,
-        seed: int = 42,
-        log_file: IO[str] | None = None,
-        timeout: int | None = None,
-    ) -> dict:
-        logging.info(
-            "\n\n"
-            "=========================================\n"
-            "Index config: %s\n"
-            "=========================================\n"
-            "Dataset config: %s\n"
-            "=========================================\n",
-            index_config,
-            dataset_config,
+        self.dataset: Dataset | None = None
+        self.index: Index | None = None
+
+    def set_dataset(self, dataset: Dataset):
+        self.dataset = dataset
+        return self
+
+    def set_index(self, index: Index, track_stats: bool = False):
+        self.index = index
+        if track_stats:
+            self.index.enable_stats_tracking(track_stats)
+        return self
+
+    def set_index_search_params(self, search_params: dict[str, Any]):
+        assert self.index is not None, "Index not set"
+        self.index.search_params = search_params
+        return self
+
+    def do_train(self, train_params: dict[str, Any] | None = None):
+        assert self.index is not None, "Index not set"
+        assert self.dataset is not None, "Dataset not set"
+
+        train_start = time.time()
+        train_params = train_params or {}
+        self.index.train(
+            self.dataset.train_vecs, self.dataset.train_mds, **train_params
         )
 
-        np.random.seed(seed)
-
-        logging.info("Loading dataset...")
-        assert (
-            self.loaded_dataset is not None and self.loaded_dataset[0] == dataset_config
-        ), "Dataset must be loaded before profiling"
-
-        train_vecs, train_mds, test_vecs, test_mds = self.loaded_dataset[1][:4]
-        all_tenant_ids = self.loaded_dataset[1][-1]
-
-        logging.info("Initializing index...")
-        mem_before_init = get_memory_usage()
-        index = self._initialize_index(index_config)
-
-        # train the index (if necessary)
-        logging.info("Training index...")
-        train_latency = time()
-        if index_config.train_params is not None:
-            index.train(train_vecs, train_mds, **index_config.train_params)
-        train_latency = time() - train_latency
-
-        # insert vectors into the index
-        logging.info("Inserting vectors...")
-        insert_latencies, access_grant_latencies = self.run_insert(
-            index, train_vecs, train_mds, verbose, log_file
-        )
-
-        index_size = get_memory_usage() - mem_before_init
-
-        # query the index
-        logging.info("Querying index...")
-        if os.environ.get("BATCH_QUERY") is None:
-            query_results, query_latencies = self.run_query(
-                index, k, test_vecs, test_mds, verbose, log_file, timeout
-            )
-        else:
-            query_results, query_latencies = self.run_batch_query(
-                index,
-                k,
-                test_vecs,
-                test_mds,
-                all_tenant_ids,
-                int(os.environ["OMP_NUM_THREADS"]),
-                verbose,
-                log_file,
-                timeout,
-            )
-
-        logging.info("Deleting vectors...")
-        delete_latencies, revoke_access_latencies = self.run_delete(
-            index, train_vecs, train_mds, verbose, log_file
-        )
-
-        res = {
-            "train_latency": train_latency,
-            "index_size_kb": index_size,
-            "query_results": query_results,
-            "insert_latencies": insert_latencies,
-            "access_grant_latencies": access_grant_latencies,
-            "query_latencies": query_latencies,
-            "delete_latencies": delete_latencies,
-            "revoke_access_latencies": revoke_access_latencies,
+        return {
+            "train_latency": time.time() - train_start,
         }
-        return res
 
-    def run_insert(self, index, train_vecs, train_mds, verbose, log_file):
-        insert_latencies = list()
-        access_grant_latencies = list()
+    def do_insert(self, batch_insert: bool = False, with_labels: bool = True):
+        assert self.index is not None, "Index not set"
+        assert self.dataset is not None, "Dataset not set"
 
-        # shuffle the order of insertion
-        insert_order = np.arange(len(train_vecs))
-        np.random.shuffle(insert_order)
+        if batch_insert:
+            print("Batch inserting vectors...")
+            if with_labels:
+                labels = np.arange(len(self.dataset.train_vecs)).tolist()
+            else:
+                labels = []
 
-        for label in tqdm(
-            insert_order, total=len(train_vecs), disable=not verbose, file=log_file
-        ):
-            label = int(label)
-            vec = train_vecs[label]
-            access_list = train_mds[label]
+            insert_start = time.time()
+            self.index.batch_create(
+                self.dataset.train_vecs, labels, self.dataset.train_mds
+            )
+            results = {
+                "batch_insert_latency": time.time() - insert_start,
+            }
 
-            if len(access_list) == 0:
-                continue
+        else:
+            insert_latencies = list()
+            access_grant_latencies = list()
 
-            insert_start = time()
-            index.create(vec, label)
-            duration = time() - insert_start
-            insert_latencies.append(duration)
+            insert_order = np.arange(len(self.dataset.train_vecs))
+            np.random.shuffle(insert_order)
+            insert_order = insert_order.tolist()
 
-            for tenant in access_list:
-                access_grant_start = time()
-                index.grant_access(label, int(tenant))  # type: ignore
-                duration = time() - access_grant_start
-                access_grant_latencies.append(duration)
+            for label in tqdm(
+                insert_order,
+                total=len(self.dataset.train_vecs),
+                desc="Inserting vectors",
+            ):
+                vec = self.dataset.train_vecs[label]
+                access_list = self.dataset.train_mds[label]
+
+                if len(access_list) == 0:
+                    continue
+
+                insert_start = time.time()
+                self.index.create(vec, label)
+                insert_latencies.append(time.time() - insert_start)
+
+                for tenant in access_list:
+                    access_grant_start = time.time()
+                    self.index.grant_access(label, int(tenant))
+                    access_grant_latencies.append(time.time() - access_grant_start)
+
+            results = {
+                "insert_latencies": insert_latencies,
+                "access_grant_latencies": access_grant_latencies,
+            }
 
         try:
-            index.shrink_to_fit()
+            self.index.shrink_to_fit()
         except NotImplementedError:
             pass
 
-        return insert_latencies, access_grant_latencies
+        return self._compute_metrics(results)
 
-    def run_query(self, index, k, test_vecs, test_mds, verbose, log_file, timeout):
-        query_results = list()
-        query_latencies = list()
-
-        pbar = tqdm(
-            enumerate(zip(test_vecs, test_mds)),
-            total=len(test_vecs),
-            disable=not verbose,
-            desc="Querying index",
-            file=log_file,
-        )
-        for i, (vec, tenant_ids) in pbar:
-            elapsed = pbar.format_dict["elapsed"]
-
-            if i % 100 == 0 and timeout is not None and elapsed > timeout:
-                logging.info("Querying is taking too long. Stopping...")
-                break
-
-            for tenant_id in tenant_ids:
-                query_start = time()
-                ids = index.query(vec, k=k, tenant_id=int(tenant_id))
-                query_latencies.append(time() - query_start)
-                query_results.append(ids)
-
-        return query_results, query_latencies
-
-    def run_batch_query(
+    def do_build(
         self,
-        index,
-        k,
-        test_vecs,
-        test_mds,
-        all_tenant_ids,
-        num_threads,
-        verbose,
-        log_file,
-        timeout,
+        index_config: IndexConfig,
+        track_stats: bool = False,
+        do_train: bool = True,
+        batch_insert: bool = False,
+        with_labels: bool = True,
     ):
-        query_latencies = list()
+        mem_before_build = get_memory_usage()
 
-        pbar = tqdm(
-            all_tenant_ids,
-            desc="Batch querying index",
-            disable=not verbose,
-            file=log_file,
-        )
-        for tenant_id in pbar:
-            if timeout is not None and pbar.format_dict["elapsed"] > timeout:
-                logging.info("Querying is taking too long. Stopping...")
-                break
+        self.set_index(index_config.index_cls(**index_config.index_params), track_stats)
+        train_metrics = self.do_train(index_config.train_params) if do_train else dict()
+        insert_metrics = self.do_insert(batch_insert, with_labels)
 
-            tenant_vecs_mask = np.array(
-                [tenant_id in access_list for access_list in test_mds]
-            )
-            tenant_vecs = test_vecs[tenant_vecs_mask]
+        return {
+            **train_metrics,
+            **insert_metrics,
+            "index_size_kb": get_memory_usage() - mem_before_build,
+        }
 
-            query_start = time()
-            query_results = index.batch_query(
-                tenant_vecs, k=k, tenant_id=int(tenant_id), num_threads=num_threads
-            )
-            batch_query_lat = time() - query_start
-            query_latencies.extend(
-                [batch_query_lat / len(tenant_vecs)] * len(tenant_vecs)
-            )
-
-        return query_results, query_latencies
-
-    def run_delete(
+    def do_query(
         self,
-        index,
-        train_vecs,
-        train_mds,
-        verbose,
-        log_file,
-        delete_pct=0.01,
+        batch_query: bool = False,
+        num_threads: int = 1,
+        k: int = 10,
+        num_runs: int = 1,
+        return_stats: bool = False,
+        return_verbose: bool = False,
     ):
+        if num_runs <= 1:
+            return self.do_query_single_run(
+                batch_query=batch_query,
+                num_threads=num_threads,
+                k=k,
+                return_stats=return_stats,
+                return_verbose=return_verbose,
+            )
+        else:
+            multi_run_results = [
+                self.do_query_single_run(
+                    batch_query=batch_query,
+                    num_threads=num_threads,
+                    k=k,
+                    return_stats=return_stats,
+                    return_verbose=return_verbose,
+                )
+                for _ in range(num_runs)
+            ]
+            return self.aggregate_multi_run_results(multi_run_results)
+
+    def do_query_single_run(
+        self,
+        batch_query: bool = False,
+        num_threads: int = 1,
+        k: int = 10,
+        return_stats: bool = False,
+        return_verbose: bool = False,
+    ):
+        assert self.index is not None, "Index not set"
+        assert self.dataset is not None, "Dataset not set"
+
+        if batch_query:
+            print(f"Batch querying index with {num_threads} threads...")
+            query_start = time.time()
+            query_results = self.index.batch_query(
+                self.dataset.test_vecs,
+                k,
+                self.dataset.test_mds,
+                num_threads=num_threads,
+            )
+            batch_query_latency = time.time() - query_start
+
+            results: dict[str, Any] = {
+                "query_results": query_results,
+                "batch_query_latency": batch_query_latency,
+            }
+
+        else:
+            query_results = list()
+            query_latencies = list()
+            query_stats = list()
+
+            for vec, access_list in tqdm(
+                zip(self.dataset.test_vecs, self.dataset.test_mds),
+                total=len(self.dataset.test_vecs),
+                desc="Querying index",
+            ):
+                for tenant_id in access_list:
+                    query_start = time.time()
+                    ids = self.index.query(vec, k=k, tenant_id=int(tenant_id))
+                    query_latencies.append(time.time() - query_start)
+                    query_results.append(ids)
+
+                    if return_stats:
+                        query_stats.append(self.index.get_search_stats())
+
+            results: dict[str, Any] = {
+                "query_results": query_results,
+                "query_latencies": query_latencies,
+            }
+
+            if return_stats:
+                results["query_stats"] = query_stats
+
+        results["query_recalls"] = [
+            recall([res], [gt])
+            for res, gt in zip(query_results, self.dataset.ground_truth)
+        ]
+        results["recall_at_k"] = np.mean(results["query_recalls"]).item()
+
+        if not return_verbose:
+            results.pop("query_results")
+            results.pop("query_recalls")
+
+        return self._compute_metrics(results, return_verbose=return_verbose)
+
+    def do_delete(self, delete_pct: float = 0.01):
+        assert self.index is not None, "Index not set"
+        assert self.dataset is not None, "Dataset not set"
+
         delete_latencies = list()
         revoke_access_latencies = list()
 
-        delete_order = np.arange(len(train_vecs))
-        np.random.shuffle(delete_order)
-        n_delete = int(len(train_vecs) * delete_pct)
-        delete_order = delete_order[:n_delete]
+        n_vecs = len(self.dataset.train_vecs)
+        n_delete = int(n_vecs * delete_pct)
+        delete_order = np.random.choice(n_vecs, n_delete, replace=False).tolist()
 
         for label in tqdm(
-            delete_order, total=len(delete_order), disable=not verbose, file=log_file
+            delete_order,
+            total=len(delete_order),
+            desc="Deleting vectors",
         ):
-            label = int(label)
-            access_list = train_mds[label]
+            access_list = self.dataset.train_mds[label]
 
             if len(access_list) == 0:
                 continue
 
             for tenant in access_list:
-                revoke_access_start = time()
-                index.revoke_access(label, int(tenant))
-                revoke_access_latencies.append(time() - revoke_access_start)
+                revoke_access_start = time.time()
+                self.index.revoke_access(label, int(tenant))
+                revoke_access_latencies.append(time.time() - revoke_access_start)
 
-            delete_start = time()
-            index.delete_vector(label)
-            delete_latencies.append(time() - delete_start)
+            delete_start = time.time()
+            self.index.delete_vector(label)
+            delete_latencies.append(time.time() - delete_start)
 
-        return delete_latencies, revoke_access_latencies
-
-    def profile_worker(self, queue, args):
-        index_config, dataset_config, k, __, log_file_path, timeout = args
-
-        print("Running experiment for index config:", index_config)
-
-        for handler in logging.root.handlers[:]:
-            logging.root.removeHandler(handler)
-
-        logging.basicConfig(
-            filename=log_file_path,
-            level=logging.INFO,
-            format="%(asctime)s - %(message)s",
+        return self._compute_metrics(
+            {
+                "delete_latencies": delete_latencies,
+                "revoke_access_latencies": revoke_access_latencies,
+            }
         )
 
-        with open(log_file_path, "a") as f:
-            results = self.profile(
-                index_config,
-                dataset_config,
-                k=k,
-                verbose=True,
-                log_file=f,
-                timeout=timeout,
-            )
-
-        print("Single run results:", self._compute_metrics(results))
-        queue.put(results)
-
-    def batch_profile(
-        self,
-        index_configs: Sequence[IndexConfig],
-        dataset_configs: Sequence[DatasetConfig],
-        k: int = 10,
-        num_runs: int = 1,
-        timeout: int | None = 600,
-        verbose: bool = True,
-    ) -> list[dict]:
-        results = list()
-        with TemporaryDirectory(prefix="index_profiler_") as tempdir:
-            print(f"Logging to {tempdir}...")
-
-            for dataset_config in dataset_configs:
-                dataset = self._load_dataset(dataset_config, k=k)
-                self.loaded_dataset = (dataset_config, dataset)
-
-                args_list = [
-                    (
-                        index_config,
-                        dataset_config,
-                        k,
-                        verbose,
-                        os.path.join(tempdir, f"log_{i}.txt"),
-                        timeout,
-                    )
-                    for i, index_config in enumerate(index_configs)
-                ]
-
-                for args in args_list:
-                    res_list = []
-                    for _ in range(num_runs):
-                        queue = Queue()
-                        process = Process(
-                            target=self.profile_worker, args=(queue, args)
-                        )
-                        process.start()
-                        res_list.append(queue.get())
-                        process.join()
-
-                    self._save_per_tenant_metrics(args, res_list)
-                    res_list = [self._compute_metrics(res) for res in res_list]
-                    agg_res = self._aggregate_results(res_list)
-                    print("Index config:", args[0])
-                    print("Aggregated results:", agg_res)
-                    results.append(agg_res)
-
-        return results
-
-    def _compute_metrics(self, results: dict):
-        new_results = dict()
+    def _compute_metrics(self, results: dict, return_verbose: bool = False):
+        new_metrics = dict()
         for metric_name, metric in results.items():
             if metric_name.endswith("latencies"):
                 op_name = metric_name[: -len("_latencies")]
-                new_results.update(
+                new_metrics.update(
                     {
                         f"{op_name}_qps": 1 / np.mean(metric),
                         f"{op_name}_lat_avg": np.mean(metric),
@@ -350,34 +437,28 @@ class IndexProfiler:
                         f"{op_name}_lat_p99": np.percentile(metric, 99),
                     }
                 )
-            elif metric_name == "query_results":
-                assert self.loaded_dataset is not None
-                ground_truth = self.loaded_dataset[1][-2]
-                query_results = metric
-                new_results["recall_at_k"] = recall(
-                    query_results, ground_truth[: len(query_results)]
-                )
+                if return_verbose:
+                    new_metrics[metric_name] = metric
             else:
-                new_results[metric_name] = metric
-        return new_results
+                new_metrics[metric_name] = metric
 
-    def _compute_per_tenant_metrics(self, results: dict):
-        assert self.loaded_dataset is not None
-        test_mds = self.loaded_dataset[1][3]
-        ground_truth = self.loaded_dataset[1][-2]
-        tenant_ids = sorted(self.loaded_dataset[1][-1])
+        return new_metrics
+
+    def compute_per_tenant_metrics(self, query_results: dict):
+        assert self.dataset is not None, "Dataset not set"
+        assert "query_latencies" in query_results, "Batch query not supported"
 
         per_tenant_metrics = dict()
-        for tenant_id in tenant_ids:
+        for tenant_id in self.dataset.all_labels:
             tenant_query_lats = list()
             tenant_query_ress = list()
             tenant_selector = list()
 
             for i, (tid, lat, res) in enumerate(
                 zip(
-                    chain(*test_mds),
-                    results["query_latencies"],
-                    results["query_results"],
+                    chain(*self.dataset.test_mds),
+                    query_results["query_latencies"],
+                    query_results["query_results"],
                 )
             ):
                 if tenant_id == tid:
@@ -385,7 +466,9 @@ class IndexProfiler:
                     tenant_query_ress.append(res)
                     tenant_selector.append(i)
 
-            tenant_gt = ground_truth[tenant_selector][: len(tenant_query_ress)]
+            tenant_gt = self.dataset.ground_truth[tenant_selector][
+                : len(tenant_query_ress)
+            ]
             per_tenant_metrics[tenant_id] = {
                 "query_qps": 1 / np.mean(tenant_query_lats),
                 "query_lat_avg": np.mean(tenant_query_lats),
@@ -397,94 +480,133 @@ class IndexProfiler:
 
         return per_tenant_metrics
 
-    def _save_per_tenant_metrics(self, args, res_list):
-        per_tenant_metric_path = os.environ.get("SAVE_PER_TENANT_METRICS")
-        if per_tenant_metric_path is not None:
-            print("Computing per-tenant metrics using results from the first run...")
-            per_tenant_metrics = self._compute_per_tenant_metrics(res_list[0])
-            with open(per_tenant_metric_path, "wb") as f:
-                pkl.dump(
-                    {
-                        "index_config": str(args[0]),
-                        "dataset_config": str(args[1]),
-                        "per_tenant_metrics": per_tenant_metrics,
-                    },
-                    f,
-                )
-
-    def _aggregate_results(self, res_list: list[dict]):
+    def aggregate_multi_run_results(self, results: list[dict]):
         agg_res = dict()
 
-        for metric_name in res_list[0].keys():
+        for metric_name in results[0].keys():
             if metric_name in ["train_latency", "index_size_kb"]:
                 agg_res[f"{metric_name}_avg"] = np.mean(
-                    [res[metric_name] for res in res_list]
+                    [res[metric_name] for res in results]
                 )
                 agg_res[f"{metric_name}_std"] = np.std(
-                    [res[metric_name] for res in res_list]
+                    [res[metric_name] for res in results]
                 )
                 agg_res[f"{metric_name}_p50"] = np.percentile(
-                    [res[metric_name] for res in res_list], 50
+                    [res[metric_name] for res in results], 50
                 )
 
             elif metric_name in ["recall_at_k"]:
-                if len(set([res[metric_name] for res in res_list])) > 1:
-                    print(
-                        "Warning: recall_at_k is not consistent across runs: "
-                        f"{[res[metric_name] for res in res_list]}. "
-                        "Using the last value."
-                    )
-                agg_res[metric_name] = res_list[-1][metric_name]
+                if len(set([res[metric_name] for res in results])) > 1:
+                    print("Warning: recall_at_k is not consistent across runs")
+                agg_res[metric_name] = results[-1][metric_name]
 
             elif metric_name.endswith("qps"):
                 agg_res[f"{metric_name}_avg"] = np.mean(
-                    [res[metric_name] for res in res_list]
+                    [res[metric_name] for res in results]
                 )
                 agg_res[f"{metric_name}_std"] = np.std(
-                    [res[metric_name] for res in res_list]
+                    [res[metric_name] for res in results]
                 )
 
             else:
-                agg_res[metric_name] = res_list[-1][metric_name]
+                agg_res[metric_name] = results[-1][metric_name]
 
         return agg_res
 
-    def _load_dataset(self, dataset_config: DatasetConfig, k: int):
-        logging.info("Loading dataset...")
-        train_vecs, test_vecs, metadata = get_dataset(
-            dataset_name=dataset_config.dataset_name, **dataset_config.dataset_params
-        )
-        logging.info("Loading metadata...")
-        train_mds, test_mds = get_metadata(
-            synthesized=dataset_config.synthesize_metadata,
-            train_vecs=train_vecs,
-            test_vecs=test_vecs,
-            dataset_name=dataset_config.dataset_name,
-            **dataset_config.metadata_params,
-        )
-        logging.info("Computing ground truth...")
-        ground_truth, train_cates = compute_ground_truth(
-            train_vecs,
-            train_mds,
-            test_vecs,
-            test_mds,
-            k=k,
-            metric=metadata["metric"],
-            multi_tenant=True,
-        )
-        logging.info("Loading sampled metadata...")
-        train_mds, test_mds = load_sampled_metadata(train_mds, test_mds, train_cates)
 
-        # print some statistics about the dataset
-        logging.info("Dataset statistics:")
-        logging.info("  # train vectors: %d", len(train_vecs))
-        logging.info("  # test vectors: %d", len(test_vecs))
-        logging.info("  # unique categories: %d", len(train_cates))
+class BatchProfiler:
+    def __init__(
+        self,
+        cpu_groups: list[str],
+        show_progress: bool = True,
+        log_dir: str | Path | None = None,
+        retry_timeout: int = 10,
+    ):
+        self.cpu_groups = cpu_groups
+        self.show_progress = show_progress
+        self.retry_timeout = retry_timeout
 
-        return train_vecs, train_mds, test_vecs, test_mds, ground_truth, train_cates
+        if log_dir is not None:
+            self.log_dir = Path(log_dir)
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            self.log_dir = None
 
-    def _initialize_index(self, index_config: IndexConfig) -> Index:
-        index = index_config.index_cls(
-            **index_config.index_params, **index_config.search_params
-        )
-        return index
+        self.lock = threading.Lock()
+        self.avail_cpus = set(self.cpu_groups)
+        self.avail_cv = threading.Condition(self.lock)
+
+        self.tasks = Queue()
+        self.progress_bar: tqdm | None = None
+        self.executor = ThreadPoolExecutor(max_workers=len(cpu_groups))
+
+    def _scheduler(self):
+        while not self.tasks.empty():
+            cpus = self._get_available_cpus()
+            task_name, cmd = self.tasks.get()
+            self.executor.submit(self._run_task, cpus, cmd, task_name)
+
+    def _get_available_cpus(self) -> str:
+        with self.avail_cv:
+            while not self.avail_cpus:
+                self.avail_cv.wait()
+            return self.avail_cpus.pop()
+
+    def _run_task(self, cpus: str, cmd: str, task_name: str):
+        if self.log_dir is not None:
+            log_file = self.log_dir / f"{task_name}.log"
+        else:
+            log_file = Path("/dev/null")
+
+        with log_file.open("w") as f:
+            process = subprocess.Popen(
+                f"taskset -c {cpus} \\\n" + cmd,
+                stdout=f,
+                stderr=subprocess.STDOUT,
+                shell=True,
+            )
+            process.wait()
+
+        with self.avail_cv:
+            self.avail_cpus.add(cpus)
+            self.avail_cv.notify()
+
+        self.tasks.task_done()
+
+        if self.progress_bar is not None:
+            self.progress_bar.update(1)
+
+    def build_command(self, module: str, func: str | None = None, **kwargs):
+        cmd = f"python -m {module} \\\n"
+        if func is not None:
+            cmd += f"\t{func} \\\n"
+        for i, (k, v) in enumerate(kwargs.items()):
+            if isinstance(v, list):
+                v = f'"{v}"'
+            cmd += f"\t\t--{k}={v}"
+            if i < len(kwargs) - 1:
+                cmd += " \\\n"
+
+        return cmd
+
+    def submit(self, task_name: str, cmd: str):
+        self.tasks.put((task_name, cmd))
+        if self.progress_bar is None:
+            self.progress_bar = tqdm(
+                total=self.tasks.qsize(),
+                desc="Running tasks",
+                disable=not self.show_progress,
+            )
+        else:
+            self.progress_bar.total = self.tasks.qsize()
+
+    def run(self):
+        self._scheduler()
+
+        self.executor.shutdown(wait=True)
+        self.tasks.join()
+        if self.progress_bar is not None:
+            self.progress_bar.close()
+
+        self.avail_cpus = set(self.cpu_groups)
+        self.executor = ThreadPoolExecutor(max_workers=len(self.cpu_groups))

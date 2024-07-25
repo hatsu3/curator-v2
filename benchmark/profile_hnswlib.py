@@ -118,20 +118,9 @@ class HNSWIndex(Index):
         return result_labels[0].tolist()
 
     def batch_query(
-        self, X: np.ndarray, k: int, tenant_id: int | None = None, num_threads: int = 1
+        self, X: np.ndarray, k: int, access_lists: list[list[int]], num_threads: int = 1
     ) -> list[list[int]]:
-        if self.index is None:
-            raise ValueError("Index is not initialized")
-
-        if tenant_id != self.tenant_id:
-            return []
-
-        if self.index.get_current_count() < k:
-            print("k is greater than number of elements, shrinking k")
-            k = self.index.get_current_count()
-
-        result_labels, __ = self.index.knn_query(X, k=k, num_threads=num_threads)
-        return result_labels.tolist()
+        raise NotImplementedError("Batch querying is not supported for HNSW")
 
     def _create_collection(self, dim: int) -> hnswlib.Index:
         index = hnswlib.Index(space=self.metric, dim=dim)

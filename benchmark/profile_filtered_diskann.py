@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 from functools import partial
 from itertools import product
 from pathlib import Path
@@ -139,7 +138,7 @@ def profile_filtered_diskann(
     self,
     index_config: IndexConfig,
     dataset_config: DatasetConfig,
-    k=10,
+    k: int = 10,
     verbose: bool = True,
     seed: int = 42,
     log_file: IO[str] | None = None,
@@ -159,52 +158,30 @@ def profile_filtered_diskann(
     np.random.seed(seed)
 
     logging.info("Loading dataset...")
-    assert (
-        self.loaded_dataset is not None and self.loaded_dataset[0] == dataset_config
-    ), "Dataset must be loaded before profiling"
-
     train_vecs, train_mds, test_vecs, test_mds = self.loaded_dataset[1][:4]
-    all_tenant_ids = self.loaded_dataset[1][-1]
 
     logging.info("Initializing index...")
     mem_before_init = get_memory_usage()
     index: FilteredDiskANN = self._initialize_index(index_config)
 
-    # training not necessary for filtered diskann
-    logging.info("Training index...")
-    train_latency = 0.0
-
-    # batch insert vectors into the index
     logging.info("Inserting vectors...")
     index.batch_create(train_vecs, [], train_mds)
-    insert_latencies, access_grant_latencies, insert_grant_latencies = [0], [0], [0]
     index_size = get_memory_usage() - mem_before_init
 
-    # query the index
     logging.info("Querying index...")
-    if os.environ.get("BATCH_QUERY") is not None:
-        logging.warning("DiskANN does not support batch queries. Flag ignored.")
-
     query_results, query_latencies = self.run_query(
         index, k, test_vecs, test_mds, verbose, log_file, timeout
     )
 
-    # filtered diskann does not support deletion
-    logging.info("Deleting vectors...")
-    delete_latencies, update_latencies = [0], [0]
-
-    assert self.multi_tenant, "FilteredDiskANN must be multi-tenant"
-
     return {
-        "train_latency": train_latency,
+        "train_latency": 0.0,
         "index_size_kb": index_size,
         "query_results": query_results,
-        "insert_latencies": insert_latencies,
-        "access_grant_latencies": access_grant_latencies,
-        "insert_grant_latencies": insert_grant_latencies,
+        "insert_latencies": [0],
+        "access_grant_latencies": [0],
         "query_latencies": query_latencies,
-        "delete_latencies": delete_latencies,
-        "update_latencies": update_latencies,
+        "delete_latencies": [0],
+        "revoke_access_latencies": [0],
     }
 
 
@@ -263,7 +240,7 @@ def exp_filtered_diskann(
             )
         )
 
-    profiler = IndexProfiler(multi_tenant=True)
+    profiler = IndexProfiler()
     profiler.profile = partial(profile_filtered_diskann, profiler)
     results = profiler.batch_profile(
         index_configs, [dataset_config], num_runs=num_runs, timeout=timeout
