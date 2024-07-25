@@ -59,7 +59,7 @@ class Index(ABC):
         raise NotImplementedError
 
     def batch_create(
-        self, X: np.ndarray, labels: list[int], tenant_ids: list[list[int]]
+        self, X: np.ndarray, labels: list[int], access_lists: list[list[int]]
     ) -> None:
         """Insert multiple vectors into the index.
 
@@ -111,7 +111,7 @@ class Index(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def query(self, x: np.ndarray, k: int, tenant_id: int | None = None) -> list[int]:
+    def query(self, x: np.ndarray, k: int, tenant_id: int) -> list[int]:
         """Query the index for the k nearest neighbors of a vector.
 
         Parameters
@@ -132,8 +132,16 @@ class Index(ABC):
         """
         ...
 
+    def query_with_complex_predicate(
+        self, x: np.ndarray, k: int, predicate: str
+    ) -> list[int]:
+        raise NotImplementedError
+
+    def query_unfiltered(self, x: np.ndarray, k: int) -> list[int]:
+        raise NotImplementedError
+
     def batch_query(
-        self, X: np.ndarray, k: int, tenant_id: int | None = None, num_threads: int = 1
+        self, X: np.ndarray, k: int, access_lists: list[list[int]], num_threads: int = 1
     ) -> list[list[int]]:
         """Query the index for the k nearest neighbors of multiple vectors.
 
@@ -179,4 +187,12 @@ class Index(ABC):
 
     def shrink_to_fit(self) -> None:
         """Shrink the index to fit the current number of elements."""
+        raise NotImplementedError
+
+    def enable_stats_tracking(self, enable: bool) -> None:
+        """Enable tracking of statistics during the query."""
+        raise NotImplementedError
+
+    def get_search_stats(self) -> dict[str, Any]:
+        """Return the search statistics."""
         raise NotImplementedError

@@ -3,16 +3,16 @@ from typing import Any
 import faiss
 import numpy as np
 
-from indexes.base import Index
 from dataset import Metadata
+from indexes.base import Index
 
 
 class IVFFlatMultiTenantSepIndexFaiss(Index):
-    """ IVF-Flat index with per-tenant indexing """
+    """IVF-Flat index with per-tenant indexing"""
 
     def __init__(self, d: int, nlist: int, nprobe: int = 5) -> None:
-        """ Initialize an IVFFlat index.
-        
+        """Initialize an IVFFlat index.
+
         Parameters
         ----------
         d : int
@@ -65,17 +65,17 @@ class IVFFlatMultiTenantSepIndexFaiss(Index):
             X_tenant = X[[tid in tids for tids in tenant_ids]]
             self.index.train(X_tenant, int(tid))  # type: ignore
 
-    def create(self, x: np.ndarray, label: int, tenant_id: int) -> None:
-        self.index.add_vector_with_ids(x[None], [label], tenant_id)  # type: ignore
+        # hack: all vectors are "owned" by tenant -1
+        self.index.train(X, -1)  # type: ignore
+
+    def create(self, x: np.ndarray, label: int) -> None:
+        self.index.add_vector_with_ids(x[None], [label], -1)  # type: ignore
 
     def grant_access(self, label: int, tenant_id: int) -> None:
         self.index.grant_access(label, tenant_id)
 
-    def delete(self, label: int, tenant_id: int | None = None) -> None:
-        raise NotImplementedError("Use delete_vector instead")
-
-    def delete_vector(self, label: int, tenant_id: int) -> None:
-        self.index.remove_vector(label, tenant_id)
+    def delete_vector(self, label: int) -> None:
+        self.index.remove_vector(label, -1)
 
     def revoke_access(self, label: int, tenant_id: int) -> None:
         self.index.revoke_access(label, tenant_id)
@@ -88,7 +88,9 @@ class IVFFlatMultiTenantSepIndexFaiss(Index):
         top_dists, top_ids = self.index.search(x[None], k, tenant_id, params=params)  # type: ignore
         return top_ids[0].tolist()
 
-    def batch_query(self, X: np.ndarray, k: int, tenant_id: int | None = None, num_threads: int = 1) -> list[list[int]]:
-        params = faiss.SearchParametersIVF(nprobe=self.nprobe)  # type: ignore
-        top_dists, top_ids = self.index.search(X, k, tenant_id, params=params)  # type: ignore
-        return top_ids.tolist()
+    def batch_query(
+        self, X: np.ndarray, k: int, access_lists: list[list[int]], num_threads: int = 1
+    ) -> list[list[int]]:
+        raise NotImplementedError(
+            "Batch querying is not supported for IVFFlatMultiTenantSepIndexFaiss"
+        )

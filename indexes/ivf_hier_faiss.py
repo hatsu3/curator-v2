@@ -22,6 +22,8 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         nprobe: int = 1200,
         prune_thres: float = 1.6,
         variance_boost: float = 0.2,
+        search_ef: int = 0,
+        beam_size: int = 1,
     ):
         """Initialize Curator index.
 
@@ -48,6 +50,8 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         self.nprobe = nprobe
         self.prune_thres = prune_thres
         self.variance_boost = variance_boost
+        self.search_ef = search_ef
+        self.beam_size = beam_size
 
         self.quantizer = faiss.IndexFlatL2(self.d)
         self.index = faiss.MultiTenantIndexIVFHierarchical(
@@ -63,6 +67,8 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
             self.nprobe,
             self.prune_thres,
             self.variance_boost,
+            self.search_ef,
+            self.beam_size,
         )
 
     @property
@@ -83,6 +89,8 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
             "nprobe": self.nprobe,
             "prune_thres": self.prune_thres,
             "variance_boost": self.variance_boost,
+            "search_ef": self.search_ef,
+            "beam_size": self.beam_size,
         }
 
     @search_params.setter
@@ -96,6 +104,12 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         if "variance_boost" in params:
             self.variance_boost = params["variance_boost"]
             self.index.variance_boost = self.variance_boost
+        if "search_ef" in params:
+            self.search_ef = params["search_ef"]
+            self.index.search_ef = self.search_ef
+        if "beam_size" in params:
+            self.beam_size = params["beam_size"]
+            self.index.beam_size = self.beam_size
 
     def train(
         self, X: np.ndarray, tenant_ids: Metadata | None = None, **train_params
@@ -118,8 +132,8 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         top_dists, top_ids = self.index.search(x[None], k, tenant_id)  # type: ignore
         return top_ids[0].tolist()
 
-    def query_with_filter(self, x: np.ndarray, k: int, filter: str) -> list[int]:
-        top_dists, top_ids = self.index.search(x[None], k, filter)  # type: ignore
+    def query_with_complex_predicate(self, x: np.ndarray, k: int, predicate: str) -> list[int]:
+        top_dists, top_ids = self.index.search(x[None], k, predicate)  # type: ignore
         return top_ids[0].tolist()
 
     def index_filter(self, filter: str) -> None:
@@ -130,10 +144,9 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         return top_ids[0].tolist()
 
     def batch_query(
-        self, X: np.ndarray, k: int, tenant_id: int | None = None, num_threads: int = 1
+        self, X: np.ndarray, k: int, access_lists: list[list[int]], num_threads: int = 1
     ) -> list[list[int]]:
-        top_dists, top_ids = self.index.search(X, k, tenant_id)  # type: ignore
-        return top_ids.tolist()
+        raise NotImplementedError("Batch querying is not supported for IVFFlatMultiTenantBFHierFaiss")
 
     def enable_stats_tracking(self, enable: bool = True):
         self.index.enable_stats_tracking(enable)

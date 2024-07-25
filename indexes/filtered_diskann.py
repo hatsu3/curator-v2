@@ -52,6 +52,7 @@ class FilteredDiskANN(Index):
 
         self.track_stats: bool = False
         self.search_stats: dict[str, int] = {}
+        self.label_map: dict[int, int] = {}
 
     @property
     def params(self) -> dict[str, Any]:
@@ -91,7 +92,7 @@ class FilteredDiskANN(Index):
             raise RuntimeError("Index has already been loaded")
 
         if len(labels) > 0:
-            raise NotImplementedError("diskann does not support user-specific labels")
+            self.label_map = {i: label for i, label in enumerate(labels)}
 
         tenant_ids_str = [[str(t) for t in ts] for ts in tenant_ids]
 
@@ -142,16 +143,18 @@ class FilteredDiskANN(Index):
             assert isinstance(res, dap.QueryResponseWithStats)
             self.search_stats = {
                 "n_hops": res.hops,
-                "n_ndists": res.dist_comps,
+                "n_dists": res.dist_comps,
             }
 
-        return res.identifiers.tolist()
+        if self.label_map:
+            return [self.label_map[id] for id in res.identifiers.tolist()]
+        else:
+            return res.identifiers.tolist()
 
     def batch_query(
-        self, X: np.ndarray, k: int, tenant_id: int | None = None, num_threads: int = 1
+        self, X: np.ndarray, k: int, access_lists: list[list[int]], num_threads: int = 1
     ) -> list[list[int]]:
-        # diskann does not support batch queries with filtering
-        return [self.query(x, k, tenant_id) for x in X]
+        raise NotImplementedError("diskann does not support batch queries")
 
     def enable_stats_tracking(self, enable: bool = True):
         self.track_stats = enable

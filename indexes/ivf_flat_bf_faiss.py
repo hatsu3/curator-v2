@@ -83,9 +83,6 @@ class IVFFlatMultiTenantBFFaiss(Index):
     def grant_access(self, label: int, tenant_id: int) -> None:
         self.index.grant_access(label, tenant_id)  # type: ignore
 
-    def delete(self, label: int, tenant_id: int | None = None) -> None:
-        raise NotImplementedError("Use delete_vector instead")
-
     def delete_vector(self, label: int, tenant_id: int) -> None:
         self.index.remove_vector(label, tenant_id)  # type: ignore
 

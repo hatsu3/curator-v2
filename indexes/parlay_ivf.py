@@ -2,7 +2,6 @@ import os
 import shutil
 import struct
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +23,8 @@ from indexes.base import Index
 class ParlayIVF(Index):
     def __init__(
         self,
-        index_dir: str = "",
+        dataset_dir: str | Path,
+        index_dir: str | Path = "",
         cluster_size: int = 5000,
         cutoff: int = 10000,
         max_iter: int = 10,
@@ -38,6 +38,9 @@ class ParlayIVF(Index):
         build_threads: int = 8,
         search_threads: int = 1,
     ):
+        self.dataset_dir = Path(dataset_dir)
+        self.dataset_dir.mkdir(parents=True, exist_ok=True)
+
         self.index_dir = index_dir
 
         if index_dir:
@@ -65,6 +68,7 @@ class ParlayIVF(Index):
     @property
     def params(self) -> dict[str, Any]:
         return {
+            "dataset_dir": self.dataset_dir,
             "index_dir": self.index_dir,
             "cluster_size": self.cluster_size,
             "cutoff": self.cutoff,
@@ -81,6 +85,7 @@ class ParlayIVF(Index):
             "tiny_cutoff": self.tiny_cutoff,
             "beam_widths": self.beam_widths,
             "search_limits": self.search_limits,
+            "search_threads": self.search_threads,
         }
 
     @search_params.setter
@@ -102,6 +107,18 @@ class ParlayIVF(Index):
 
         if "search_limits" in value:
             self.search_limits = value["search_limits"]
+
+        if "search_threads" in value:
+            self.search_threads = value["search_threads"]
+
+        self._set_num_threads(self.search_threads)
+        self._set_query_params(k=10)
+
+    @property
+    def dataset_exists(self) -> bool:
+        return (self.dataset_dir / "access_lists.bin").is_file() and (
+            self.dataset_dir / "data.bin"
+        ).is_file()
 
     def _set_num_threads(self, num_threads: int):
         print(f"Setting PARLAY_NUM_THREADS to {num_threads} ...")
@@ -169,10 +186,42 @@ class ParlayIVF(Index):
             file.write(struct.pack("II", n_points, dim))
             file.write(X.astype(np.float32).tobytes())
 
-    def train(
-        self, X: np.ndarray, tenant_ids: list[list[int]] | None = None, **train_params
+    def write_dataset(
+        self, X: np.ndarray, access_lists: list[list[int]], overwrite: bool = False
+    ):
+        assert self.dataset_dir.is_dir(), f"Directory {self.dataset_dir} does not exist"
+        access_lists_fn = self.dataset_dir / "access_lists.bin"
+        vectors_fn = self.dataset_dir / "data.bin"
+
+        if access_lists_fn.is_file() and vectors_fn.is_file() and not overwrite:
+            raise FileExistsError(
+                f"Files {access_lists_fn} and {vectors_fn} already exist. "
+                "Set overwrite=True to overwrite."
+            )
+
+        print(f"Writing dataset to {self.dataset_dir} ...")
+        self._write_access_lists_csr_bin(access_lists, access_lists_fn)
+        self._write_vectors_bin(X, vectors_fn)
+
+    def batch_create(
+        self,
+        X: np.ndarray | None = None,
+        labels: list[int] | None = None,
+        access_lists: list[list[int]] | None = None,
     ) -> None:
-        assert tenant_ids is not None, "ParlayIVF requires tenant_ids during training"
+        if X is not None or access_lists is not None:
+            raise ValueError(
+                "ParlayIVF loads data from files directly during batch insertion"
+            )
+
+        data_path = self.dataset_dir / "data.bin"
+        access_lists_path = self.dataset_dir / "access_lists.bin"
+
+        if not data_path.is_file() or not access_lists_path.is_file():
+            raise FileNotFoundError(
+                f"Data files not found at {data_path} and {access_lists_path}. "
+                f"Use write_dataset to write the dataset to disk first."
+            )
 
         self._set_num_threads(self.build_threads)
         self.index = wp.init_squared_ivf_index("Euclidian", "float")
@@ -184,38 +233,45 @@ class ParlayIVF(Index):
         self.index.set_target_points(self.target_points)
         self.index.set_tiny_cutoff(self.tiny_cutoff)
 
-        with tempfile.TemporaryDirectory() as dataset_dir:
-            access_lists_fn = Path(dataset_dir) / "access_lists.bin"
-            vectors_fn = Path(dataset_dir) / "data.bin"
-            self._write_access_lists_csr_bin(tenant_ids, access_lists_fn)
-            self._write_vectors_bin(X, vectors_fn)
+        self.index.fit_from_filename(
+            str(data_path),
+            str(access_lists_path),
+            self.cutoff,
+            self.cluster_size,
+            self.index_dir,
+            self.weight_classes,
+            False,
+        )
 
-            self.index.fit_from_filename(
-                str(vectors_fn),
-                str(access_lists_fn),
-                self.cutoff,
-                self.cluster_size,
-                self.index_dir,
-                self.weight_classes,
-                False,
-            )
-
-    def delete(self, label: int, tenant_id: int | None = None) -> None:
-        raise NotImplementedError("Deleting is not supported for ParlayIVF")
+        self._set_num_threads(self.search_threads)
+        self._set_query_params(k=10)
 
     def query(self, x: np.ndarray, k: int, tenant_id: int | None = None) -> list[int]:
-        raise NotImplementedError("Querying is not supported for ParlayIVF")
+        assert self.index is not None, "Index must be trained before querying"
+
+        if k != 10:
+            self._set_num_threads(self.search_threads)
+            self._set_query_params(k)
+
+        results, __ = self.index.batch_filter_search(
+            x[None], [wp.QueryFilter(tenant_id)], 1, k  # type: ignore
+        )
+        self.index.reset()
+
+        return results[0]
 
     def batch_query(
         self,
         X: np.ndarray,
         k: int,
         access_lists: list[list[int]],
+        num_threads: int = 1,
     ) -> list[list[int]]:
         assert self.index is not None, "Index must be trained before querying"
 
-        self._set_num_threads(self.search_threads)
-        self._set_query_params(k)
+        if k != 10 or num_threads != self.search_threads:
+            self._set_num_threads(self.search_threads)
+            self._set_query_params(k)
 
         filters = [wp.QueryFilter(tenant) for access_list in access_lists for tenant in access_list]  # type: ignore
         X_expanded = np.repeat(
@@ -229,30 +285,25 @@ class ParlayIVF(Index):
 
         return results
 
-    def batch_and_query(
-        self,
-        X: np.ndarray,
-        k: int,
-        filters: list[str],
-    ) -> list[list[int]]:
+    def query_with_complex_predicate(
+        self, x: np.ndarray, k: int, predicate: str
+    ) -> list[int]:
         assert self.index is not None, "Index must be trained before querying"
 
         self._set_num_threads(self.search_threads)
         self._set_query_params(k)
 
-        parsed_filters = list()
-        for filter in filters:
-            res = parse.parse("AND {} {}", filter)
-            if res is None:
-                raise ValueError(f"Invalid filter: {filter}")
-            assert isinstance(res, parse.Result)
-            t1, t2 = res.fixed
-            parsed_filters.append(wp.QueryFilter(int(t1), int(t2)))  # type: ignore
+        res = parse.parse("AND {} {}", predicate)
+        if res is None:
+            raise ValueError(f"Invalid predicate: {predicate}. Only AND is supported.")
+        assert isinstance(res, parse.Result)
+        t1, t2 = res.fixed
 
-        results, __ = self.index.batch_filter_search(X, parsed_filters, X.shape[0], k)
+        filter = wp.QueryFilter(int(t1), int(t2))  # type: ignore
+        results, __ = self.index.batch_filter_search(x[None], [filter], 1, k)
         self.index.reset()
 
-        return results
+        return results[0]
 
     def __del__(self):
         if self.index_dir and Path(self.index_dir).is_dir():
