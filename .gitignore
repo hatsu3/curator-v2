@@ -5,3 +5,8 @@ logs/
 data/*
 **/__pycache__/
 *.deb
+
+*.log
+*.pdf
+3rd_party/
+graph_curator/
