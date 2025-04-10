@@ -58,6 +58,8 @@
 #include <faiss/IndexBinaryHash.h>
 #include <faiss/IndexBinaryIVF.h>
 
+#include <faiss/IndexACORN.h>
+
 /*************************************************************
  * The I/O format is the content of the class. For objects that are
  * inherited, like Index, a 4-character-code (fourcc) indicates which
@@ -315,6 +317,29 @@ static void write_HNSW(const HNSW* hnsw, IOWriter* f) {
     WRITE1(hnsw->efConstruction);
     WRITE1(hnsw->efSearch);
     WRITE1(hnsw->upper_beam);
+}
+
+static void write_ACORN(const ACORN* hnsw, IOWriter* f) {
+    WRITEVECTOR(hnsw->assign_probas);
+    WRITEVECTOR(hnsw->cum_nneighbor_per_level);
+    WRITEVECTOR(hnsw->levels);
+    WRITEVECTOR(hnsw->offsets);
+    WRITEVECTOR(hnsw->neighbors);
+
+    // added for hybrid version
+    WRITEVECTOR(hnsw->nb_per_level)
+    // WRITEVECTOR(hnsw->metadata)
+
+    WRITE1(hnsw->entry_point);
+    WRITE1(hnsw->max_level);
+    WRITE1(hnsw->efConstruction);
+    WRITE1(hnsw->efSearch);
+    WRITE1(hnsw->upper_beam);
+
+    // added for hybrid version
+    WRITE1(hnsw->gamma);
+    WRITE1(hnsw->M);
+    WRITE1(hnsw->M_beta);
 }
 
 static void write_NSG(const NSG* nsg, IOWriter* f) {
@@ -765,6 +790,15 @@ void write_index(const Index* idx, IOWriter* f) {
         write_index_header(idxhnsw, f);
         write_HNSW(&idxhnsw->hnsw, f);
         write_index(idxhnsw->storage, f);
+    } else if (
+            const IndexACORN* indxacorn =
+                    dynamic_cast<const IndexACORN*>(idx)) {
+        uint32_t h = fourcc("IHNH"); // this needs to be a 4 letter header
+        FAISS_THROW_IF_NOT(h != 0);
+        WRITE1(h);
+        write_index_header(indxacorn, f);
+        write_ACORN(&indxacorn->acorn, f);
+        write_index(indxacorn->storage, f);
     } else if (const IndexNSG* idxnsg = dynamic_cast<const IndexNSG*>(idx)) {
         uint32_t h = dynamic_cast<const IndexNSGFlat*>(idx) ? fourcc("INSf")
                 : dynamic_cast<const IndexNSGPQ*>(idx)      ? fourcc("INSp")

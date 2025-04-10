@@ -188,6 +188,17 @@ struct VisitedTable {
             visno = 1;
         }
     }
+
+    // added for hybrid search
+    int num_visited() {
+        int num = 0;
+        for (int i = 0; i < visited.size(); i++) {
+            if (visited[i] == visno) {
+                num = num + 1;
+            }
+        }
+        return num;
+    }
 };
 
 } // namespace faiss

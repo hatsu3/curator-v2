@@ -57,6 +57,8 @@
 #include <faiss/IndexBinaryHash.h>
 #include <faiss/IndexBinaryIVF.h>
 
+#include <faiss/IndexACORN.h>
+
 namespace faiss {
 
 /*************************************************************
@@ -369,6 +371,27 @@ static void read_HNSW(HNSW* hnsw, IOReader* f) {
     READ1(hnsw->efConstruction);
     READ1(hnsw->efSearch);
     READ1(hnsw->upper_beam);
+}
+
+static void read_ACORN(ACORN* acorn, IOReader* f) {
+    READVECTOR(acorn->assign_probas);
+    READVECTOR(acorn->cum_nneighbor_per_level);
+    READVECTOR(acorn->levels);
+    READVECTOR(acorn->offsets);
+    READVECTOR(acorn->neighbors);
+
+    // added for hybrid version
+    READVECTOR(acorn->nb_per_level);
+    // READVECTOR(acorn->metadata);
+
+    READ1(acorn->entry_point);
+    READ1(acorn->max_level);
+    READ1(acorn->efConstruction);
+    READ1(acorn->efSearch);
+    READ1(acorn->upper_beam);
+    READ1(acorn->gamma);
+    READ1(acorn->M);
+    READ1(acorn->M_beta);
 }
 
 static void read_NSG(NSG* nsg, IOReader* f) {
@@ -956,6 +979,18 @@ Index* read_index(IOReader* f, int io_flags) {
             dynamic_cast<IndexPQ*>(idxhnsw->storage)->pq.compute_sdc_table();
         }
         idx = idxhnsw;
+    } else if (h == fourcc("IHNH")) {
+        // IndexHNSWFlat* idxhnswhybrid = new IndexHNSWFlat();
+        IndexACORN* idxacorn= nullptr;
+        std::vector<int> metadata = {};
+        idxacorn = new IndexACORNFlat(0, 0, 0, metadata, 0);
+        // IndexACORNFlat* idxhnsw = new IndexACORNFlat();
+        // IndexACORN* idxhnsw = new IndexACORNFlat();
+        read_index_header(idxacorn, f);
+        read_ACORN(&idxacorn->acorn, f);
+        idxacorn->storage = read_index(f, io_flags);
+        idxacorn->own_fields = true;
+        idx = idxacorn;
     } else if (
             h == fourcc("INSf") || h == fourcc("INSp") || h == fourcc("INSs")) {
         IndexNSG* idxnsg;
