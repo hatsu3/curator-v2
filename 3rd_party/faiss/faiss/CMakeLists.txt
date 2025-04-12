@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 set(FAISS_SRC
+  roaring/roaring.c
   AutoTune.cpp
   Clustering.cpp
   IVFlib.cpp
@@ -33,6 +34,7 @@ set(FAISS_SRC
   MultiTenantIndexIVFFlatSep.cpp
   complex_predicate.cpp
   MultiTenantIndexIVFHierarchical.cpp
+  IndexHybridCurator.cpp
   MultiTenantIndexHNSW.cpp
   IndexIVFPQ.cpp
   IndexIVFFastScan.cpp
@@ -107,6 +109,7 @@ set(FAISS_SRC
 )
 
 set(FAISS_HEADERS
+  roaring/roaring.hh
   AutoTune.h
   Clustering.h
   IVFlib.h
@@ -136,6 +139,7 @@ set(FAISS_HEADERS
   MultiTenantIndexIVFFlatSep.h
   complex_predicate.h
   MultiTenantIndexIVFHierarchical.h
+  IndexHybridCurator.h
   MultiTenantIndexHNSW.h
   IndexIVFPQ.h
   IndexIVFFastScan.h

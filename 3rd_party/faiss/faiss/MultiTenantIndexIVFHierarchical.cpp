@@ -88,7 +88,6 @@ TreeNode::TreeNode(
 }
 
 MultiTenantIndexIVFHierarchical::MultiTenantIndexIVFHierarchical(
-        Index* quantizer,
         size_t d,
         size_t n_clusters,
         MetricType metric,
@@ -102,12 +101,54 @@ MultiTenantIndexIVFHierarchical::MultiTenantIndexIVFHierarchical(
         float variance_boost,
         size_t search_ef,
         size_t beam_size)
-        : MultiTenantIndexIVFFlat(quantizer, d, n_clusters, metric),
+        : MultiTenantIndex(d, metric),
+          storage(new IndexFlat(d, metric)),
+          own_fields(true),
           n_clusters(n_clusters),
           bf_capacity(bf_capacity),
           bf_false_pos(bf_false_pos),
           max_sl_size(max_sl_size),
-          vec_store(d),
+          clus_niter(clus_niter),
+          max_leaf_size(max_leaf_size),
+          nprobe(nprobe),
+          prune_thres(prune_thres),
+          variance_boost(variance_boost),
+          search_ef(search_ef),
+          beam_size(beam_size) {
+    FAISS_ASSERT_FMT(
+            n_clusters <= CURATOR_MAX_BRANCH_FACTOR,
+            "n_clusters should be less than or equal to %zu",
+            CURATOR_MAX_BRANCH_FACTOR);
+
+    FAISS_ASSERT_FMT(
+            max_leaf_size <= CURATOR_MAX_LEAF_SIZE,
+            "max_leaf_size should be less than or equal to %zu",
+            CURATOR_MAX_LEAF_SIZE);
+
+    tree_root =
+            new TreeNode(0, 0, nullptr, nullptr, d, bf_capacity, bf_false_pos);
+}
+
+MultiTenantIndexIVFHierarchical::MultiTenantIndexIVFHierarchical(
+        IndexFlat* storage,
+        size_t n_clusters,
+        size_t bf_capacity,
+        float bf_false_pos,
+        size_t max_sl_size,
+        size_t clus_niter,
+        size_t max_leaf_size,
+        size_t nprobe,
+        float prune_thres,
+        float variance_boost,
+        size_t search_ef,
+        size_t beam_size)
+        : MultiTenantIndex(storage->d, storage->metric_type),
+          storage(storage),
+          own_fields(false),
+          n_clusters(n_clusters),
+          bf_capacity(bf_capacity),
+          bf_false_pos(bf_false_pos),
+          max_sl_size(max_sl_size),
           clus_niter(clus_niter),
           max_leaf_size(max_leaf_size),
           nprobe(nprobe),
@@ -224,6 +265,11 @@ void MultiTenantIndexIVFHierarchical::add_vector_with_ids(
         idx_t n,
         const float* x,
         const idx_t* labels) {
+    // For simplicity we do not support non-sequential labels
+    for (idx_t i = 0; i < n; i++) {
+        assert(labels[i] == ntotal + i && "Labels must be sequential");
+    }
+
     for (size_t i = 0; i < n; i++) {
         ext_vid_t label = labels[i];
         const float* xi = x + i * d;
@@ -239,7 +285,12 @@ void MultiTenantIndexIVFHierarchical::add_vector_with_ids(
 
         // add the vector to the vector store and access matrix
         id_allocator.add_mapping(label, vid);
-        vec_store.add_vector(xi, vid);
+        if (own_fields) {
+            // only modify storage if we own it
+            // otherwise, the owner is responsible for adding the vector
+            storage->add(1, xi);
+        }
+        ntotal++;
         leaf->vector_indices.insert(vid);
 
         TreeNode* curr = leaf;
@@ -293,23 +344,7 @@ void MultiTenantIndexIVFHierarchical::grant_access_helper(
 }
 
 bool MultiTenantIndexIVFHierarchical::remove_vector(idx_t label) {
-    int_vid_t vid = id_allocator.get_id(label);
-    auto leaf = find_assigned_leaf(label);
-
-    // update the variance of the tree nodes along the path
-    TreeNode* curr = leaf;
-    auto vec = vec_store.get_vec(vid);
-    while (curr != nullptr) {
-        float dist = fvec_L2sqr(vec, curr->centroid, d);
-        curr->variance.remove(dist);
-        curr = curr->parent;
-    }
-
-    id_allocator.remove_mapping(label);
-    vec_store.remove_vector(vid);
-    leaf->vector_indices.erase(vid);
-
-    return true;
+    FAISS_THROW_MSG("remove_vector is not supported");
 }
 
 bool MultiTenantIndexIVFHierarchical::revoke_access(
@@ -626,35 +661,34 @@ inline void compute_dists_with_prefetch(
     }
 
     size_t n_vids = vids.size();
+    auto disc = dynamic_cast<FlatCodesDistanceComputer*>(
+            index.storage->get_distance_computer());
+    disc->set_query(x);
+
+    auto get_label = [&](int i) -> ext_vid_t {
+        return index.id_allocator.get_label(vids[i]);
+    };
 
     if (n_vids >= 8) {
-        std::array<const float*, 4> vecs;
-        std::array<const float*, 4> next_vecs;
         std::array<float, 4> dists;
 
-        vecs[0] = index.vec_store.get_vec(vids[0]);
-        vecs[1] = index.vec_store.get_vec(vids[1]);
-        vecs[2] = index.vec_store.get_vec(vids[2]);
-        vecs[3] = index.vec_store.get_vec(vids[3]);
+        prefetch_L1(disc->codes + get_label(0) * disc->code_size);
+        prefetch_L1(disc->codes + get_label(1) * disc->code_size);
+        prefetch_L1(disc->codes + get_label(2) * disc->code_size);
+        prefetch_L1(disc->codes + get_label(3) * disc->code_size);
 
         size_t limit = (n_vids / 4 - 1) * 4;
         for (size_t i = 0; i < limit; i += 4) {
-            next_vecs[0] = index.vec_store.get_vec(vids[i + 4]);
-            prefetch_L1(next_vecs[0]);
-            next_vecs[1] = index.vec_store.get_vec(vids[i + 5]);
-            prefetch_L1(next_vecs[1]);
-            next_vecs[2] = index.vec_store.get_vec(vids[i + 6]);
-            prefetch_L1(next_vecs[2]);
-            next_vecs[3] = index.vec_store.get_vec(vids[i + 7]);
-            prefetch_L1(next_vecs[3]);
+            prefetch_L1(disc->codes + get_label(i + 4) * disc->code_size);
+            prefetch_L1(disc->codes + get_label(i + 5) * disc->code_size);
+            prefetch_L1(disc->codes + get_label(i + 6) * disc->code_size);
+            prefetch_L1(disc->codes + get_label(i + 7) * disc->code_size);
 
-            fvec_L2sqr_batch_4(
-                    x,
-                    vecs[0],
-                    vecs[1],
-                    vecs[2],
-                    vecs[3],
-                    index.d,
+            disc->distances_batch_4(
+                    get_label(i),
+                    get_label(i + 1),
+                    get_label(i + 2),
+                    get_label(i + 3),
                     dists[0],
                     dists[1],
                     dists[2],
@@ -664,17 +698,13 @@ inline void compute_dists_with_prefetch(
             output.emplace_back(dists[1], vids[i + 1]);
             output.emplace_back(dists[2], vids[i + 2]);
             output.emplace_back(dists[3], vids[i + 3]);
-
-            std::swap(vecs, next_vecs);
         }
 
-        fvec_L2sqr_batch_4(
-                x,
-                vecs[0],
-                vecs[1],
-                vecs[2],
-                vecs[3],
-                index.d,
+        disc->distances_batch_4(
+                get_label(limit),
+                get_label(limit + 1),
+                get_label(limit + 2),
+                get_label(limit + 3),
                 dists[0],
                 dists[1],
                 dists[2],
@@ -691,16 +721,14 @@ inline void compute_dists_with_prefetch(
         return;
     }
 
-    const float* vec = index.vec_store.get_vec(vids[i]);
+    prefetch_L1(disc->codes + get_label(i) * disc->code_size);
     for (; i < n_vids - 1; i++) {
-        const float* next_vec = index.vec_store.get_vec(vids[i + 1]);
-        prefetch_L1(next_vec);
-        float dist = fvec_L2sqr(x, vec, index.d);
+        prefetch_L1(disc->codes + get_label(i + 1) * disc->code_size);
+        float dist = disc->operator()(get_label(i));
         output.emplace_back(dist, vids[i]);
-        vec = next_vec;
     }
 
-    float dist = fvec_L2sqr(x, vec, index.d);
+    float dist = disc->operator()(get_label(n_vids - 1));
     output.emplace_back(dist, vids.back());
 }
 
@@ -758,7 +786,7 @@ void filtered_search_experimental(
     std::vector<std::pair<float, int_vid_t>> sorted_cands;
     sorted_cands.reserve(index.max_sl_size);
     std::vector<float> child_dists;
-    child_dists.reserve(index.nlist);
+    child_dists.reserve(index.n_clusters);
 
     while (!frontier.empty()) {
         auto [score, node] = frontier.top();
@@ -819,6 +847,7 @@ void MultiTenantIndexIVFHierarchical::search_one(
         n_nodes_visited++;
         n_var_queries++;
 
+        // Directly compute distance between the query and node centroids
         float dist = fvec_L2sqr(x, node->centroid, d);
         float var = node->variance.get_mean();
         float score = dist - this->variance_boost * var;
@@ -830,6 +859,10 @@ void MultiTenantIndexIVFHierarchical::search_one(
 
     size_t n_cand_vecs = 0;
     std::vector<Candidate> buckets;
+
+    // Compute distances between the query and indexed vectors
+    DistanceComputer* disc = storage->get_distance_computer();
+    disc->set_query(x);
 
     while (!pq.empty() && n_cand_vecs < this->nprobe) {
         n_steps++;
@@ -873,7 +906,7 @@ void MultiTenantIndexIVFHierarchical::search_one(
     float min_buck_dist = buckets[0].first;
 
     for (auto [dist, node] : buckets) {
-        if (dist > this->prune_thres * min_buck_dist) {
+        if (dist > prune_thres * min_buck_dist) {
             break;
         }
 
@@ -881,9 +914,8 @@ void MultiTenantIndexIVFHierarchical::search_one(
         for (auto vid : node->shortlists.at(tid)) {
             n_dists++;
             n_vecs_visited++;
-            auto vec = vec_store.get_vec(vid);
-            auto lbl = id_allocator.get_label(vid);
-            auto dist = fvec_L2sqr(x, vec, d);
+            ext_vid_t lbl = id_allocator.get_label(vid);
+            float dist = disc->operator()(lbl);
             if (dist < distances[0]) {
                 maxheap_replace_top(k, distances, labels, dist, lbl);
             }
@@ -915,6 +947,9 @@ void MultiTenantIndexIVFHierarchical::search_one(
     using namespace complex_predicate;
     using Candidate = std::tuple<float, const TreeNode*, VarMap, State>;
     using Bucket = std::tuple<float, const TreeNode*, State>;
+
+    DistanceComputer* disc = storage->get_distance_computer();
+    disc->set_query(x);
 
     // update var map based on short lists and bloom filter of current node
     auto update_var_map = [&](const TreeNode* node, VarMap var_map) -> VarMap {
@@ -954,9 +989,8 @@ void MultiTenantIndexIVFHierarchical::search_one(
     // helper functions for updating the result heap
     auto add_buffer_to_heap = [&](const Buffer& buffer) {
         for (auto vid : buffer) {
-            auto label = id_allocator.get_label(vid);
-            auto vec = vec_store.get_vec(vid);
-            auto dist = fvec_L2sqr(x, vec, d);
+            ext_vid_t label = id_allocator.get_label(vid);
+            float dist = disc->operator()(label);
             if (dist < distances[0]) {
                 maxheap_replace_top(k, distances, labels, dist, label);
             }
@@ -1098,6 +1132,10 @@ void MultiTenantIndexIVFHierarchical::search_one(
     int n_cand_vecs = 0;
     std::vector<Candidate> buckets;
 
+    // Compute distances between the query and indexed vectors
+    DistanceComputer* disc = storage->get_distance_computer();
+    disc->set_query(x);
+
     while (!pq.empty() && n_cand_vecs < nprobe) {
         auto [score, node] = pq.top();
         pq.pop();
@@ -1129,9 +1167,8 @@ void MultiTenantIndexIVFHierarchical::search_one(
         }
 
         for (auto vid : node->vector_indices) {
-            auto vec = vec_store.get_vec(vid);
-            auto lbl = id_allocator.get_label(vid);
-            auto dist = fvec_L2sqr(x, vec, d);
+            ext_vid_t lbl = id_allocator.get_label(vid);
+            float dist = disc->operator()(lbl);
             if (dist < distances[0]) {
                 maxheap_replace_top(k, distances, labels, dist, lbl);
             }
@@ -1628,12 +1665,6 @@ void MultiTenantIndexIVFHierarchical::memory_usage() const {
                 sizeof(node->shortlists);
     };
 
-    size_t vec_store_total_size = unordered_map_memory_usage(vec_store.vecs);
-    size_t aligned_vec_size =
-            (sizeof(float) * vec_store.d + vec_store.alignment - 1) /
-            vec_store.alignment * vec_store.alignment;
-    vec_store_total_size += aligned_vec_size * vec_store.vecs.size();
-
     size_t id_allocator_size =
             unordered_map_memory_usage(id_allocator.label_to_id) +
             unordered_map_memory_usage(id_allocator.id_to_label);
@@ -1678,7 +1709,6 @@ void MultiTenantIndexIVFHierarchical::memory_usage() const {
 
     size_t total_memory_usage = 0;
     total_memory_usage = sizeof(MultiTenantIndexIVFHierarchical);
-    total_memory_usage += vec_store_total_size;
     total_memory_usage += id_allocator_total_size;
     total_memory_usage += bloom_filter_total_size;
     total_memory_usage += short_lists_total_size;
@@ -1689,7 +1719,6 @@ void MultiTenantIndexIVFHierarchical::memory_usage() const {
     printf("Memory usage breakdown:\n");
     printf("Number of tree nodes: %lu\n", num_tree_nodes);
     printf("Total memory usage: %lu bytes\n", total_memory_usage);
-    printf("Vector store: %lu bytes\n", vec_store_total_size);
     printf("ID allocator: %lu bytes\n", id_allocator_total_size);
     printf("Bloom filters: %lu bytes\n", bloom_filter_total_size);
     printf("Short lists: %lu bytes\n", short_lists_total_size);

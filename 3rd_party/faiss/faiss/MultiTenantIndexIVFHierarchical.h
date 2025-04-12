@@ -131,34 +131,6 @@ struct IdMapping {
 using VectorIdAllocator = IdMapping<ext_vid_t, int_vid_t>;
 using TenantIdAllocator = IdAllocator<ext_lid_t, int_lid_t>;
 
-struct VectorStore {
-    size_t d;
-    size_t alignment;
-    std::unordered_map<int_vid_t, float*> vecs;
-
-    VectorStore(size_t d, size_t alignment = 64) : d(d), alignment(alignment) {}
-
-    ~VectorStore() {
-        for (auto& [vid, vec] : vecs) {
-            free(vec);
-        }
-    }
-
-    void add_vector(const float* vec, int_vid_t vid) {
-        auto ptr = std::aligned_alloc(alignment, d * sizeof(float));
-        memcpy(ptr, vec, d * sizeof(float));
-        vecs[vid] = static_cast<float*>(ptr);
-    }
-
-    void remove_vector(int_vid_t vid) {
-        vecs.erase(vid);
-    }
-
-    const float* get_vec(int_vid_t vid) const {
-        return vecs.at(vid);
-    }
-};
-
 struct RunningMean {
     int n;
     double sum;
@@ -329,7 +301,7 @@ struct TreeNode {
     }
 };
 
-struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
+struct MultiTenantIndexIVFHierarchical : MultiTenantIndex {
     /* construction parameters */
     size_t bf_capacity;
     float bf_false_pos;
@@ -347,7 +319,10 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
     TreeNode* tree_root;
     VectorIdAllocator id_allocator;
     TenantIdAllocator tid_allocator;
-    VectorStore vec_store;
+
+    // sequential storage for the vectors
+    bool own_fields;
+    Index* storage;
 
     /* auxiliary data structures */
     std::unordered_map<std::string, ext_lid_t> filter_to_label;
@@ -359,7 +334,6 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
     size_t beam_size;
 
     MultiTenantIndexIVFHierarchical(
-            Index* quantizer,
             size_t d,
             size_t n_clusters,
             MetricType metric = METRIC_L2,
@@ -374,8 +348,25 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
             size_t search_ef = 0,
             size_t beam_size = 2);
 
+    MultiTenantIndexIVFHierarchical(
+            IndexFlat* storage,
+            size_t n_clusters,
+            size_t bf_capacity = 1000,
+            float bf_false_pos = 0.01,
+            size_t max_sl_size = 128,
+            size_t clus_niter = 20,
+            size_t max_leaf_size = 128,
+            size_t nprobe = 3000,
+            float prune_thres = 1.6,
+            float variance_boost = 0.4,
+            size_t search_ef = 0,
+            size_t beam_size = 2);
+
     ~MultiTenantIndexIVFHierarchical() override {
         delete tree_root;
+        if (own_fields) {
+            delete storage;
+        }
     }
 
     void enable_stats_tracking(bool enable) {
@@ -453,6 +444,14 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndexIVFFlat {
             float* distances,
             idx_t* labels,
             const SearchParameters* params = nullptr) const;
+
+    void add_vector(idx_t n, const float* x) override {
+        FAISS_THROW_MSG("add_vector not supported");
+    }
+
+    void reset() override {
+        FAISS_THROW_MSG("reset not supported");
+    }
 
     /*
      * Helper functions
