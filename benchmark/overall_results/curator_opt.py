@@ -79,9 +79,9 @@ def exp_curator_opt(
             }
         )
 
-    delete_results = profiler.do_delete()
-    for result in results:
-        result.update(delete_results)
+    # delete_results = profiler.do_delete()
+    # for result in results:
+    #     result.update(delete_results)
 
     print(f"Saving results to {output_path} ...")
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -136,4 +136,16 @@ def exp_curator_opt_param_sweep(
 
 
 if __name__ == "__main__":
+    """
+    python -m benchmark.overall_results.curator_opt \
+        exp_curator_opt \
+            --output_path test_curator.csv \
+            --nlist 16 \
+            --max_sl_size 256 \
+            --search_ef_space "[128]" \
+            --beam_size_space "[4]" \
+            --variance_boost_space "[0.4]" \
+            --dataset_key yfcc100m \
+            --test_size 0.01
+    """
     fire.Fire()

@@ -53,9 +53,7 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         self.search_ef = search_ef
         self.beam_size = beam_size
 
-        self.quantizer = faiss.IndexFlatL2(self.d)
         self.index = faiss.MultiTenantIndexIVFHierarchical(
-            self.quantizer,
             self.d,
             self.nlist,
             faiss.METRIC_L2,
@@ -169,18 +167,3 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
                 stats,
             )
         )
-
-
-if __name__ == "__main__":
-    print("Testing IVFFlatMultiTenantBFHierFaiss...")
-    index = IVFFlatMultiTenantBFHierFaiss(10, 10)
-    index.train(np.random.random((400, 10)))
-    index.create(np.random.rand(10), 0)
-    index.create(np.random.rand(10), 1)
-    index.create(np.random.rand(10), 2)
-    index.grant_access(2, 2)
-    index.enable_stats_tracking(True)
-    res = index.query(np.random.rand(10), 2, 0)
-    print(index.get_search_stats())
-    res = index.query_with_filter(np.random.rand(10), 3, "OR 0 1")
-    print(res)
