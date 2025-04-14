@@ -320,9 +320,14 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndex {
     VectorIdAllocator id_allocator;
     TenantIdAllocator tid_allocator;
 
+    // hack (to be removed later): since the sequential storage
+    // does not support external labels, we need to map the
+    // internal vector IDs to offset in the sequential storage
+    std::unordered_map<int_vid_t, size_t> vid_to_storage_idx;
+
     // sequential storage for the vectors
     bool own_fields;
-    Index* storage;
+    IndexFlat* storage;
 
     /* auxiliary data structures */
     std::unordered_map<std::string, ext_lid_t> filter_to_label;

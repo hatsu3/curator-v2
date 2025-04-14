@@ -23,8 +23,8 @@ struct HybridCurator : MultiTenantIndex {
 
     bool index_built; // to prevent incr update since ACORN does not support it
     bool own_fields;  // true if we own the storage
-    Index* storage;   // storage shared by ACORN and Curator
-    std::vector<int> acorn_metadata;  // not used, make ACORN happy
+    IndexFlat* storage;              // storage shared by ACORN and Curator
+    std::vector<int> acorn_metadata; // not used, make ACORN happy
 
     HybridCurator(
             int d,
@@ -33,10 +33,13 @@ struct HybridCurator : MultiTenantIndex {
             int M_beta,
             int n_branches,
             int leaf_size,
-            int n_uniq_labels, 
+            int n_uniq_labels,
             float sel_threshold);
 
-    HybridCurator(IndexACORN* acorn, MultiTenantIndexIVFHierarchical* curator, float sel_threshold);
+    HybridCurator(
+            IndexACORN* acorn,
+            MultiTenantIndexIVFHierarchical* curator,
+            float sel_threshold);
 
     ~HybridCurator() override;
 

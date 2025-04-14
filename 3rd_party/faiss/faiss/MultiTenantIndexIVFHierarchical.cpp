@@ -265,11 +265,6 @@ void MultiTenantIndexIVFHierarchical::add_vector_with_ids(
         idx_t n,
         const float* x,
         const idx_t* labels) {
-    // For simplicity we do not support non-sequential labels
-    for (idx_t i = 0; i < n; i++) {
-        assert(labels[i] == ntotal + i && "Labels must be sequential");
-    }
-
     for (size_t i = 0; i < n; i++) {
         ext_vid_t label = labels[i];
         const float* xi = x + i * d;
@@ -285,6 +280,7 @@ void MultiTenantIndexIVFHierarchical::add_vector_with_ids(
 
         // add the vector to the vector store and access matrix
         id_allocator.add_mapping(label, vid);
+        vid_to_storage_idx[vid] = ntotal;
         if (own_fields) {
             // only modify storage if we own it
             // otherwise, the owner is responsible for adding the vector
@@ -666,7 +662,7 @@ inline void compute_dists_with_prefetch(
     disc->set_query(x);
 
     auto get_label = [&](int i) -> ext_vid_t {
-        return index.id_allocator.get_label(vids[i]);
+        return index.vid_to_storage_idx.at(vids[i]);
     };
 
     if (n_vids >= 8) {

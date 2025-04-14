@@ -30,11 +30,11 @@ class HybridCurator(Index):
         self.sel_threshold = sel_threshold
 
         self.index = faiss.HybridCurator(
-            dim, M, gamma, M_beta, n_branches, leaf_size, n_uniq_labels
+            dim, M, gamma, M_beta, n_branches, leaf_size, n_uniq_labels, sel_threshold
         )
 
     @property
-    def params(self) -> dict[str, int]:
+    def params(self) -> dict[str, Any]:
         return {
             "dim": self.dim,
             "M": self.M,
@@ -43,21 +43,18 @@ class HybridCurator(Index):
             "n_branches": self.n_branches,
             "leaf_size": self.leaf_size,
             "n_uniq_labels": self.n_uniq_labels,
+            "sel_threshold": self.sel_threshold,
         }
 
     @property
     def search_params(self) -> dict[str, Any]:
         return {
-            "sel_threshold": self.sel_threshold,
             "curator_search_ef": self.index.curator.search_ef,
             "acorn_search_ef": self.index.acorn.acorn.efSearch,
         }
 
     @search_params.setter
     def search_params(self, params: dict[str, Any]) -> None:
-        if "sel_threshold" in params:
-            self.sel_threshold = params["sel_threshold"]
-            self.index.sel_threshold = params["sel_threshold"]
         if "curator_search_ef" in params:
             self.index.curator.search_ef = params["curator_search_ef"]
         if "acorn_search_ef" in params:
@@ -68,17 +65,26 @@ class HybridCurator(Index):
     ) -> None:
         self.index.train(X, 0)  # type: ignore
 
+    def batch_create(
+        self, X: ndarray, labels: list[int], access_lists: list[list[int]]
+    ) -> None:
+        self.index.add_vector_with_ids(X, labels)  # type: ignore
+        print(f"Added {X.shape[0]} vectors to the index.", flush=True)
+        for label, access_list in zip(labels, access_lists):
+            for tenant_id in access_list:
+                self.index.grant_access(label, tenant_id)
+
     def create(self, x: ndarray, label: int) -> None:
-        self.index.add_vector_with_ids(x[None], [label])  # type: ignore
+        raise NotImplementedError("HybridCurator does not support create.")
 
     def grant_access(self, label: int, tenant_id: int) -> None:
-        self.index.grant_access(label, tenant_id)  # type: ignore
+        raise NotImplementedError("HybridCurator does not support grant_access.")
 
     def delete_vector(self, label: int) -> None:
         raise NotImplementedError("HybridCurator does not support delete_vector.")
 
     def revoke_access(self, label: int, tenant_id: int) -> None:
-        self.index.revoke_access(label, tenant_id)  # type: ignore
+        raise NotImplementedError("HybridCurator does not support revoke_access.")
 
     def query(self, x: ndarray, k: int, tenant_id: int) -> list[int]:
         top_dists, top_ids = self.index.search(x[None], k, tenant_id)  # type: ignore

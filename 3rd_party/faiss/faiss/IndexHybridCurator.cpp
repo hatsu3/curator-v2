@@ -15,9 +15,9 @@ HybridCurator::HybridCurator(
           index_built(false),
           own_fields(true),
           sel_threshold(sel_threshold) {
-    IndexFlat* storage = new IndexFlat(d, METRIC_L2);
+    storage = new IndexFlat(d, METRIC_L2);
 
-    this->curator = new MultiTenantIndexIVFHierarchical(
+    curator = new MultiTenantIndexIVFHierarchical(
             /*storage=*/storage,
             /*n_clusters=*/n_branches,
             /*bf_capacity=*/n_uniq_labels,
@@ -31,7 +31,7 @@ HybridCurator::HybridCurator(
             /*search_ef=*/1, // Should be set manually later
             /*beam_size=*/4);
 
-    this->acorn = new IndexACORN(
+    acorn = new IndexACORN(
             /*storage=*/storage,
             /*M=*/M,
             /*gamma=*/gamma,
@@ -46,7 +46,7 @@ HybridCurator::HybridCurator(
         : MultiTenantIndex(curator->d, curator->metric_type),
           acorn(acorn),
           curator(curator),
-          storage(acorn->storage),
+          storage(curator->storage),
           own_fields(false),
           index_built(false),
           sel_threshold(sel_threshold) {
@@ -74,17 +74,21 @@ void HybridCurator::add_vector_with_ids(
     // we do not support non-sequential labels because ACORN does not
     // support it otherwise we can maintain a mapping from labels to indices
     for (idx_t i = 0; i < n; i++) {
-        assert(labels[i] == i && "Labels must be sequential");
+        if (labels[i] != i) {
+            FAISS_THROW_MSG("Labels must be sequential");
+        }
     }
 
     if (!index_built) {
         storage->add(n, x);
         curator->add_vector_with_ids(n, x, labels);
-        acorn->add(n, x);
 
         ntotal = storage->ntotal;
         acorn_metadata.resize(ntotal);
         std::fill(acorn_metadata.begin(), acorn_metadata.end(), 0);
+        acorn->acorn.metadata = acorn_metadata.data();
+        
+        acorn->add(n, x);
 
         index_built = true;
     } else {
