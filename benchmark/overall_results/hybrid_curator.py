@@ -7,8 +7,7 @@ from benchmark.config import IndexConfig
 from benchmark.profiler import Dataset, IndexProfiler
 from indexes.hybrid_curator import HybridCurator
 
-
-# TODO: per-selectivity results (verbose output), select search_ef, 
+# TODO: per-selectivity results (verbose output), select search_ef,
 # determine sel_threshold based on profiling results
 
 # TODO: save index to a file
@@ -45,10 +44,10 @@ def exp_hybrid_curator(
             "n_branches": n_branches,
             "leaf_size": leaf_size,
             "n_uniq_labels": dataset.num_labels,
+            "sel_threshold": sel_threshold,
         },
         search_params={
-            "sel_threshold": sel_threshold,
-            "curator_search_ef": search_ef_space[0] * 16,
+            "curator_search_ef": search_ef_space[0] * 8,
             "acorn_search_ef": search_ef_space[0],
         },
     )
@@ -63,8 +62,7 @@ def exp_hybrid_curator(
         print(f"Querying index with search_ef = {search_ef} ... ")
         profiler.set_index_search_params(
             {
-                "sel_threshold": sel_threshold,
-                "curator_search_ef": search_ef * 16,
+                "curator_search_ef": search_ef * 8,
                 "acorn_search_ef": search_ef,
             }
         )
