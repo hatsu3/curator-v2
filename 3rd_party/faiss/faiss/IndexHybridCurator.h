@@ -1,7 +1,5 @@
 #pragma once
 
-#include <faiss/roaring/roaring.hh>
-
 #include <faiss/IndexACORN.h>
 #include <faiss/MultiTenantIndexIVFHierarchical.h>
 
@@ -9,12 +7,10 @@ namespace faiss {
 
 struct HybridCurator : MultiTenantIndex {
    private:
-    std::unordered_map<ext_lid_t, roaring::Roaring64Map> bitmaps;
-    mutable std::vector<char> filter_id_map; // input to acorn search
+    mutable std::unordered_map<ext_lid_t, std::vector<char>> bitmaps;
+    std::unordered_map<ext_lid_t, int> cardinalities;
 
     float get_global_selectivity(ext_lid_t tid) const;
-
-    char* populate_filter_id_map(ext_lid_t tid) const;
 
    public:
     IndexACORN* acorn;

@@ -99,14 +99,21 @@ void HybridCurator::add_vector_with_ids(
 void HybridCurator::grant_access(idx_t label, ext_lid_t tid) {
     assert(label >= 0 && "Label must be non-negative");
     curator->grant_access(label, tid);
-    bitmaps[tid].add(static_cast<uint64_t>(label));
+    
+    if (bitmaps.find(tid) == bitmaps.end()) {
+        bitmaps[tid] = std::vector<char>(ntotal, 0);
+        cardinalities[tid] = 0;
+    }
+    bitmaps[tid][label] = 1;
+    cardinalities[tid] += 1;
 }
 
 bool HybridCurator::revoke_access(idx_t label, ext_lid_t tid) {
     assert(label >= 0 && "Label must be non-negative");
     bool retv = curator->revoke_access(label, tid);
     if (retv) {
-        bitmaps[tid].remove(static_cast<uint64_t>(label));
+        bitmaps[tid][label] = 0;
+        cardinalities[tid] -= 1;
     }
     return retv;
 }
@@ -114,28 +121,10 @@ bool HybridCurator::revoke_access(idx_t label, ext_lid_t tid) {
 float HybridCurator::get_global_selectivity(ext_lid_t tid) const {
     auto it = bitmaps.find(tid);
     if (it != bitmaps.end()) {
-        return it->second.cardinality() / (float)ntotal;
+        return cardinalities.at(tid) / (float)ntotal;
     } else {
         return 0.0f;
     }
-}
-
-// TODO: measure the overhead of this function
-// TODO: if too high, we will store char vectors directly
-char* HybridCurator::populate_filter_id_map(ext_lid_t tid) const {
-    filter_id_map.resize(acorn->ntotal);
-    std::fill(filter_id_map.begin(), filter_id_map.end(), 0);
-    auto it = bitmaps.find(tid);
-    if (it != bitmaps.end()) {
-        const auto& bitmap = it->second;
-        for (auto it = bitmap.begin(); it != bitmap.end(); ++it) {
-            uint64_t label = *it;
-            if (label < acorn->ntotal) {
-                filter_id_map[label] = 1;
-            }
-        }
-    }
-    return filter_id_map.data();
 }
 
 void HybridCurator::search(
@@ -148,7 +137,7 @@ void HybridCurator::search(
         const SearchParameters* params) const {
     float global_sel = get_global_selectivity(tid);
     if (global_sel > sel_threshold) {
-        char* filter = populate_filter_id_map(tid);
+        char* filter = bitmaps.at(tid).data();
         acorn->search(n, x, k, distances, labels, filter, params);
     } else {
         curator->search(n, x, k, tid, distances, labels, params);
