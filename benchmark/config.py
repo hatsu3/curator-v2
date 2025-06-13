@@ -46,6 +46,7 @@ class DatasetConfig(Config):
     dataset_params: dict
     synthesize_metadata: bool
     metadata_params: dict
+    cache_path: Path | None = None
 
     @property
     def json(self) -> dict:
@@ -60,6 +61,7 @@ class DatasetConfig(Config):
                 k: v if not isinstance(v, Path) else str(v)
                 for k, v in self.metadata_params.items()
             },
+            "cache_path": str(self.cache_path) if self.cache_path else None,
         }
 
     def _validate_metadata_params(self):

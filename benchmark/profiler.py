@@ -1,3 +1,5 @@
+import json
+import pickle as pkl
 import subprocess
 import threading
 import time
@@ -123,16 +125,46 @@ class Dataset:
         cls,
         dataset_key: str,
         test_size: float,
+        cache_path: Path | None = None,
         k: int = 10,
         verbose: bool = True,
     ):
         dataset_config, __ = get_dataset_config(dataset_key, test_size=test_size)
+        dataset_config.cache_path = Path(cache_path) if cache_path is not None else None
         return cls.from_config(dataset_config, k=k, verbose=verbose)
 
     @classmethod
     def from_config(
         cls, dataset_config: DatasetConfig, k: int = 10, verbose: bool = True
     ):
+        if dataset_config.cache_path is not None:
+            if dataset_config.cache_path.exists():
+                print("Loading dataset from cache...")
+                train_vecs = np.load(dataset_config.cache_path / "train_vecs.npy")
+                test_vecs = np.load(dataset_config.cache_path / "test_vecs.npy")
+                ground_truth = np.load(dataset_config.cache_path / "ground_truth.npy")
+                all_labels = set(
+                    json.load(open(dataset_config.cache_path / "all_labels.json"))
+                )
+                metadata = pkl.load(
+                    open(dataset_config.cache_path / "metadata.pkl", "rb")
+                )
+                train_mds = pkl.load(
+                    open(dataset_config.cache_path / "train_mds.pkl", "rb")
+                )
+                test_mds = pkl.load(
+                    open(dataset_config.cache_path / "test_mds.pkl", "rb")
+                )
+
+                return cls(
+                    train_vecs, train_mds, test_vecs, test_mds, ground_truth, all_labels
+                )
+            else:
+                print("Cache not found. Generating dataset and saving to cache...")
+
+        else:
+            print("No cache path provided. Generating dataset...")
+
         if verbose:
             print("Loading dataset...")
         train_vecs, test_vecs, metadata = get_dataset(
@@ -170,6 +202,24 @@ class Dataset:
             print(f"  # train vectors: {len(train_vecs)}")
             print(f"  # test vectors: {len(test_vecs)}")
             print(f"  # labels: {len(all_labels)}")
+
+        if dataset_config.cache_path is not None:
+            assert not dataset_config.cache_path.exists(), "Cache already exists"
+            dataset_config.cache_path.mkdir(parents=True, exist_ok=True)
+
+            np.save(dataset_config.cache_path / "train_vecs.npy", train_vecs)
+            np.save(dataset_config.cache_path / "test_vecs.npy", test_vecs)
+            np.save(dataset_config.cache_path / "ground_truth.npy", ground_truth)
+
+            with open(dataset_config.cache_path / "all_labels.json", "w") as f:
+                json.dump([int(label) for label in all_labels], f)
+
+            with open(dataset_config.cache_path / "metadata.pkl", "wb") as f:
+                pkl.dump(metadata, f)
+            with open(dataset_config.cache_path / "train_mds.pkl", "wb") as f:
+                pkl.dump(train_mds, f)
+            with open(dataset_config.cache_path / "test_mds.pkl", "wb") as f:
+                pkl.dump(test_mds, f)
 
         return cls(train_vecs, train_mds, test_vecs, test_mds, ground_truth, all_labels)
 

@@ -20,11 +20,17 @@ def exp_curator_opt(
     dataset_key: str = "yfcc100m",
     test_size: float = 0.01,
     num_runs: int = 1,
+    check_dataset_only: bool = False,
+    dataset_cache_path: Path | None = None,
 ):
     profiler = IndexProfiler()
 
     print(f"Loading dataset {dataset_key} ...")
-    dataset = Dataset.from_dataset_key(dataset_key, test_size=test_size)
+    dataset = Dataset.from_dataset_key(
+        dataset_key, test_size=test_size, cache_path=dataset_cache_path
+    )
+    if check_dataset_only:
+        return
     profiler.set_dataset(dataset)
 
     print(f"Building index with nlist = {nlist}, max_sl_size = {max_sl_size} ... ")
