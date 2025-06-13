@@ -19,7 +19,7 @@
 #include <sys/time.h>
 #include <stdio.h>
 #include <iostream>
-#include <math.h>  
+#include <math.h>
 #include <unordered_map>
 #include <iostream>
 #include <fstream>
@@ -332,7 +332,7 @@ void ACORN::print_edges_filtered(int level, int filter, Operation op) const {
 //#pragma omp parallel for reduction(+: tot_neigh) reduction(+: tot_common) \
   reduction(+: tot_reciprocal) reduction(+: n_node)
     for (int i = 0; i < levels.size(); i++) {
-        if (levels[i] > level) {   
+        if (levels[i] > level) {
             if (((op == EQUAL) && (metadata[i] == filter)) || (op == OR && ((metadata[i] & filter) != 0))) {
             // if (metadata[i] == filter) {
                 n_node++;
@@ -386,7 +386,7 @@ void ACORN::print_edges_filtered(int level, int filter, Operation op) const {
             }
 
 
-            
+
         }
     }
     float normalizer = n_node;
@@ -408,7 +408,7 @@ void ACORN::print_edges_filtered(int level, int filter, Operation op) const {
 
 
 
-// stats for all levels 
+// stats for all levels
 void ACORN::print_neighbor_stats(bool edge_list, bool filtered_edge_list, int filter, Operation op) const {
     printf("========= METADATA =======\n");
 
@@ -434,13 +434,13 @@ void ACORN::print_neighbor_stats(bool edge_list, bool filtered_edge_list, int fi
         for (int level = 0; level <= max_level; level++) {
             printf("========= LEVEL %d =======\n", level);
             print_edges(level); // this is more detailed version with edge lists
-            
-        } 
+
+        }
     } else {
         for (int level = 0; level <= max_level; level++) {
             printf("========= LEVEL %d =======\n", level);
             print_neighbor_stats(level);
-            
+
         }
     }
 
@@ -450,9 +450,9 @@ void ACORN::print_neighbor_stats(bool edge_list, bool filtered_edge_list, int fi
         for (int level = 0; level <= max_level; level++) {
             printf("========= LEVEL %d =======\n", level);
             print_edges_filtered(level, filter, op); // this is more detailed version with edge lists
-            
+
         }
-    } 
+    }
     // print metadata
     // printf("========= METADATA =======\n");
     // for (int i = 0; i < metadata.size(); i++) {
@@ -539,8 +539,8 @@ void ACORN::shrink_neighbor_list(
         // for (const NodeDistFarther& node : output) {
         //     outputSet.insert(node.id);
         // }
-    int node_num = 0;    
-    
+    int node_num = 0;
+
     while (input.size() > 0) {
         node_num = node_num + 1;
 
@@ -551,13 +551,13 @@ void ACORN::shrink_neighbor_list(
         debug("shrink_neighbor_list: checking whether to keep v1: %d\n", v1.id);
         bool good = true;
 
-        // check if current candidate is in the neighbors of output 
+        // check if current candidate is in the neighbors of output
         if (node_num > this->M_beta  && neigh_of_neigh.count(v1.id) > 0) {
             good = false;
             debug("PRUNE v1: %d\n", v1.id);
         }
-        
-        
+
+
         if (good) {
             output.push_back(v1);
             if (output.size() >= max_size) {
@@ -575,8 +575,8 @@ void ACORN::shrink_neighbor_list(
                     neigh_of_neigh.insert(neighbors[j]); // mod
                 }
 
-            } 
-            
+            }
+
             // break if neigh_of_neigh set is sufficiently large
             if (neigh_of_neigh.size() >= max_size) {
                 break;
@@ -588,7 +588,7 @@ void ACORN::shrink_neighbor_list(
             debug("\t\t node %d\n", v2.id);
         }
         debug("---- %zd: \n", output.size());
-        
+
     }
     debug("final edge list of size %zd: \n", output.size());
         for (NodeDistFarther v2 : output) {
@@ -674,13 +674,13 @@ void add_link(
 
 
     debug("calling shrink neigbor list, src: %d, dest: %d, level: %d\n", src, dest, level);
-    
+
     if (level == 0) {
         shrink_neighbor_list(qdis, resultSet, end - begin, hnsw.gamma, src, hnsw.metadata[src], hnsw);
 
     }
-    
-    
+
+
 
     // ...and back
     size_t i = begin;
@@ -728,7 +728,7 @@ void search_neighbors_to_add(
         M = hnsw.nb_neighbors(level);
     }
     debug("desired resuts size: %d, at level: %d\n", M, level);
-    
+
 
     int backtrack_level = level;
 
@@ -747,7 +747,7 @@ void search_neighbors_to_add(
         // loop over neighbors
         size_t begin, end;
         hnsw.neighbor_range(currNode, level, &begin, &end);
-        
+
         int numIters = 0;
 
         debug("checking neighbors of %d\n", currNode);
@@ -781,7 +781,7 @@ void search_neighbors_to_add(
             }
             debug("while checking neighbors of %d, just visited %d -- efc: %d, results size: %ld, candidates size: %ld, \n", currNode, nodeId, hnsw.efConstruction, results.size(), candidates.size());
 
-            
+
 
             // limit number neighbors visisted during construciton
             numIters = numIters + 1;
@@ -789,9 +789,9 @@ void search_neighbors_to_add(
                 break;
             }
 
-        
+
         }
-        
+
         debug("during BFS, gamma: %d, candidates size: %ld, results size: %ld, vt.num_visited: %d, nb on level: %d, backtrack_level: %d, level: %d\n", hnsw.gamma, candidates.size(), results.size(), vt.num_visited(), hnsw.nb_per_level[level], backtrack_level, level);
     }
     debug("search_neighbors to add finds %ld nn's\n", results.size());
@@ -820,8 +820,8 @@ void greedy_update_nearest(
 
         size_t begin, end;
         hnsw.neighbor_range(nearest, level, &begin, &end);
-        
-        
+
+
         int numIters = 0;
 
         for (size_t i = begin; i < end; i++) {
@@ -861,7 +861,7 @@ int hybrid_greedy_update_nearest(
         int level,
         storage_idx_t& nearest,
         float& d_nearest) {
-    debug("%s\n", "reached"); 
+    debug("%s\n", "reached");
     // printf("hybrid_greedy_update_nearest called with parameters: filter: %d, op: %d, regex: %s, level: %d\n", filter, op, regex.c_str(), level);
     int ndis = 0;
     for (;;) {
@@ -872,20 +872,20 @@ int hybrid_greedy_update_nearest(
         size_t begin, end;
         hnsw.neighbor_range(nearest, level, &begin, &end);
         debug_search("%s", "--------checking neighbors: \n");
-        
+
         // for debugging, collect all neighbors looked at in a vector
         std::vector<std::pair<storage_idx_t, int>> neighbors_checked;
         bool keep_expanding = true;
 
         for (size_t i = begin; i < end; i++) {
             auto v = hnsw.neighbors[i];
-            
+
             if (v < 0)
                 break;
-                
+
             // note that this slows down search significantly but can be useful for debugging
             // if (debugSearchFlag) {
-            //     neighbors_checked.push_back(std::make_pair(v, metadata)); 
+            //     neighbors_checked.push_back(std::make_pair(v, metadata));
             //     debug_search("------------checking neighbor: %d, metadata: %d, metadata & filter: %d\n", v, metadata, metadata & filter);
             // }
 
@@ -899,17 +899,17 @@ int hybrid_greedy_update_nearest(
                     continue;
                 }
             }
-            
 
-        
-            
+
+
+
             // check if filter pass
             if (filter_map[v]) {
-    
+
                 float dis = qdis(v);
                 ndis += 1;
                 if (dis < d_nearest || !filter_map[nearest]) {
-                
+
                     nearest = v;
                     d_nearest = dis;
                     // debug_search("----------------new nearest: %d, d_nearest: %f\n", nearest, d_nearest);
@@ -918,9 +918,9 @@ int hybrid_greedy_update_nearest(
                     // debug_search("----found %d neighbors with filter %d, returning\n", num_found, filter);
                     break;
                 }
-            }            
+            }
 
-          
+
 
             // expand neighbor list if gamma=1
             if (hnsw.gamma == 1) {
@@ -928,7 +928,7 @@ int hybrid_greedy_update_nearest(
                 hnsw.neighbor_range(v, level, &begin2, &end2);
                 for (size_t j = begin2; j < end2; j++) {
                     auto v2 = hnsw.neighbors[j];
-                   
+
 
                     if (v2 < 0)
                         break;
@@ -940,7 +940,7 @@ int hybrid_greedy_update_nearest(
                         float dis2 = qdis(v2);
                         ndis += 1;
                         // debug_search("------------found: %d, metadata: %d distance to v: %f\n", v2, metadata2, dis2);
-          
+
                         if (dis2 < d_nearest || !filter_map[nearest]) {
                             nearest = v2;
                             d_nearest = dis2;
@@ -949,11 +949,11 @@ int hybrid_greedy_update_nearest(
                         if (num_found >= hnsw.M) {
                             break;
                         }
-                    } 
-                   
+                    }
+
                 }
             }
-        }       
+        }
 
         if (nearest == prev_nearest) {
             return ndis;
@@ -988,15 +988,15 @@ void ACORN::add_links_starting_from(
 
     debug("add_links_starting_from will shrink results list to size: %d\n", M);
 
-    
+
     debug("calling shrink neigbor list, pt_id: %d, level: %d\n", pt_id, level);
 
     if (level == 0) {
         ::faiss::shrink_neighbor_list(ptdis, link_targets, M, gamma, pt_id, this->metadata[pt_id], *this);
         // printf("shrunk");
     }
-    
-    
+
+
     debug("add_links_starting_from gets edge link size: %ld\n", link_targets.size());
 
     std::vector<storage_idx_t> neighbors;
@@ -1044,7 +1044,7 @@ void ACORN::add_with_locks(
             for (int i=0; i <= max_level; i++){
                 nb_per_level[i] = nb_per_level[i] + 1;
             }
-            
+
         }
     }
 
@@ -1238,7 +1238,7 @@ int hybrid_search_from_candidates(
 
     // timing variables
     double t1_candidates_loop = elapsed();
-    
+
     while (candidates.size() > 0) { // candidates is heap of size max(efs, k)
         float d0 = 0;
         int v0 = candidates.pop_min(&d0);
@@ -1289,7 +1289,7 @@ int hybrid_search_from_candidates(
             if (filter_map[v1]) {
                num_found = num_found + 1; // increment num found
             }
-            
+
             if (vt.get(v1)) {
                 continue;
             }
@@ -1322,15 +1322,15 @@ int hybrid_search_from_candidates(
                     keep_expanding = false;
                     break;
                 }
-            }    
-            
+            }
+
             if (((j - begin >= hnsw.M_beta) && keep_expanding) || hnsw.gamma == 1) {
                 debug_search("------------expanding neighbor list for %d; neighbor %ld, hnsw.M_beta: %d\n", v1, j-begin, hnsw.M_beta);
                 size_t begin2, end2;
                 hnsw.neighbor_range(v1, level, &begin2, &end2);
                 // try to parallelize neighbor expansion
                 for (size_t j2 = begin2; j2 < end2; j2+=1) {
-                    
+
                     auto v2 = hnsw.neighbors[j2];
 
                     // note that this slows down search performance significantly when flag is on
@@ -1349,15 +1349,15 @@ int hybrid_search_from_candidates(
                         continue;
                     }
 
-        
+
 
                     if (vt.get(v2)) {
                         continue;
                     }
-                    
+
                     vt.set(v2);
                     ndis++;
-  
+
                     float d2 = qdis(v2);
                     // debug_search("------------new candidate from expansion %d, distance: %f\n", v2, d2);
                     if (!sel || sel->is_member(v2)) {
@@ -1373,7 +1373,7 @@ int hybrid_search_from_candidates(
                     }
                     candidates.push(v2, d2);
                     if (num_found >= hnsw.M * 2) {
-    
+
                         // debug_search("------------num_found: %d, 2M: %d - triggers break\n", num_found, hnsw.M * 2);
                         keep_expanding = false;
                         break;
@@ -1381,16 +1381,16 @@ int hybrid_search_from_candidates(
                 }
 
 
-    
+
             }
-        
-            
+
+
         }
 
-     
-        
 
-        nstep++; 
+
+
+        nstep++;
         if (!do_dis_check && nstep > efSearch) {
             break;
         }
@@ -1409,11 +1409,42 @@ int hybrid_search_from_candidates(
 }
 
 
+float estimate_local_selectivity(const ACORN& hnsw, char* filter_map, int level, int ep) {
+    /*
+     * Estimate the local selectivity in the neighborhood of the entry point ep
+     * by counting the number of neighbors that pass the filter.
+     */
+    size_t begin, end, begin2, end2;
+    size_t n_neigh = 0, n_qualified = 0;
 
+    hnsw.neighbor_range(ep, level, &begin, &end);
 
+    for (size_t i = begin; i < end; i++) {
+        auto v = hnsw.neighbors[i];
+        if (v < 0) {
+            break;
+        }
+        n_neigh++;
+        if (filter_map[v]) {
+            n_qualified++;
+        }
 
+        hnsw.neighbor_range(v, level, &begin2, &end2);
 
+        for (size_t j = begin2; j < end2; j++) {
+            auto v2 = hnsw.neighbors[j];
+            if (v2 < 0) {
+                break;
+            }
+            n_neigh++;
+            if (filter_map[v2]) {
+                n_qualified++;
+            }
+        }
+    }
 
+    return n_qualified / (float) n_neigh;
+}
 
 } // anonymous namespace
 
@@ -1440,7 +1471,7 @@ ACORNStats ACORN::search(
             greedy_update_nearest(*this, qdis, level, nearest, d_nearest);
         }
 
-        
+
         int ef = std::max(efSearch, k);
         if (search_bounded_queue) { // this is the most common branch
             debug("%s\n", "reached search bounded queue");
@@ -1454,7 +1485,7 @@ ACORNStats ACORN::search(
         } else {
             debug("%s\n", "reached search_bounded_queue == False");
             throw FaissException("UNIMPLEMENTED search unbounded queue");
-            
+
         }
 
         vt.advance();
@@ -1512,10 +1543,19 @@ ACORNStats ACORN::hybrid_search(
         float* D,
         VisitedTable& vt,
         char* filter_map,
+        float local_sel_thres,
         // int filter,
         // Operation op,
         // std::string regex,
         const SearchParametersACORN* params) const {
+
+    if (local_sel_thres > 0.0f) {
+        FAISS_THROW_IF_NOT_MSG(
+            upper_beam == 1,
+            "local selection threshold only support upper_beam == 1"
+        );
+    }
+
     debug("%s\n", "reached");
     // debug_search("Hybrid Search, params -- k: %d, filter: %d\n", k, filter);
     ACORNStats stats;
@@ -1539,7 +1579,7 @@ ACORNStats ACORN::hybrid_search(
             ndis_upper += hybrid_greedy_update_nearest(*this, qdis, filter_map, level, nearest, d_nearest);
             // ndis_upper += hybrid_greedy_update_nearest(*this, qdis, filter, op, regex, level, nearest, d_nearest);
             debug_search("-at level %d, new nearest: %d, d: %f, metadata: %d\n", level, nearest, d_nearest, metadata[nearest]);
-            
+
 
         }
         stats.n3 += ndis_upper;
@@ -1552,9 +1592,20 @@ ACORNStats ACORN::hybrid_search(
 
             candidates.push(nearest, d_nearest);
             debug_search("-starting BFS at level 0 with ef: %d, nearest: %d, d: %f, metadata: %d\n", ef, nearest, d_nearest, metadata[nearest]);
+
+            if (local_sel_thres > 0.0f) {
+                float local_sel = estimate_local_selectivity(
+                    *this, filter_map, /*level=*/0, nearest);
+                stats.local_sel = local_sel;
+
+                if (local_sel < local_sel_thres) {
+                    return stats;
+                }
+            }
+
             hybrid_search_from_candidates(
                     *this, qdis, filter_map, k, I, D, candidates, vt, stats, 0, 0, params);
-            
+
 
         } else {
             // TODO
@@ -1562,7 +1613,7 @@ ACORNStats ACORN::hybrid_search(
             debug("%s\n", "reached search_bounded_queue == False");
             throw FaissException("UNIMPLEMENTED search unbounded queue");
 
-            
+
         }
 
         vt.advance();
@@ -1592,8 +1643,8 @@ ACORNStats ACORN::hybrid_search(
             if (level == 0) {
                 nres = hybrid_search_from_candidates(
                         *this, qdis, filter_map, k, I, D, candidates, vt, stats, 0);
-            
-                
+
+
             } else {
                 nres = hybrid_search_from_candidates(
                         *this,
@@ -1616,11 +1667,6 @@ ACORNStats ACORN::hybrid_search(
 
     return stats;
 }
-
-
-
-
-
 
 /**************************************************************
  * MinimaxHeap

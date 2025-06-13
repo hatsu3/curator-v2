@@ -67,13 +67,14 @@ struct IndexACORN : Index {
 
     // search for metadata
     // this doesn't override normal search since definition has a filter param - search is overloaded
-    void search(
+    bool search(
             idx_t n,
             const float* x,
             idx_t k,
             float* distances,
             idx_t* labels,
             char* filter_id_map,
+            float local_sel_thres = 0.0f,
             const SearchParameters* params = nullptr) const;
 
     void reconstruct(idx_t key, float* recons) const override;

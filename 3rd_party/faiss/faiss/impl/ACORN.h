@@ -241,6 +241,7 @@ struct ACORN {
             float* D,
             VisitedTable& vt,
             char* filter_map,
+            float local_sel_thres,
             // int filter,
             // Operation op,
             // std::string regex,
@@ -282,6 +283,9 @@ struct ACORNStats {
     double skips;
     double visits;
 
+    // added for hybrid curator
+    float local_sel; 
+
 
     ACORNStats(
             size_t n1 = 0,
@@ -293,8 +297,9 @@ struct ACORNStats {
             double neighbors_loop = 0.0,
             double tuple_unwrap = 0.0,
             double skips = 0.0,
-            double visits = 0.0)
-            : n1(n1), n2(n2), n3(n3), ndis(ndis), nreorder(nreorder), candidates_loop(candidates_loop), neighbors_loop(neighbors_loop), tuple_unwrap(tuple_unwrap), skips(skips), visits(visits) {}
+            double visits = 0.0,
+            float local_sel = 0.0)
+            : n1(n1), n2(n2), n3(n3), ndis(ndis), nreorder(nreorder), candidates_loop(candidates_loop), neighbors_loop(neighbors_loop), tuple_unwrap(tuple_unwrap), skips(skips), visits(visits), local_sel(local_sel) {}
 
     void reset() {
         n1 = n2 = n3 = 0;
@@ -307,6 +312,8 @@ struct ACORNStats {
         tuple_unwrap = 0.0;
         skips = 0.0;
         visits = 0.0;
+
+        local_sel = 0.0;
     }
 
     void combine(const ACORNStats& other) {

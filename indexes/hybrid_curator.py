@@ -16,6 +16,7 @@ class HybridCurator(Index):
         n_branches: int,
         leaf_size: int,
         n_uniq_labels: int,
+        use_local_sel: bool,
         sel_threshold: float,
     ):
         super().__init__()
@@ -27,10 +28,19 @@ class HybridCurator(Index):
         self.n_branches = n_branches
         self.leaf_size = leaf_size
         self.n_uniq_labels = n_uniq_labels
+        self.use_local_sel = use_local_sel
         self.sel_threshold = sel_threshold
 
         self.index = faiss.HybridCurator(
-            dim, M, gamma, M_beta, n_branches, leaf_size, n_uniq_labels, sel_threshold
+            dim,
+            M,
+            gamma,
+            M_beta,
+            n_branches,
+            leaf_size,
+            n_uniq_labels,
+            sel_threshold,
+            use_local_sel,
         )
 
     @property
@@ -43,6 +53,7 @@ class HybridCurator(Index):
             "n_branches": self.n_branches,
             "leaf_size": self.leaf_size,
             "n_uniq_labels": self.n_uniq_labels,
+            "use_local_sel": self.use_local_sel,
             "sel_threshold": self.sel_threshold,
         }
 

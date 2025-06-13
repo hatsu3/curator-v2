@@ -249,6 +249,111 @@ void acorn_add_vertices(
     }
 }
 
+bool search_acorn_with_early_exit(
+        const IndexACORN& index,
+        idx_t n,
+        const float* x,
+        idx_t k,
+        float* distances,
+        idx_t* labels,
+        char* filter_id_map,
+        float local_sel_thres,
+        const SearchParameters* params_in) {
+    FAISS_THROW_IF_NOT_MSG(
+            local_sel_thres > 0.0f,
+            "search_acorn_with_early_exit called with local_sel_thres <= 0.0f");
+    FAISS_THROW_IF_NOT_MSG(
+            n == 1, "search_acorn_with_early_exit only supports n == 1");
+
+    const SearchParametersACORN* params = nullptr;
+
+    int efSearch = index.acorn.efSearch;
+    if (params_in) {
+        params = dynamic_cast<const SearchParametersACORN*>(params_in);
+        FAISS_THROW_IF_NOT_MSG(params, "params type invalid");
+        efSearch = params->efSearch;
+    }
+    size_t n1 = 0, n2 = 0, n3 = 0, ndis = 0, nreorder = 0;
+    double candidates_loop = 0, neighbors_loop = 0, tuple_unwrap = 0, skips = 0,
+           visits = 0; // added for profiling
+
+    idx_t check_period = InterruptCallback::get_period_hint(
+            index.acorn.max_level * index.d * efSearch);
+
+    for (idx_t i0 = 0; i0 < n; i0 += check_period) {
+        idx_t i1 = std::min(i0 + check_period, n);
+
+        VisitedTable vt(index.ntotal);
+
+        DistanceComputer* dis = storage_distance_computer(index.storage);
+        ScopeDeleter1<DistanceComputer> del(dis);
+
+        for (idx_t i = i0; i < i1; i++) {
+            idx_t* idxi = labels + i * k;
+            float* simi = distances + i * k;
+            char* filters = filter_id_map + i * index.ntotal;
+            dis->set_query(x + i * index.d);
+
+            maxheap_heapify(k, simi, idxi);
+            ACORNStats stats = index.acorn.hybrid_search(  // return local selectivity in ACORNStats
+                    *dis,
+                    k,
+                    idxi,
+                    simi,
+                    vt,
+                    filters,
+                    local_sel_thres, 
+                    params); // TODO edit to hybrid search
+
+            if (stats.local_sel < local_sel_thres) {
+                return false; // early exit due to low local selectivity
+            }
+
+            // ACORNStats stats = acorn.hybrid_search(*dis, k, idxi, simi,
+            // vt, filters[i], op, regex, params); //TODO edit to hybrid
+            // search
+            n1 += stats.n1;
+            n2 += stats.n2;
+            n3 += stats.n3;
+            ndis += stats.ndis;
+            nreorder += stats.nreorder;
+            // printf("index -- stats updates: %f\n",
+            // stats.candidates_loop); printf("index -- stats updates:
+            // %f\n", stats.neighbors_loop);
+            // added for profiling
+            candidates_loop += stats.candidates_loop;
+            neighbors_loop += stats.neighbors_loop;
+            tuple_unwrap += stats.tuple_unwrap;
+            skips += stats.skips;
+            visits += stats.visits;
+            maxheap_reorder(k, simi, idxi);
+        }
+
+        InterruptCallback::check();
+    }
+
+    if (index.metric_type == METRIC_INNER_PRODUCT) {
+        // we need to revert the negated distances
+        for (size_t i = 0; i < k * n; i++) {
+            distances[i] = -distances[i];
+        }
+    }
+
+    acorn_stats.combine(
+            {n1,
+             n2,
+             n3,
+             ndis,
+             nreorder,
+             candidates_loop,
+             neighbors_loop,
+             tuple_unwrap,
+             skips,
+             visits}); // added for profiling
+
+    return true;
+}
+
 } // namespace
 
 /**************************************************************
@@ -299,18 +404,33 @@ void IndexACORN::train(idx_t n, const float* x) {
 }
 
 // overloaded search for hybrid search
-void IndexACORN::search(
+bool IndexACORN::search(
         idx_t n,
         const float* x,
         idx_t k,
         float* distances,
         idx_t* labels,
         char* filter_id_map,
+        float local_sel_thres,
         const SearchParameters* params_in) const {
     FAISS_THROW_IF_NOT(k > 0);
     FAISS_THROW_IF_NOT_MSG(
             storage,
             "Please use IndexACORNFlat (or variants) instead of IndexACORN directly");
+
+    if (local_sel_thres > 0.0f) {
+        return search_acorn_with_early_exit(
+                *this,
+                n,
+                x,
+                k,
+                distances,
+                labels,
+                filter_id_map,
+                local_sel_thres,
+                params_in);
+    }
+
     const SearchParametersACORN* params = nullptr;
 
     int efSearch = acorn.efSearch;
@@ -351,6 +471,7 @@ void IndexACORN::search(
                         simi,
                         vt,
                         filters,
+                        0.0f,
                         params); // TODO edit to hybrid search
 
                 // ACORNStats stats = acorn.hybrid_search(*dis, k, idxi, simi,
@@ -394,6 +515,8 @@ void IndexACORN::search(
              tuple_unwrap,
              skips,
              visits}); // added for profiling
+
+    return true;
 }
 
 // TODO figure out what do with this

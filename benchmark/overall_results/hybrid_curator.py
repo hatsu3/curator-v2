@@ -3,13 +3,13 @@ from pathlib import Path
 import fire
 import pandas as pd
 
+import faiss
+
 from benchmark.config import IndexConfig
 from benchmark.profiler import Dataset, IndexProfiler
 from indexes.hybrid_curator import HybridCurator
 
-# TODO: per-selectivity results (verbose output), select search_ef,
-# determine sel_threshold based on profiling results
-
+# TODO: determine sel_threshold based on profiling results
 # TODO: save index to a file
 
 def exp_hybrid_curator(
@@ -19,6 +19,7 @@ def exp_hybrid_curator(
     M_beta: int = 64,
     n_branches: int = 16,
     leaf_size: int = 128,
+    use_local_sel: bool = False,
     sel_threshold: float = 0.2,
     search_ef_space: list[int] = [16, 32, 64, 128, 256],
     dataset_key: str = "yfcc100m",
@@ -44,6 +45,7 @@ def exp_hybrid_curator(
             "n_branches": n_branches,
             "leaf_size": leaf_size,
             "n_uniq_labels": dataset.num_labels,
+            "use_local_sel": use_local_sel,
             "sel_threshold": sel_threshold,
         },
         search_params={
@@ -51,11 +53,18 @@ def exp_hybrid_curator(
             "acorn_search_ef": search_ef_space[0],
         },
     )
+
+    n_threads = faiss.omp_get_max_threads()
+    print(f"Setting # threads to {n_threads} ...")
+
     build_results = profiler.do_build(
         index_config=index_config,
         do_train=True,
         batch_insert=True,
     )
+
+    print(f"Setting # threads to 1 ...")
+    faiss.omp_set_num_threads(1)
 
     results = list()
     for search_ef in search_ef_space:
@@ -66,7 +75,6 @@ def exp_hybrid_curator(
                 "acorn_search_ef": search_ef,
             }
         )
-
         query_results = profiler.do_query(
             batch_query=False,
             num_threads=1,

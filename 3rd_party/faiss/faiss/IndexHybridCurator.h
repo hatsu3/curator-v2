@@ -15,6 +15,8 @@ struct HybridCurator : MultiTenantIndex {
    public:
     IndexACORN* acorn;
     MultiTenantIndexIVFHierarchical* curator;
+
+    bool use_local_sel;
     float sel_threshold; // selectivity threshold for index selection
 
     bool index_built; // to prevent incr update since ACORN does not support it
@@ -30,12 +32,14 @@ struct HybridCurator : MultiTenantIndex {
             int n_branches,
             int leaf_size,
             int n_uniq_labels,
-            float sel_threshold);
+            float sel_threshold, 
+            bool use_local_sel = false);
 
     HybridCurator(
             IndexACORN* acorn,
             MultiTenantIndexIVFHierarchical* curator,
-            float sel_threshold);
+            float sel_threshold, 
+            bool use_local_sel = false);
 
     ~HybridCurator() override;
 

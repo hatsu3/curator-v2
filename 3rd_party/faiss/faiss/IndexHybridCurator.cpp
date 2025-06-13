@@ -10,11 +10,13 @@ HybridCurator::HybridCurator(
         int n_branches,
         int leaf_size,
         int n_uniq_labels,
-        float sel_threshold)
+        float sel_threshold,
+        bool use_local_sel)
         : MultiTenantIndex(d, METRIC_L2),
           index_built(false),
           own_fields(true),
-          sel_threshold(sel_threshold) {
+          sel_threshold(sel_threshold),
+          use_local_sel(use_local_sel) {
     storage = new IndexFlat(d, METRIC_L2);
 
     curator = new MultiTenantIndexIVFHierarchical(
@@ -42,14 +44,16 @@ HybridCurator::HybridCurator(
 HybridCurator::HybridCurator(
         IndexACORN* acorn,
         MultiTenantIndexIVFHierarchical* curator,
-        float sel_threshold)
+        float sel_threshold, 
+        bool use_local_sel)
         : MultiTenantIndex(curator->d, curator->metric_type),
           acorn(acorn),
           curator(curator),
           storage(curator->storage),
           own_fields(false),
           index_built(false),
-          sel_threshold(sel_threshold) {
+          sel_threshold(sel_threshold),
+          use_local_sel(use_local_sel) {
     // Check if ACORN and Curator shares the same storage
     assert(acorn->storage == curator->storage &&
            "ACORN and Curator must share the same storage");
@@ -135,12 +139,20 @@ void HybridCurator::search(
         float* distances,
         idx_t* labels,
         const SearchParameters* params) const {
-    float global_sel = get_global_selectivity(tid);
-    if (global_sel > sel_threshold) {
+    if (use_local_sel) {
         char* filter = bitmaps.at(tid).data();
-        acorn->search(n, x, k, distances, labels, filter, params);
+        bool succeed = acorn->search(n, x, k, distances, labels, filter, sel_threshold, params);
+        if (!succeed) {
+            curator->search(n, x, k, tid, distances, labels, params);
+        }
     } else {
-        curator->search(n, x, k, tid, distances, labels, params);
+        float global_sel = get_global_selectivity(tid);
+        if (global_sel > sel_threshold) {
+            char* filter = bitmaps.at(tid).data();
+            acorn->search(n, x, k, distances, labels, filter, 0.0f, params);
+        } else {
+            curator->search(n, x, k, tid, distances, labels, params);
+        }
     }
 }
 
