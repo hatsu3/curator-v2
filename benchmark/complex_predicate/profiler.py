@@ -4,6 +4,7 @@ import numpy as np
 from tqdm import tqdm
 
 from benchmark.complex_predicate.dataset import ComplexPredicateDataset
+from benchmark.complex_predicate.utils import compute_qualified_labels
 from benchmark.profiler import IndexProfiler
 from benchmark.utils import recall
 
@@ -24,6 +25,7 @@ class IndexProfilerForComplexPredicate(IndexProfiler):
         return_stats: bool = False,
         return_verbose: bool = False,
         templates: list[str] | None = None,
+        use_filter_labels: bool = False,
     ) -> dict[str, dict]:
         assert self.index is not None, "Index not set"
         assert self.dataset is not None, "Dataset not set"
@@ -48,16 +50,38 @@ class IndexProfilerForComplexPredicate(IndexProfiler):
             for filter in filters:
                 query_results_filter = list()
 
-                for vec in self.dataset.test_vecs:
-                    query_start = time.time()
-                    ids = self.index.query_with_complex_predicate(
-                        vec, k=k, predicate=filter
-                    )
-                    query_latencies.append(time.time() - query_start)
-                    query_results_filter.append(ids)
+                if use_filter_labels:
+                    # Use filter label with regular search interface
+                    # First get the filter label for this filter
+                    filter_label = self.index.get_filter_label(filter)  # type: ignore
 
-                    if return_stats:
-                        query_stats.append(self.index.get_search_stats())
+                    for vec in self.dataset.test_vecs:
+                        query_start = time.time()
+                        # Use regular search with filter label as tenant ID
+                        ids = self.index.search(vec, k=k, tid=filter_label)  # type: ignore
+                        query_latencies.append(time.time() - query_start)
+                        query_results_filter.append(ids)
+                else:
+                    # Use bitmap filter interface (existing behavior)
+                    # Compute qualified labels for this filter once
+                    print(f"Computing qualified labels for filter {filter} ...")
+                    qualified_labels = compute_qualified_labels(
+                        filter, self.dataset.train_mds
+                    )
+                    print(f"Finished computing qualified labels for filter {filter} ...")
+
+                    for vec in self.dataset.test_vecs:
+                        query_start = time.time()
+                        # Use the new bitmap filter interface instead of complex predicate
+                        # Type assertion needed since base Index class doesn't have this method
+                        ids = self.index.search_with_bitmap_filter(  # type: ignore
+                            vec, k=k, qualified_labels=qualified_labels.tolist()
+                        )
+                        query_latencies.append(time.time() - query_start)
+                        query_results_filter.append(ids)
+
+                if return_stats:
+                    query_stats.append(self.index.get_search_stats())
 
                 ground_truth = self.dataset.filter_to_ground_truth[filter]
                 query_recalls.extend(

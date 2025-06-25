@@ -6,6 +6,7 @@ import fire
 
 from benchmark.complex_predicate.dataset import ComplexPredicateDataset
 from benchmark.complex_predicate.profiler import IndexProfilerForComplexPredicate
+from benchmark.complex_predicate.utils import compute_qualified_labels
 from benchmark.config import IndexConfig
 from benchmark.profiler import BatchProfiler
 from benchmark.utils import get_memory_usage
@@ -67,7 +68,9 @@ def exp_curator_with_index_complex_predicate(
     for __, filters in dataset.template_to_filters.items():
         for filter in filters:
             assert isinstance(profiler.index, CuratorIndex)
-            profiler.index.index_filter(filter)
+            qualified_labels = compute_qualified_labels(filter, dataset.train_mds)
+            # Use the new interface with explicit qualified labels
+            profiler.index.index_bitmap_filter(qualified_labels, filter)
     mem_usage_after = get_memory_usage()
     build_results["filter_index_size_kb"] = mem_usage_after - mem_usage_before
 
@@ -75,7 +78,7 @@ def exp_curator_with_index_complex_predicate(
     for nprobe, prune_thres in product(nprobe_space, prune_thres_space):
         print(f"Querying index with nprobe = {nprobe}, prune_thres = {prune_thres} ...")
         profiler.set_index_search_params({"nprobe": nprobe, "prune_thres": prune_thres})
-        per_template_results = profiler.do_query()
+        per_template_results = profiler.do_query(use_filter_labels=True)
         results.append(
             {
                 "nlist": nlist,
@@ -132,7 +135,7 @@ def exp_curator_with_index_complex_predicate_param_sweep(
             gt_cache_dir=gt_cache_dir,
         )
         batch_profiler.submit(task_name, command)
-    
+
     batch_profiler.run()
 
 

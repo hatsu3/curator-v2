@@ -410,11 +410,12 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndex {
             idx_t* labels,
             const SearchParameters* params = nullptr) const override;
 
-    void search(
+    void search_with_bitmap_filter(
             idx_t n,
             const float* x,
             idx_t k,
-            const std::string& filter,
+            const ext_vid_t* qualified_labels,
+            size_t qualified_labels_size,
             float* distances,
             idx_t* labels,
             const SearchParameters* params = nullptr) const;
@@ -431,14 +432,6 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndex {
             const float* x,
             idx_t k,
             int_lid_t tid,
-            float* distances,
-            idx_t* labels,
-            const SearchParameters* params = nullptr) const;
-
-    void search_one(
-            const float* x,
-            idx_t k,
-            const std::string& filter,
             float* distances,
             idx_t* labels,
             const SearchParameters* params = nullptr) const;
@@ -481,13 +474,18 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndex {
 
     void batch_grant_access(const std::vector<int_vid_t>& vids, int_lid_t tid);
 
-    void build_index_for_filter(const std::string& filter);
+    void build_index_for_filter(const ext_vid_t* qualified_labels, size_t qualified_labels_size, const std::string& filter_key);
+
+    ext_lid_t get_filter_label(const std::string& filter_key) const;
 
     void sanity_check() const;
 
     TreeNode* find_assigned_leaf(ext_vid_t label) const;
 
     void memory_usage() const;
+
+    // Utility method for efficient distance computation
+    float compute_vector_distance(const float* query, int_vid_t vid) const;
 };
 
 namespace complex_predicate {

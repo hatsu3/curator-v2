@@ -1298,6 +1298,92 @@ def handle_MultiTenantIndex(the_class):
         perm = np.ascontiguousarray(perm, dtype="int64")
         self.permute_entries_c(faiss.swig_ptr(perm))
 
+    def replacement_build_index_for_filter(self, qualified_labels, filter_key):
+        """Build index for a specific bitmap filter.
+
+        Parameters
+        ----------
+        qualified_labels : array_like
+            Array of vector labels that qualify for this filter, dtype must be int64.
+        filter_key : str
+            String identifier for this filter for caching purposes.
+        """
+        qualified_labels = np.ascontiguousarray(qualified_labels, dtype="int64")
+        n_labels = qualified_labels.shape[0]
+
+        self.build_index_for_filter_c(swig_ptr(qualified_labels), n_labels, filter_key)
+
+    def replacement_search_with_bitmap_filter(
+        self, x, k, qualified_labels, *, params=None, D=None, I=None
+    ):
+        """Find the k nearest neighbors from a specific set of qualified vectors.
+
+        Parameters
+        ----------
+        x : array_like
+            Query vectors, shape (n, d) where d is appropriate for the index.
+            `dtype` must be float32.
+        k : int
+            Number of nearest neighbors.
+        qualified_labels : array_like
+            Array of vector labels that are allowed in the search results, dtype must be int64.
+        params : SearchParameters
+            Search parameters of the current search (overrides the class-level params)
+        D : array_like, optional
+            Distance array to store the result.
+        I : array_like, optional
+            Labels array to store the results.
+
+        Returns
+        -------
+        D : array_like
+            Distances of the nearest neighbors, shape (n, k). When not enough results are found
+            the label is set to +Inf or -Inf.
+        I : array_like
+            Labels of the nearest neighbors, shape (n, k).
+            When not enough results are found, the label is set to -1
+        """
+        n, d = x.shape
+        x = np.ascontiguousarray(x, dtype="float32")
+        assert d == self.d
+        assert k > 0
+
+        qualified_labels = np.ascontiguousarray(qualified_labels, dtype="uint32")
+        n_labels = qualified_labels.shape[0]
+
+        if D is None:
+            D = np.empty((n, k), dtype=np.float32)
+        else:
+            assert D.shape == (n, k)
+
+        if I is None:
+            I = np.empty((n, k), dtype=np.int64)
+        else:
+            assert I.shape == (n, k)
+
+        self.search_with_bitmap_filter_c(
+            n,
+            swig_ptr(x),
+            k,
+            swig_ptr(qualified_labels),
+            n_labels,
+            swig_ptr(D),
+            swig_ptr(I),
+            params,
+        )
+        return D, I
+
+    try:
+        replace_method(
+            the_class, "build_index_for_filter", replacement_build_index_for_filter
+        )
+        replace_method(
+            the_class, "search_with_bitmap_filter", replacement_search_with_bitmap_filter
+        )
+    except AttributeError as e:
+        # Only Curator has these methods. Other subclasses of MultiTenantIndex raise AttributeError.
+        pass
+
     replace_method(the_class, "add_vector", replacement_add_vector)
     replace_method(the_class, "add_vector_with_ids", replacement_add_vector_with_ids)
     replace_method(the_class, "grant_access", replacement_grant_access)

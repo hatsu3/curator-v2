@@ -136,8 +136,61 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         top_dists, top_ids = self.index.search(x[None], k, predicate)  # type: ignore
         return top_ids[0].tolist()
 
-    def index_filter(self, filter: str) -> None:
-        self.index.build_index_for_filter(filter)
+    def index_bitmap_filter(
+        self, qualified_labels: np.ndarray | list[int], filter_key: str
+    ) -> None:
+        """Build index for bitmap filter using explicit list of qualified labels.
+
+        Parameters
+        ----------
+        qualified_labels : list[int]
+            List of vector labels that qualify for this filter
+        filter_key : str
+            String identifier for this filter for caching purposes
+        """
+        qualified_labels = np.array(qualified_labels, dtype=np.uint32)
+        self.index.build_index_for_filter(qualified_labels, filter_key)  # type: ignore
+
+    def get_filter_label(self, filter_key: str) -> int:
+        """Get the filter label for a given filter key.
+
+        Parameters
+        ----------
+        filter_key : str
+            String identifier for the filter that was used in build_index_for_filter.
+
+        Returns
+        -------
+        int
+            The filter label assigned to this filter, which can be used as tenant ID
+            in regular search methods to use the specialized index.
+        """
+        return self.index.get_filter_label(filter_key)  # type: ignore
+
+    def search_with_bitmap_filter(
+        self, x: np.ndarray, k: int, qualified_labels: np.ndarray | list[int]
+    ) -> list[int]:
+        """Search using bitmap filter with explicit list of qualified labels.
+
+        Parameters
+        ----------
+        x : np.ndarray
+            Query vector
+        k : int
+            Number of nearest neighbors to return
+        qualified_labels : np.ndarray
+            List of vector labels that are allowed in search results
+
+        Returns
+        -------
+        list[int]
+            List of nearest neighbor labels
+        """
+        qualified_labels = np.array(qualified_labels, dtype=np.uint32)
+        top_dists, top_ids = self.index.search_with_bitmap_filter(
+            x[None], k, qualified_labels
+        )  # type: ignore
+        return top_ids[0].tolist()
 
     def query_unfiltered(self, x: np.ndarray, k: int) -> list[int]:
         top_dists, top_ids = self.index.search(x[None], k, -1)  # type: ignore

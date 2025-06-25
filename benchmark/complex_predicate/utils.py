@@ -155,3 +155,26 @@ def compute_ground_truth(
         )
 
     return ground_truths, selectivities
+
+
+def compute_qualified_labels(filter_str: str, train_mds: list[list[int]]) -> np.ndarray:
+    """
+    Compute the list of vector IDs that satisfy the given filter.
+
+    Parameters
+    ----------
+    filter_str : str
+        Filter string in Polish notation (e.g., "OR 1 2")
+    train_mds : list[list[int]]
+        List of access lists for each training vector
+
+    Returns
+    -------
+    np.ndarray
+        Array of vector IDs that satisfy the filter
+    """
+    qualified_ids = []
+    for i, md in enumerate(train_mds):
+        if md and evaluate_predicate(filter_str, md):
+            qualified_ids.append(i)
+    return np.array(qualified_ids, dtype=np.int64)
