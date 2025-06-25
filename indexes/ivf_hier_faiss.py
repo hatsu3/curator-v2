@@ -130,7 +130,9 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         top_dists, top_ids = self.index.search(x[None], k, tenant_id)  # type: ignore
         return top_ids[0].tolist()
 
-    def query_with_complex_predicate(self, x: np.ndarray, k: int, predicate: str) -> list[int]:
+    def query_with_complex_predicate(
+        self, x: np.ndarray, k: int, predicate: str
+    ) -> list[int]:
         top_dists, top_ids = self.index.search(x[None], k, predicate)  # type: ignore
         return top_ids[0].tolist()
 
@@ -144,7 +146,9 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
     def batch_query(
         self, X: np.ndarray, k: int, access_lists: list[list[int]], num_threads: int = 1
     ) -> list[list[int]]:
-        raise NotImplementedError("Batch querying is not supported for IVFFlatMultiTenantBFHierFaiss")
+        raise NotImplementedError(
+            "Batch querying is not supported for IVFFlatMultiTenantBFHierFaiss"
+        )
 
     def enable_stats_tracking(self, enable: bool = True):
         self.index.enable_stats_tracking(enable)

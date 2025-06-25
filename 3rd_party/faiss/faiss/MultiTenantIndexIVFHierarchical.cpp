@@ -2,18 +2,171 @@
 
 #include <faiss/MultiTenantIndexIVFHierarchical.h>
 
+// Debug output can be enabled/disabled at compile time
+#ifdef CURATOR_ENABLE_DEBUG
+#define DEBUG_PRINTF(...) printf(__VA_ARGS__)
+#else
+#define DEBUG_PRINTF(...) do {} while(0)
+#endif
+
 #include <omp.h>
+#include <chrono>
 #include <cinttypes>
 #include <cstdio>
 #include <deque>
+#include <fstream>
+#include <map>
+#include <mutex>
 #include <queue>
+#include <set>
 
 #include <faiss/Clustering.h>
 #include <faiss/utils/distances.h>
 #include <faiss/utils/prefetch.h>
 #include <faiss/utils/utils.h>
+#include "MultiTenantIndexIVFHierarchical.h"
 
 namespace faiss {
+namespace complex_predicate {
+
+void build_temp_index_for_filter(
+        const MultiTenantIndexIVFHierarchical* index,
+        const std::vector<int_vid_t>& sorted_qualified_vecs,
+        std::vector<TempIndexNode>& nodes) {
+    // Verify that the input vector is sorted
+    FAISS_THROW_IF_NOT_MSG(
+            std::is_sorted(
+                    sorted_qualified_vecs.begin(), sorted_qualified_vecs.end()),
+            "Input vector must be sorted in ascending order");
+
+    // Check for duplicates in input
+    std::set<int_vid_t> unique_vids(
+            sorted_qualified_vecs.begin(), sorted_qualified_vecs.end());
+    if (unique_vids.size() != sorted_qualified_vecs.size()) {
+        printf("[ERROR] ❌ INPUT HAS DUPLICATES: %zu unique out of %zu total\n",
+               unique_vids.size(),
+               sorted_qualified_vecs.size());
+
+        // Print first few duplicates
+        std::map<int_vid_t, int> vid_count;
+        for (auto vid : sorted_qualified_vecs) {
+            vid_count[vid]++;
+        }
+
+        int shown = 0;
+        for (const auto& [vid, count] : vid_count) {
+            if (count > 1 && shown < 10) {
+                DEBUG_PRINTF("[DEBUG] - VID %d appears %d times\n", vid, count);
+                shown++;
+            }
+        }
+    } else {
+        DEBUG_PRINTF("[DEBUG] ✅ Input vector has no duplicates: %zu unique vectors\n",
+               sorted_qualified_vecs.size());
+    }
+
+    // Build the tree
+    // Helper function to recursively build temp index tree
+    std::function<int(int, int, TreeNode*)> build_temp_tree =
+            [&](int start, int end, TreeNode* curr_node) -> int {
+        // Create new node
+        int curr_node_idx = nodes.size();
+        float* centroid = curr_node->centroid;
+        nodes.push_back(TempIndexNode{start, end, /*children*/ {}, centroid});
+
+        DEBUG_PRINTF("[DEBUG] Building node %d: range [%d, %d), size=%d\n",
+               curr_node_idx,
+               start,
+               end,
+               end - start);
+
+        // Base case - leaf node or # qualfied vectors is small enough for
+        // buffering
+        if (end - start <= index->max_sl_size || curr_node->children.empty()) {
+            DEBUG_PRINTF("[DEBUG] Node %d is leaf (size=%d, max_sl_size=%zu, has_children=%s)\n",
+                   curr_node_idx,
+                   end - start,
+                   index->max_sl_size,
+                   curr_node->children.empty() ? "false" : "true");
+            return curr_node_idx;
+        }
+
+        // Calculate offset and mask to extract branch idx from vector ID
+        auto level = curr_node->level;
+        auto offset = sizeof(int_vid_t) * 8 -
+                CURATOR_MAX_BRANCH_FACTOR_LOG2 * (level + 1);
+        auto mask = (CURATOR_MAX_BRANCH_FACTOR - 1);
+
+        DEBUG_PRINTF("[DEBUG] Node %d: level=%zu, offset=%d, mask=%d\n",
+               curr_node_idx,
+               level,
+               offset,
+               mask);
+
+        // Find ranges of vector IDs for each child using binary search
+        // We only compare the part of bits in vector IDs that corresponds to
+        // the current level
+        std::vector<std::pair<int, int>> child_ranges;
+        child_ranges.reserve(index->n_clusters);
+
+        for (int child_idx = 0; child_idx < index->n_clusters; child_idx++) {
+            // Find first element with current prefix
+            int first = std::lower_bound(
+                                sorted_qualified_vecs.begin() + start,
+                                sorted_qualified_vecs.begin() + end,
+                                child_idx,
+                                [offset, mask](int_vid_t vid, int child_idx) {
+                                    return ((vid >> offset) & mask) < child_idx;
+                                }) -
+                    sorted_qualified_vecs.begin();
+
+            // Find first element with next prefix
+            int last = std::lower_bound(
+                               sorted_qualified_vecs.begin() + first,
+                               sorted_qualified_vecs.begin() + end,
+                               child_idx + 1,
+                               [offset, mask](int_vid_t vid, int child_idx) {
+                                   return ((vid >> offset) & mask) < child_idx;
+                               }) -
+                    sorted_qualified_vecs.begin();
+
+            child_ranges.emplace_back(first, last);
+
+            if (first != last) {
+                DEBUG_PRINTF("[DEBUG] Child %d: range [%d, %d), size=%d\n",
+                       child_idx,
+                       first,
+                       last,
+                       last - first);
+            }
+        }
+
+        // Recursively build child nodes
+        for (int child_idx = 0; child_idx < index->n_clusters; child_idx++) {
+            auto& range = child_ranges[child_idx];
+            // If at least one vector ID belongs to this child, build the child
+            if (range.first != range.second) {
+                TreeNode* child_node = curr_node->children[child_idx];
+                int child_node_idx =
+                        build_temp_tree(range.first, range.second, child_node);
+                nodes[curr_node_idx].children.push_back(child_node_idx);
+            }
+        }
+
+        return curr_node_idx;
+    };
+
+    // Start building from root node over all qualified vectors
+    if (!sorted_qualified_vecs.empty()) {
+        DEBUG_PRINTF("[DEBUG] Starting temp index build with %zu vectors\n",
+               sorted_qualified_vecs.size());
+        build_temp_tree(0, sorted_qualified_vecs.size(), index->tree_root);
+        DEBUG_PRINTF("[DEBUG] Temp index build complete: %zu nodes created\n",
+               nodes.size());
+    }
+}
+
+} // namespace complex_predicate
 
 template <>
 const int_lid_t TenantIdAllocator::INVALID_ID = -1;
@@ -424,37 +577,6 @@ void MultiTenantIndexIVFHierarchical::search(
         idx_t n,
         const float* x,
         idx_t k,
-        const std::string& filter,
-        float* distances,
-        idx_t* labels,
-        const SearchParameters* params) const {
-    // if the filter is already indexed, perform simple filtered search
-    // here we only do exact match, but it's possible to perform subexpression
-    // matching in the future
-    auto filter_label = filter_to_label.find(filter);
-    if (filter_label != filter_to_label.end()) {
-        ext_lid_t tid = filter_label->second;
-        search(n, x, k, tid, distances, labels, params);
-        return;
-    }
-
-    auto converted_filter = convert_complex_predicate(filter);
-
-    for (idx_t i = 0; i < n; i++) {
-        search_one(
-                x + i * d,
-                k,
-                converted_filter,
-                distances + i * k,
-                labels + i * k,
-                params);
-    }
-}
-
-void MultiTenantIndexIVFHierarchical::search(
-        idx_t n,
-        const float* x,
-        idx_t k,
         float* distances,
         idx_t* labels,
         const SearchParameters* params) const {
@@ -811,6 +933,8 @@ void filtered_search_experimental(
         labels[i] = index.id_allocator.get_label(cand_vectors.vids[i]);
         distances[i] = cand_vectors.dists[i];
     }
+
+    heap_reorder<HeapForL2>(k, distances, labels);
 }
 }; // namespace
 
@@ -1450,7 +1574,7 @@ std::vector<int_vid_t> MultiTenantIndexIVFHierarchical::find_all_qualified_vecs(
                 auto diff = buffer_difference(leaf_vecs, buffer);
                 qual_vecs.insert(qual_vecs.end(), diff.begin(), diff.end());
             } else {
-                printf("False positive in bloom filter\n");
+                // printf("False positive in bloom filter\n");
             }
         } else {
             for (auto child : node->children) {
@@ -1722,6 +1846,589 @@ void MultiTenantIndexIVFHierarchical::memory_usage() const {
     printf("Vector indices: %lu bytes\n", vector_indices_total_size);
     printf("Centroids: %lu bytes\n", centroid_total_size);
     printf("Node attributes: %lu bytes\n", node_attrs_total_size);
+}
+
+namespace complex_predicate {
+
+// This search algorithm is a modified version of the single-label filtering
+// algorithm using search_ef to terminate the search. Beam search is used to
+// initialize the search frontier. Variance boost is disabled for simplicity.
+// void search_temp_index(
+//         const MultiTenantIndexIVFHierarchical* index,
+//         const std::vector<int_vid_t>& qualified_vecs,
+//         const std::vector<TempIndexNode>& nodes,
+//         const float* x,
+//         idx_t k,
+//         float* distances,
+//         idx_t* labels,
+//         const SearchParameters* params) {
+//     using Candidate = std::pair<float, int>; // (score, node idx in temp index)
+
+//     DEBUG_PRINTF("[DEBUG] search_temp_index: qualified_vecs.size()=%zu, nodes.size()=%zu, k=%ld\n",
+//            qualified_vecs.size(),
+//            nodes.size(),
+//            k);
+
+//     // Return if the temp index is empty
+//     if (nodes.empty()) {
+//         DEBUG_PRINTF("[DEBUG] search_temp_index: nodes is empty, returning\n");
+//         return;
+//     }
+//     if (index->beam_size == 0) {
+//         DEBUG_PRINTF("[DEBUG] search_temp_index: beam_size is 0, throwing error\n");
+//         FAISS_THROW_MSG("beam_size must be greater than 0");
+//     }
+
+//     DEBUG_PRINTF("[DEBUG] search_temp_index: beam_size=%zu, search_ef=%zu\n",
+//            index->beam_size,
+//            index->search_ef);
+
+//     /* STAGE 1: BEAM SEARCH */
+
+//     std::vector<Candidate> beam;       // beam of current step
+//     std::vector<Candidate> next_beam;  // beam of next step
+//     std::vector<Candidate> unexpanded; // unexpanded nodes during beam search
+
+//     // Initialize beam with root node
+//     float score = fvec_L2sqr(x, nodes[0].centroid, index->d);
+//     beam.emplace_back(score, 0);
+
+//     while (true) {
+//         bool updated =
+//                 false; // if beam is updated by successfully expanding a node
+//         for (auto [score, node_idx] : beam) {
+//             const TempIndexNode& node = nodes[node_idx];
+//             if (node.children.empty()) {
+//                 next_beam.emplace_back(score, node_idx);
+//             } else {
+//                 updated = true;
+//                 for (int child_idx : node.children) {
+//                     // Variance boost is disabled for simplicity
+//                     float child_score =
+//                             fvec_L2sqr(x, nodes[child_idx].centroid, index->d);
+//                     next_beam.emplace_back(child_score, child_idx);
+//                 }
+//             }
+//         }
+
+//         // Break if beam is not updated (i.e., next beam = current beam)
+//         if (!updated) {
+//             break;
+//         }
+
+//         // Only expand the top-beam-width nodes in the next step
+//         // Move the rest of the nodes to unexpanded list
+//         std::sort(next_beam.begin(), next_beam.end());
+
+//         auto n_keep = std::min(index->beam_size, next_beam.size());
+//         for (size_t i = n_keep; i < next_beam.size(); i++) {
+//             unexpanded.push_back(next_beam[i]);
+//         }
+//         next_beam.resize(n_keep);
+
+//         std::swap(beam, next_beam);
+//         next_beam.clear();
+//     }
+
+//     // Check for overlaps between beam and unexpanded
+//     DEBUG_PRINTF("[DEBUG] Beam search complete: beam size=%zu, unexpanded size=%zu\n",
+//            beam.size(),
+//            unexpanded.size());
+
+//     std::set<int> beam_nodes;
+//     std::set<int> unexpanded_nodes;
+
+//     for (const auto& [score, node_idx] : beam) {
+//         if (beam_nodes.count(node_idx) > 0) {
+//             printf("[ERROR] ❌ DUPLICATE IN BEAM: Node %d appears multiple times in beam\n",
+//                    node_idx);
+//         }
+//         beam_nodes.insert(node_idx);
+//     }
+
+//     for (const auto& [score, node_idx] : unexpanded) {
+//         if (unexpanded_nodes.count(node_idx) > 0) {
+//             printf("[ERROR] ❌ DUPLICATE IN UNEXPANDED: Node %d appears multiple times in unexpanded\n",
+//                    node_idx);
+//         }
+//         unexpanded_nodes.insert(node_idx);
+//     }
+
+//     // Check for overlap between beam and unexpanded
+//     std::set<int> overlap;
+//     std::set_intersection(
+//             beam_nodes.begin(),
+//             beam_nodes.end(),
+//             unexpanded_nodes.begin(),
+//             unexpanded_nodes.end(),
+//             std::inserter(overlap, overlap.begin()));
+
+//     if (!overlap.empty()) {
+//         printf("[ERROR] ❌ BEAM/UNEXPANDED OVERLAP: %zu nodes appear in both beam and unexpanded: ",
+//                overlap.size());
+//         for (int node_idx : overlap) {
+//             DEBUG_PRINTF("%d ", node_idx);
+//         }
+//         DEBUG_PRINTF("\n");
+//     } else {
+//         DEBUG_PRINTF("[DEBUG] ✅ No overlap between beam and unexpanded\n");
+//     }
+
+//     /* STAGE 2: BEST-FIRST SEARCH */
+
+//     // Distance computer to compute distances between query and indexed vectors
+//     DistanceComputer* disc = index->storage->get_distance_computer();
+//     disc->set_query(x);
+
+//     // Limited size result set. The final top-k candidates will be returned
+//     RunningList cand_vectors(index->search_ef);
+
+//     // Temporary array holding vectors in a buffer to be merged into the result
+//     // set
+//     std::vector<std::pair<float, int_vid_t>> sorted_cands;
+//     sorted_cands.reserve(index->max_sl_size);
+
+//     // Initialize search frontier with the frontier from beam search
+//     // i.e., nodes in the beam of the last step and all visited-but-not-expanded
+//     // nodes
+//     MinHeap<Candidate> frontier;
+//     std::set<int> nodes_in_frontier; // Track nodes added to frontier
+
+//     for (auto& cand : unexpanded) {
+//         frontier.push(cand);
+//         int node_idx = cand.second;
+//         if (nodes_in_frontier.count(node_idx) > 0) {
+//             DEBUG_PRINTF("[DEBUG] ❌ FRONTIER DUPLICATE (unexpanded): Node %d already in frontier\n",
+//                    node_idx);
+//         }
+//         nodes_in_frontier.insert(node_idx);
+//     }
+//     for (auto& cand : beam) {
+//         frontier.push(cand);
+//         int node_idx = cand.second;
+//         if (nodes_in_frontier.count(node_idx) > 0) {
+//             DEBUG_PRINTF("[DEBUG] ❌ FRONTIER DUPLICATE (beam): Node %d already in frontier\n",
+//                    node_idx);
+//         }
+//         nodes_in_frontier.insert(node_idx);
+//     }
+
+//     // Track which nodes we've visited and which vector IDs we've processed
+//     std::set<int> visited_nodes;
+//     std::map<int_vid_t, int> vid_count;
+
+//     DEBUG_PRINTF("[DEBUG] Starting best-first search with frontier size: %zu\n",
+//            frontier.size());
+
+//     // Main loop of the search algorithm
+//     int loop_count = 0;
+//     while (!frontier.empty()) {
+//         auto [score, node_idx] = frontier.top();
+//         frontier.pop();
+//         loop_count++;
+
+//         // Check if we've visited this node before - this should NEVER happen
+//         if (visited_nodes.count(node_idx) > 0) {
+//             DEBUG_PRINTF("[DEBUG] ❌ BUG: DUPLICATE NODE VISIT: Node %d visited again at loop %d\n",
+//                    node_idx,
+//                    loop_count);
+//             // Continue processing to gather more debug info, but this is a bug
+//         }
+//         visited_nodes.insert(node_idx);
+
+//         if (loop_count <= 10) { // Print first 10 iterations
+//             DEBUG_PRINTF("[DEBUG] Loop %d: processing node %d (score=%.4f)\n",
+//                    loop_count,
+//                    node_idx,
+//                    score);
+//         }
+
+//         const TempIndexNode& node = nodes[node_idx];
+
+//         if (loop_count <= 10) {
+//             DEBUG_PRINTF("[DEBUG] Node %d range: [%d, %d), children: %zu\n",
+//                    node_idx,
+//                    node.start,
+//                    node.end,
+//                    node.children.size());
+//         }
+
+//         // Only process vectors if this is a leaf node (no children)
+//         if (node.children.empty()) {
+//             // Process vectors in current node's range
+//             for (int i = node.start; i < node.end; i++) {
+//                 int_vid_t vid = qualified_vecs[i];
+
+//                 // Track vector ID processing
+//                 vid_count[vid]++;
+//                 if (vid_count[vid] > 1) {
+//                     printf("[ERROR] ❌ DUPLICATE VID: vid=%d processed %d times (loop %d, node %d, index %d)\n",
+//                            vid,
+//                            vid_count[vid],
+//                            loop_count,
+//                            node_idx,
+//                            i);
+//                 }
+
+//                 ext_vid_t lbl = index->id_allocator.get_label(vid);
+//                 float dist = disc->operator()(lbl);
+//                 sorted_cands.emplace_back(dist, vid);
+
+//                 if (loop_count <= 5 &&
+//                     i < node.start + 3) { // Print first few vectors
+//                     DEBUG_PRINTF("[DEBUG] Processing vid=%d -> label=%u, dist=%.4f\n",
+//                            vid,
+//                            lbl,
+//                            dist);
+//                 }
+//             }
+
+//             if (!sorted_cands.empty()) {
+//                 if (loop_count <= 10) {
+//                     DEBUG_PRINTF("[DEBUG] Found %zu candidates in this LEAF node\n",
+//                            sorted_cands.size());
+//                 }
+
+//                 std::sort(sorted_cands.begin(), sorted_cands.end());
+
+//                 // Break if the result set cannot be improved by any vector in
+//                 // the buffer
+//                 bool updated = cand_vectors.batch_insert(sorted_cands);
+//                 sorted_cands.clear();
+//                 if (!updated) {
+//                     DEBUG_PRINTF("[DEBUG] Candidate list not updated, breaking at loop %d\n",
+//                            loop_count);
+//                     break;
+//                 } else if (loop_count <= 10) {
+//                     DEBUG_PRINTF("[DEBUG] Candidate list updated, current size: %zu\n",
+//                            cand_vectors.vids.size());
+//                 }
+//             }
+//         } else {
+//             if (loop_count <= 10) {
+//                 DEBUG_PRINTF("[DEBUG] Node %d is non-leaf, skipping vector processing\n",
+//                        node_idx);
+//             }
+
+//             // Add child nodes to frontier with duplicate checking
+//             for (int child_idx : node.children) {
+//                 if (nodes_in_frontier.count(child_idx) > 0) {
+//                     printf("[ERROR] ❌ CHILD ALREADY IN FRONTIER: Child node %d already in frontier (parent: %d)\n",
+//                         child_idx,
+//                         node_idx);
+//                 } else if (visited_nodes.count(child_idx) > 0) {
+//                     printf("[ERROR] ❌ CHILD ALREADY VISITED: Child node %d already visited (parent: %d)\n",
+//                         child_idx,
+//                         node_idx);
+//                 } else {
+//                     float child_score =
+//                             fvec_L2sqr(x, nodes[child_idx].centroid, index->d);
+//                     frontier.emplace(child_score, child_idx);
+//                     nodes_in_frontier.insert(child_idx);
+//                 }
+//             }
+//         }
+//     }
+
+//     DEBUG_PRINTF("[DEBUG] Search loop completed after %d iterations, found %zu candidates\n",
+//            loop_count,
+//            cand_vectors.vids.size());
+
+//     // Print duplicate statistics
+//     DEBUG_PRINTF("[DEBUG] Duplicate analysis:\n");
+//     DEBUG_PRINTF("[DEBUG] - Total unique nodes visited: %zu\n", visited_nodes.size());
+
+//     int duplicate_vid_count = 0;
+//     for (const auto& [vid, count] : vid_count) {
+//         if (count > 1) {
+//             DEBUG_PRINTF("[DEBUG] - VID %d appeared %d times\n", vid, count);
+//             duplicate_vid_count++;
+//         }
+//     }
+//     DEBUG_PRINTF("[DEBUG] - Total VIDs with duplicates: %d\n", duplicate_vid_count);
+
+//     // Extract the top-k candidates directly from the sorted candidate list
+//     auto n_results = std::min(static_cast<size_t>(k), cand_vectors.vids.size());
+
+//     // Initialize unused slots with sentinel values
+//     for (size_t i = 0; i < k; i++) {
+//         distances[i] = std::numeric_limits<float>::max();
+//         labels[i] = -1;
+//     }
+
+//     // Copy results in sorted order (best distances first)
+//     for (size_t i = 0; i < n_results; i++) {
+//         labels[i] = index->id_allocator.get_label(cand_vectors.vids[i]);
+//         distances[i] = cand_vectors.dists[i];
+//     }
+// }
+
+void search_temp_index(
+        const MultiTenantIndexIVFHierarchical* index,
+        const std::vector<int_vid_t>& qualified_vecs,
+        const std::vector<TempIndexNode>& nodes,
+        const float* x,
+        idx_t k,
+        float* distances,
+        idx_t* labels,
+        const SearchParameters* params) {
+    
+    DEBUG_PRINTF("[DEBUG] search_temp_index (simple): qualified_vecs.size()=%zu, k=%ld\n",
+           qualified_vecs.size(),
+           k);
+
+    // Return if no qualified vectors
+    if (qualified_vecs.empty()) {
+        DEBUG_PRINTF("[DEBUG] search_temp_index: no qualified vectors, returning\n");
+        // Initialize result arrays with sentinel values
+        for (size_t i = 0; i < k; i++) {
+            distances[i] = std::numeric_limits<float>::max();
+            labels[i] = -1;
+        }
+        return;
+    }
+
+    // Vector to store all (distance, vector_id) pairs
+    std::vector<std::pair<float, int_vid_t>> cand_pairs;
+    cand_pairs.reserve(qualified_vecs.size());
+
+    // Iterate over all qualified vectors and compute distances using fvec_L2sqr
+    for (size_t i = 0; i < qualified_vecs.size(); i++) {
+        int_vid_t vid = qualified_vecs[i];
+        
+        // Get the external label for this vector ID
+        ext_vid_t lbl = index->id_allocator.get_label(vid);
+        
+        // Get the storage index for this vector
+        auto storage_idx_it = index->vid_to_storage_idx.find(vid);
+        if (storage_idx_it == index->vid_to_storage_idx.end()) {
+            DEBUG_PRINTF("[WARNING] Vector ID %llu not found in storage mapping, skipping\n", vid);
+            continue;
+        }
+        idx_t storage_idx = storage_idx_it->second;
+        
+        // Get pointer to the stored vector data
+        const float* stored_vec = index->storage->get_xb() + storage_idx * index->d;
+        
+        // Compute L2 squared distance directly
+        float dist = fvec_L2sqr(x, stored_vec, index->d);
+        
+        // Store distance and vector ID
+        cand_pairs.emplace_back(dist, vid);
+        
+        if (i < 5) { // Debug: print first few vectors
+            DEBUG_PRINTF("[DEBUG] Vector %zu: vid=%llu -> label=%u, storage_idx=%ld, dist=%.4f\n",
+                   i, vid, lbl, storage_idx, dist);
+        }
+    }
+
+    // Sort candidates by distance (ascending order - smallest distance first)
+    std::sort(cand_pairs.begin(), cand_pairs.end());
+
+    DEBUG_PRINTF("[DEBUG] Sorted %zu candidates, returning top %ld\n",
+           cand_pairs.size(), k);
+
+    // Initialize result arrays with sentinel values
+    for (size_t i = 0; i < k; i++) {
+        distances[i] = std::numeric_limits<float>::max();
+        labels[i] = -1;
+    }
+
+    // Copy the top-k results
+    size_t n_results = std::min(static_cast<size_t>(k), cand_pairs.size());
+    for (size_t i = 0; i < n_results; i++) {
+        distances[i] = cand_pairs[i].first;
+        labels[i] = index->id_allocator.get_label(cand_pairs[i].second);
+        
+        if (i < 3) { // Debug: print first few results
+            DEBUG_PRINTF("[DEBUG] Result %zu: label=%ld, dist=%.4f\n",
+                   i, labels[i], distances[i]);
+            printf("[DEBUG] Result %zu: label=%ld, dist=%.4f\n",
+                   i, labels[i], distances[i]);
+        }
+    }
+    
+    DEBUG_PRINTF("[DEBUG] search_temp_index completed, returned %zu results\n", n_results);
+}
+
+} // namespace complex_predicate
+
+void MultiTenantIndexIVFHierarchical::search(
+        idx_t n,
+        const float* x,
+        idx_t k,
+        const std::string& filter,
+        float* distances,
+        idx_t* labels,
+        const SearchParameters* params) const {
+    DEBUG_PRINTF("[DEBUG] Starting complex predicate search with filter: '%s'\n",
+           filter.c_str());
+    DEBUG_PRINTF("[DEBUG] n=%ld, k=%ld\n", n, k);
+
+    // Initialize timing variables
+    auto start_total = std::chrono::high_resolution_clock::now();
+    auto start_find_label = std::chrono::high_resolution_clock::now();
+
+    // if the filter is already indexed, perform simple filtered search
+    // here we only do exact match, but it's possible to perform subexpression
+    // matching in the future
+    auto filter_label = filter_to_label.find(filter);
+    auto end_find_label = std::chrono::high_resolution_clock::now();
+
+    if (filter_label != filter_to_label.end()) {
+        DEBUG_PRINTF("[DEBUG] Filter found in cache, using cached search with tid=%u\n",
+               filter_label->second);
+        ext_lid_t tid = filter_label->second;
+        search(n, x, k, tid, distances, labels, params);
+        return;
+    }
+
+    // Convert the filter to use internal tenant IDs
+    auto start_convert = std::chrono::high_resolution_clock::now();
+    auto converted_filter = convert_complex_predicate(filter);
+    auto end_convert = std::chrono::high_resolution_clock::now();
+    DEBUG_PRINTF("[DEBUG] Converted filter: '%s' -> '%s'\n",
+           filter.c_str(),
+           converted_filter.c_str());
+
+    // Find all qualified vectors
+    auto start_find_qual = std::chrono::high_resolution_clock::now();
+    auto qualified_vecs = find_all_qualified_vecs(converted_filter);
+    auto end_find_qual = std::chrono::high_resolution_clock::now();
+    DEBUG_PRINTF("[DEBUG] Found %zu qualified vectors\n", qualified_vecs.size());
+
+    // Write qualified vectors to file for comparison with reference implementation
+    {
+        static std::mutex file_mutex;
+        std::lock_guard<std::mutex> lock(file_mutex);
+        
+        std::string filename = "/tmp/qualified_vecs.txt";
+        std::ofstream outfile(filename);
+        
+        if (outfile.is_open()) {
+            // Convert VIDs to external labels and sort
+            std::vector<ext_vid_t> qualified_labels;
+            qualified_labels.reserve(qualified_vecs.size());
+            
+            for (int_vid_t vid : qualified_vecs) {
+                ext_vid_t label = id_allocator.get_label(vid);
+                qualified_labels.push_back(label);
+            }
+            
+            std::sort(qualified_labels.begin(), qualified_labels.end());
+            
+            for (ext_vid_t label : qualified_labels) {
+                outfile << label << "\n";
+            }
+            
+            outfile.close();
+            printf("[INFO] Wrote %zu qualified vector labels to file: %s\n", qualified_labels.size(), filename.c_str());
+        } else {
+            printf("[WARNING] Failed to open file for writing: %s\n", filename.c_str());
+        }
+    }
+
+    if (qualified_vecs.empty()) {
+        DEBUG_PRINTF("[DEBUG] No qualified vectors found, returning empty results\n");
+        heap_heapify<HeapForL2>(k, distances, labels);
+        return;
+    }
+
+    // Sort qualified vectors' IDs in ascending order
+    auto start_sort = std::chrono::high_resolution_clock::now();
+    std::sort(qualified_vecs.begin(), qualified_vecs.end());
+    auto end_sort = std::chrono::high_resolution_clock::now();
+    DEBUG_PRINTF("[DEBUG] Sorted qualified vectors. First 10 vids: ");
+    for (size_t i = 0; i < std::min(qualified_vecs.size(), (size_t)10); i++) {
+        DEBUG_PRINTF("%d ", qualified_vecs[i]);
+    }
+    DEBUG_PRINTF("\n");
+
+    // Build temporary index
+    auto start_build = std::chrono::high_resolution_clock::now();
+    std::vector<complex_predicate::TempIndexNode> nodes;
+    complex_predicate::build_temp_index_for_filter(this, qualified_vecs, nodes);
+    auto end_build = std::chrono::high_resolution_clock::now();
+    DEBUG_PRINTF("[DEBUG] Built temporary index with %zu nodes\n", nodes.size());
+
+    // Search the temporary index
+    auto start_search = std::chrono::high_resolution_clock::now();
+    for (idx_t i = 0; i < n; i++) {
+        DEBUG_PRINTF("[DEBUG] Searching query %ld...\n", i);
+        complex_predicate::search_temp_index(
+                this,
+                qualified_vecs,
+                nodes,
+                x + i * d,
+                k,
+                distances + i * k,
+                labels + i * k,
+                params);
+
+        // Print results for this query
+        DEBUG_PRINTF("[DEBUG] Results for query %ld: ", i);
+        for (idx_t j = 0; j < k; j++) {
+            DEBUG_PRINTF("(id=%ld, dist=%.4f) ",
+                   labels[i * k + j],
+                   distances[i * k + j]);
+        }
+        DEBUG_PRINTF("\n");
+    }
+    auto end_search = std::chrono::high_resolution_clock::now();
+    auto end_total = std::chrono::high_resolution_clock::now();
+
+    // Calculate latencies in microseconds
+    auto find_label_latency =
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                    end_find_label - start_find_label)
+                    .count();
+    auto convert_latency =
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                    end_convert - start_convert)
+                    .count();
+    auto find_qual_latency =
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                    end_find_qual - start_find_qual)
+                    .count();
+    auto sort_latency = std::chrono::duration_cast<std::chrono::microseconds>(
+                                end_sort - start_sort)
+                                .count();
+    auto build_latency = std::chrono::duration_cast<std::chrono::microseconds>(
+                                 end_build - start_build)
+                                 .count();
+    auto search_latency = std::chrono::duration_cast<std::chrono::microseconds>(
+                                  end_search - start_search)
+                                  .count();
+    auto total_latency = std::chrono::duration_cast<std::chrono::microseconds>(
+                                 end_total - start_total)
+                                 .count();
+
+    // Write to CSV file
+    static std::mutex csv_mutex;
+    std::lock_guard<std::mutex> lock(csv_mutex);
+
+    static bool file_initialized = false;
+    static std::ofstream csv_file("/tmp/search_latency.csv", std::ios::app);
+
+    if (!file_initialized) {
+        csv_file
+                << "filter,find_label_latency,convert_latency,find_qual_latency,sort_latency,build_latency,search_latency,total_latency\n";
+        file_initialized = true;
+    }
+
+    // Escape any commas in the filter string
+    std::string escaped_filter = filter;
+    size_t pos = 0;
+    while ((pos = escaped_filter.find(",", pos)) != std::string::npos) {
+        escaped_filter.replace(pos, 1, "\\,");
+        pos += 2;
+    }
+
+    csv_file << escaped_filter << "," << find_label_latency << ","
+             << convert_latency << "," << find_qual_latency << ","
+             << sort_latency << "," << build_latency << "," << search_latency
+             << "," << total_latency << "\n";
+    csv_file.flush();
 }
 
 } // namespace faiss

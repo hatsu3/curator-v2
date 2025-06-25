@@ -490,4 +490,29 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndex {
     void memory_usage() const;
 };
 
+namespace complex_predicate {
+
+struct TempIndexNode {
+    int start, end;
+    std::vector<int> children;
+    float* centroid; // Non-owning pointer to TreeNode's centroid
+};
+
+void build_temp_index_for_filter(
+        const MultiTenantIndexIVFHierarchical* index,
+        const std::vector<int_vid_t>& sorted_qualified_vecs,
+        std::vector<TempIndexNode>& nodes);
+
+void search_temp_index(
+        const MultiTenantIndexIVFHierarchical* index,
+        const std::vector<int_vid_t>& qualified_vecs,
+        const std::vector<TempIndexNode>& nodes,
+        const float* x,
+        idx_t k,
+        float* distances,
+        idx_t* labels,
+        const SearchParameters* params);
+
+} // namespace complex_predicate
+
 } // namespace faiss
