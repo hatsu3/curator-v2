@@ -7,171 +7,175 @@ import pandas as pd
 import seaborn as sns
 
 
-def result_metric(
-    recall: float, latency_ms: float, alpha: float = 1, min_recall: float | None = None
-) -> float:
-    score = recall - alpha * latency_ms
-    if min_recall is not None and recall < min_recall:
-        score -= 1e5
-
-    return score
-
-
-def select_best_result(
-    output_dir: str = "output/complex_predicate/curator",
+def load_algo_results(
+    base_output_dir: str = "output/complex_predicate",
+    algorithm_name: str = "curator",
     dataset_key: str = "yfcc100m",
     test_size: float = 0.01,
-    templates: list[str] = ["NOT {0}", "AND {0} {1}", "OR {0} {1}"],
-    alpha: float = 1,
-    min_recall: float = 0.8,
-) -> list[dict]:
-    results_dir = Path(output_dir) / f"{dataset_key}_test{test_size}" / "results"
+):
+    """Load results from algorithm output directory."""
+    algo_dir = Path(base_output_dir) / algorithm_name
+    results_dir = algo_dir / f"{dataset_key}_test{test_size}" / "results"
+
     if not results_dir.exists():
         raise ValueError(f"Results directory {results_dir} does not exist")
 
-    agg_results = {template: list() for template in templates}
+    all_results = list()
     for json_file in results_dir.glob("*.json"):
         for result in json.load(open(json_file)):
             for template, per_template_result in result["per_template_results"].items():
-                agg_results[template].append(per_template_result)
+                all_results.append({"template": template, **per_template_result})
 
-    best_results = list()
-    for template, results in agg_results.items():
-        if len(results) == 0:  # experiment skipped
+    all_results_df = pd.DataFrame(all_results)
+    all_results_df["template"] = all_results_df["template"].str.split(" ").str[0]
+    return all_results_df
+
+
+def select_pareto_front(
+    df: pd.DataFrame,
+    x_key: str = "query_lat_avg",
+    y_key: str = "recall_at_k",
+    min_x: bool = True,  # minimize x
+    min_y: bool = False,  # maximize y
+):
+    def is_dominated(r1, r2):
+        x_worse = r1[x_key] > r2[x_key] if min_x else r1[x_key] < r2[x_key]
+        y_worse = r1[y_key] > r2[y_key] if min_y else r1[y_key] < r2[y_key]
+        return x_worse and y_worse
+
+    pareto_front = []
+    for i, r1 in df.iterrows():
+        if any(is_dominated(r1, r2) for _, r2 in df.iterrows()):
             continue
+        pareto_front.append(r1)
 
-        best_result = max(
-            results,
-            key=lambda result: result_metric(
-                result["recall_at_k"],
-                result["query_lat_avg"] * 1000,
-                alpha=alpha,
-                min_recall=min_recall,
-            ),
-        )
-        best_results.append(
-            {
-                "template": template,
-                "recall": best_result["recall_at_k"],
-                "query_latency_ms": best_result["query_lat_avg"] * 1000,
-            }
-        )
-
-    return best_results
+    return pd.DataFrame(pareto_front)
 
 
 def plot_overall_results(
     index_keys: list[str] = [
-        "shared_ivf"
-        "shared_hnsw",
         "curator",
         "curator_with_index",
+        "shared_hnsw",
         "per_predicate_hnsw",
+        "shared_ivf",
+        "per_predicate_ivf",
         "parlay_ivf",
+        "acorn",
     ],
     index_keys_readable: list[str] = [
-        "Shared IVF"
-        "Shared HNSW",
         "Curator",
-        "Per-Pred Curator",
+        "Curator (Indexed)",
+        "Shared HNSW",
         "Per-Pred HNSW",
+        "Shared IVF",
+        "Per-Pred IVF",
         "Parlay IVF",
+        "ACORN",
     ],
     output_dir: str = "output/complex_predicate",
     dataset_key: str = "yfcc100m",
     test_size: float = 0.01,
-    templates: list[str] = ["NOT {0}", "OR {0} {1}", "AND {0} {1}"],
-    alpha: float = 1,
-    min_recall: float = 0.7,
+    templates: list[str] = ["OR", "AND"],
     output_path: str = "output/complex_predicate/figs/overall_results.pdf",
 ):
-    best_results: dict[str, list[dict]] = dict()
-    for index_key in index_keys:
-        best_results[index_key] = select_best_result(
-            output_dir=str(Path(output_dir) / index_key),
-            dataset_key=dataset_key,
-            test_size=test_size,
-            templates=templates,
-            alpha=alpha,
-            min_recall=min_recall,
+    """Plot overall results comparing all algorithms."""
+    plt.rcParams.update({"font.size": 14})
+    fig, axes = plt.subplots(1, len(templates), figsize=(2.6 * len(templates), 3))
+
+    # Handle single template case
+    if len(templates) == 1:
+        axes = [axes]
+
+    # Custom color palette with special meanings:
+    # - Blues for Curator variants (our main algorithms)
+    # - Greens for HNSW baselines
+    # - Oranges for IVF baselines
+    # - Red for ACORN (external baseline)
+    colors = sns.color_palette("tab10", n_colors=5)
+    custom_palette = {
+        "curator": colors[0],
+        "curator_with_index": colors[0],
+        "shared_hnsw": colors[1],
+        "per_predicate_hnsw": colors[1],
+        "shared_ivf": colors[2],
+        "per_predicate_ivf": colors[2],
+        "parlay_ivf": colors[3],
+        "acorn": colors[4],
+    }
+
+    for i, (template, ax) in enumerate(zip(templates, axes)):
+        index_results = dict()
+
+        for index_key in index_keys:
+            try:
+                all_results_df = load_algo_results(
+                    base_output_dir=output_dir,
+                    algorithm_name=index_key,
+                    dataset_key=dataset_key,
+                    test_size=test_size,
+                )
+
+                template_results_df = all_results_df.query(f"template == '{template}'")
+                if len(template_results_df) == 0:
+                    raise ValueError(
+                        f"No results found for algorithm '{index_key}' with template '{template}'"
+                    )
+
+                best_results_df = select_pareto_front(
+                    template_results_df, x_key="query_lat_avg", y_key="recall_at_k"
+                )
+                index_results[index_key] = best_results_df
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to load results for algorithm '{index_key}': {e}"
+                )
+
+        agg_df = pd.concat(
+            [
+                results.assign(index_type=index_type)
+                for index_type, results in index_results.items()
+            ]
+        )
+        agg_df["query_lat_avg"] *= 1000  # convert to ms
+
+        sns.lineplot(
+            data=agg_df,
+            x="query_lat_avg",
+            y="recall_at_k",
+            hue="index_type",
+            hue_order=index_keys,
+            style="index_type",
+            style_order=index_keys,
+            ax=ax,
+            markers=True,
+            dashes=False,
+            palette=custom_palette,
         )
 
-    df = pd.concat(
-        [
-            pd.DataFrame(results).assign(index_type=index_type)
-            for index_type, results in best_results.items()
-        ]
-    )
-    df["template"] = df["template"].str.split(" ").str[0]
-    templates = [template.split(" ")[0] for template in templates]
+        if i == 0:
+            ax.set_ylabel("Recall@10")
+        else:
+            ax.set_ylabel("")
 
-    plt.rcParams.update({"font.size": 14})
-    fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-    sns.barplot(
-        data=df,
-        x="template",
-        y="recall",
-        hue="index_type",
-        ax=axes[0],
-        order=templates,
-        hue_order=index_keys,
-    )
-    axes[0].set_xlabel("Query Type")
-    axes[0].set_ylabel("Recall@10")
-    axes[0].set_ylim(0.7, 1.0)
-    axes[0].get_legend().remove()
-    axes[0].grid(axis="y", which="major", linestyle="-", alpha=0.6)
-
-    for p in axes[0].patches:
-        height = p.get_height()
-        if pd.isna(height):
-            axes[0].text(
-                p.get_x() + p.get_width() / 2,
-                0.71,
-                r"$\times$",
-                ha="center",
-                va="center",
-                color="red",
-                fontsize=14,
-                fontweight="bold",
-            )
-
-    sns.barplot(
-        data=df,
-        x="template",
-        y="query_latency_ms",
-        hue="index_type",
-        ax=axes[1],
-        order=templates,
-        hue_order=index_keys,
-    )
-    axes[1].set_xlabel("Query Type")
-    axes[1].set_ylabel("Query Latency (ms)")
-    axes[1].set_yscale("log")
-    axes[1].get_legend().remove()
-    axes[1].grid(axis="y", which="major", linestyle="-", alpha=0.6)
-
-    for p in axes[1].patches:
-        height = p.get_height()
-        if pd.isna(height):
-            axes[1].text(
-                p.get_x() + p.get_width() / 2,
-                7e-3,
-                r"$\times$",
-                ha="center",
-                va="center",
-                color="red",
-                fontsize=14,
-                fontweight="bold",
-            )
+        ax.set_xlabel("Query Latency (ms)")
+        ax.set_xscale("log")
+        ax.set_title(template)
+        ax.set_ylim(0.15, 1.05)
+        ax.minorticks_off()
+        ax.grid(visible=True, which="major", axis="both", linestyle="-", alpha=0.6)
 
     legend = fig.legend(
-        axes[1].patches[:: len(templates)],
+        axes[0].get_legend().legend_handles,
         index_keys_readable,
         loc="upper center",
         bbox_to_anchor=(0.5, 1.2),
-        ncols=(len(index_keys) + 1) // 2,
+        ncols=(len(index_keys_readable) + 1) // 2,
     )
+
+    for ax in axes:
+        if ax.get_legend():
+            ax.get_legend().remove()
 
     fig.tight_layout()
 

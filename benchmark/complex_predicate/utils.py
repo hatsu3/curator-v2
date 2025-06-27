@@ -177,4 +177,4 @@ def compute_qualified_labels(filter_str: str, train_mds: list[list[int]]) -> np.
     for i, md in enumerate(train_mds):
         if md and evaluate_predicate(filter_str, md):
             qualified_ids.append(i)
-    return np.array(qualified_ids, dtype=np.int64)
+    return np.array(qualified_ids, dtype=np.uint32)

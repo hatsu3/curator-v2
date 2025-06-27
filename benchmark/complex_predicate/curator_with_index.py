@@ -6,7 +6,6 @@ import fire
 
 from benchmark.complex_predicate.dataset import ComplexPredicateDataset
 from benchmark.complex_predicate.profiler import IndexProfilerForComplexPredicate
-from benchmark.complex_predicate.utils import compute_qualified_labels
 from benchmark.config import IndexConfig
 from benchmark.profiler import BatchProfiler
 from benchmark.utils import get_memory_usage
@@ -17,8 +16,9 @@ def exp_curator_with_index_complex_predicate(
     output_path: str,
     nlist: int = 16,
     max_sl_size: int = 256,
-    nprobe_space: list[int] = [2000, 3000, 4000],
-    prune_thres_space: list[float] = [1.2, 1.6, 2.0],
+    search_ef_space: list[int] = [32, 64, 128, 256, 512],
+    beam_size_space: list[int] = [1, 2, 4, 8],
+    variance_boost_space: list[float] = [0.4],
     dataset_key: str = "yfcc100m",
     test_size: float = 0.01,
     templates: list[str] = ["NOT {0}", "AND {0} {1}", "OR {0} {1}"],
@@ -52,9 +52,9 @@ def exp_curator_with_index_complex_predicate(
             "bf_error_rate": 0.01,
         },
         search_params={
-            "nprobe": nprobe_space[0],
-            "prune_thres": prune_thres_space[0],
-            "variance_boost": 0.4,
+            "search_ef": search_ef_space[0],
+            "beam_size": beam_size_space[0],
+            "variance_boost": variance_boost_space[0],
         },
     )
     build_results = profiler.do_build(
@@ -68,23 +68,33 @@ def exp_curator_with_index_complex_predicate(
     for __, filters in dataset.template_to_filters.items():
         for filter in filters:
             assert isinstance(profiler.index, CuratorIndex)
-            qualified_labels = compute_qualified_labels(filter, dataset.train_mds)
-            # Use the new interface with explicit qualified labels
-            profiler.index.index_bitmap_filter(qualified_labels, filter)
+            profiler.index.index_filter(filter, dataset.train_mds)
     mem_usage_after = get_memory_usage()
     build_results["filter_index_size_kb"] = mem_usage_after - mem_usage_before
 
     results = list()
-    for nprobe, prune_thres in product(nprobe_space, prune_thres_space):
-        print(f"Querying index with nprobe = {nprobe}, prune_thres = {prune_thres} ...")
-        profiler.set_index_search_params({"nprobe": nprobe, "prune_thres": prune_thres})
-        per_template_results = profiler.do_query(use_filter_labels=True)
+    for search_ef, beam_size, variance_boost in product(
+        search_ef_space, beam_size_space, variance_boost_space
+    ):
+        print(
+            f"Querying index with search_ef = {search_ef}, beam_size = {beam_size}, "
+            f"variance_boost = {variance_boost} ..."
+        )
+        profiler.set_index_search_params(
+            {
+                "search_ef": search_ef,
+                "beam_size": beam_size,
+                "variance_boost": variance_boost,
+            }
+        )
+        per_template_results = profiler.do_query()
         results.append(
             {
                 "nlist": nlist,
                 "max_sl_size": max_sl_size,
-                "nprobe": nprobe,
-                "prune_thres": prune_thres,
+                "search_ef": search_ef,
+                "beam_size": beam_size,
+                "variance_boost": variance_boost,
                 "per_template_results": per_template_results,
                 **build_results,
             }
@@ -99,8 +109,9 @@ def exp_curator_with_index_complex_predicate_param_sweep(
     cpu_groups: list[str] = ["0-3", "4-7", "8-11", "12-15"],
     nlist_space: list[int] = [8, 16, 32],
     max_sl_size_space: list[int] = [64, 128, 256],
-    nprobe_space: list[int] = [2000, 3000, 4000],
-    prune_thres_space: list[float] = [1.2, 1.6, 2.0],
+    search_ef_space: list[int] = [32, 64, 128, 256, 512],
+    beam_size_space: list[int] = [1, 2, 4, 8],
+    variance_boost_space: list[float] = [0.4],
     dataset_key: str = "yfcc100m",
     test_size: float = 0.01,
     templates: list[str] = ["NOT {0}", "AND {0} {1}", "OR {0} {1}"],
@@ -125,8 +136,9 @@ def exp_curator_with_index_complex_predicate_param_sweep(
             output_path=str(results_dir / f"{task_name}.json"),
             nlist=nlist,
             max_sl_size=max_sl_size,
-            nprobe_space=nprobe_space,
-            prune_thres_space=prune_thres_space,
+            search_ef_space=search_ef_space,
+            beam_size_space=beam_size_space,
+            variance_boost_space=variance_boost_space,
             dataset_key=dataset_key,
             test_size=test_size,
             templates=templates,

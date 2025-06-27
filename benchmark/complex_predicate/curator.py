@@ -1,6 +1,7 @@
 import json
 from itertools import product
 from pathlib import Path
+import time
 
 import fire
 
@@ -61,6 +62,14 @@ def exp_curator_complex_predicate(
         do_train=True,
         batch_insert=False,
     )
+
+    print("Building bitmaps for filters ...")
+    begin_build_bitmap = time.time()
+    for __, filters in dataset.template_to_filters.items():
+        for filter in filters:
+            assert isinstance(profiler.index, CuratorIndex)
+            profiler.index.build_filter_bitmap(filter, dataset.train_mds)
+    build_results["bitmap_build_time_s"] = time.time() - begin_build_bitmap
 
     results = list()
     for search_ef, beam_size, variance_boost in product(
