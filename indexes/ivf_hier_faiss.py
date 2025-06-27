@@ -3,6 +3,7 @@ from typing import Any
 import faiss
 import numpy as np
 
+from benchmark.complex_predicate.utils import compute_qualified_labels
 from dataset import Metadata
 from indexes.base import Index
 
@@ -69,6 +70,12 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
             self.beam_size,
         )
 
+        # Map indexed filters to their assigned labels
+        self.filter_to_label = dict()
+
+        # Map indexed filters to their precomputed bitmaps
+        self.filter_to_bitmap = dict()
+
     @property
     def params(self) -> dict[str, Any]:
         return {
@@ -130,45 +137,36 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         top_dists, top_ids = self.index.search(x[None], k, tenant_id)  # type: ignore
         return top_ids[0].tolist()
 
+    """ Complex predicate support """
+
     def query_with_complex_predicate(
         self, x: np.ndarray, k: int, predicate: str
     ) -> list[int]:
-        top_dists, top_ids = self.index.search(x[None], k, predicate)  # type: ignore
-        return top_ids[0].tolist()
+        if predicate in self.filter_to_label:  # index already built
+            return self.query(x, k, self.filter_to_label[predicate])
+        elif predicate in self.filter_to_bitmap:  # bitmap already built
+            return self.search_with_bitmap_filter(
+                x, k, self.filter_to_bitmap[predicate]
+            )
+        else:
+            raise ValueError(f"No index or bitmap found for predicate {predicate}")
 
-    def index_bitmap_filter(
-        self, qualified_labels: np.ndarray | list[int], filter_key: str
-    ) -> None:
-        """Build index for bitmap filter using explicit list of qualified labels.
+    def index_filter(self, predicate: str, train_mds: list[list[int]]) -> None:
+        """Build index for a given predicate."""
+        qualified_labels = compute_qualified_labels(predicate, train_mds)
+        self.index.build_index_for_filter(qualified_labels, predicate)  # type: ignore
+        self.filter_to_label[predicate] = self.index.get_filter_label(predicate)
 
-        Parameters
-        ----------
-        qualified_labels : list[int]
-            List of vector labels that qualify for this filter
-        filter_key : str
-            String identifier for this filter for caching purposes
-        """
-        qualified_labels = np.array(qualified_labels, dtype=np.uint32)
-        self.index.build_index_for_filter(qualified_labels, filter_key)  # type: ignore
-
-    def get_filter_label(self, filter_key: str) -> int:
-        """Get the filter label for a given filter key.
-
-        Parameters
-        ----------
-        filter_key : str
-            String identifier for the filter that was used in build_index_for_filter.
-
-        Returns
-        -------
-        int
-            The filter label assigned to this filter, which can be used as tenant ID
-            in regular search methods to use the specialized index.
-        """
-        return self.index.get_filter_label(filter_key)  # type: ignore
+    def build_filter_bitmap(self, predicate: str, train_mds: list[list[int]]) -> None:
+        """Build bitmap for a given predicate."""
+        qualified_labels = compute_qualified_labels(predicate, train_mds)
+        self.filter_to_bitmap[predicate] = qualified_labels
 
     def search_with_bitmap_filter(
-        self, x: np.ndarray, k: int, qualified_labels: np.ndarray | list[int]
+        self,
+        x: np.ndarray,
+        k: int,
+        qualified_labels: np.ndarray | list[int],
     ) -> list[int]:
         """Search using bitmap filter with explicit list of qualified labels.
 
@@ -192,6 +190,30 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         )  # type: ignore
         return top_ids[0].tolist()
 
+    def get_last_search_profile(self) -> dict[str, Any]:
+        """Get profiling data from the last search_with_bitmap_filter call.
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary containing timing information and statistics:
+            - preproc_time_ms: Time spent preprocessing (converting labels to internal IDs)
+            - sort_time_ms: Time spent sorting qualified vector IDs
+            - build_temp_index_time_ms: Time spent building temporary index structure
+            - search_time_ms: Time spent searching the temporary index
+            - qualified_labels_count: Number of input qualified labels
+            - temp_nodes_count: Number of nodes in the temporary index
+        """
+        profile = self.index.get_last_search_profile()  # type: ignore
+        return {
+            "preproc_time_ms": profile.preproc_time_ms,
+            "sort_time_ms": profile.sort_time_ms,
+            "build_temp_index_time_ms": profile.build_temp_index_time_ms,
+            "search_time_ms": profile.search_time_ms,
+            "qualified_labels_count": profile.qualified_labels_count,
+            "temp_nodes_count": profile.temp_nodes_count,
+        }
+
     def query_unfiltered(self, x: np.ndarray, k: int) -> list[int]:
         top_dists, top_ids = self.index.search(x[None], k, -1)  # type: ignore
         return top_ids[0].tolist()
@@ -203,24 +225,9 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
             "Batch querying is not supported for IVFFlatMultiTenantBFHierFaiss"
         )
 
-    def enable_stats_tracking(self, enable: bool = True):
-        self.index.enable_stats_tracking(enable)
+    def enable_stats_tracking(self, enable: bool = True) -> None:
+        self.index.set_profiling_enabled(enable)
 
-    def get_search_stats(self) -> dict[str, int]:
-        stats = self.index.get_search_stats()
-        stats = [stats.at(i) for i in range(stats.size())]
-        return dict(
-            zip(
-                [
-                    "n_dists",
-                    "n_nodes_visited",
-                    "n_bucks_unpruned",
-                    "n_bucks_pruned",
-                    "n_vecs_visited",
-                    "n_steps",
-                    "n_bf_queries",
-                    "n_var_queries",
-                ],
-                stats,
-            )
-        )
+    def get_search_stats(self) -> dict[str, Any]:
+        """Get search statistics. For compatibility, returns last search profile data."""
+        return self.get_last_search_profile()

@@ -67,7 +67,16 @@ class IVFFlatMultiTenantFaiss(Index):
     def batch_query(
         self, X: np.ndarray, k: int, access_lists: list[list[int]], num_threads: int = 1
     ) -> list[list[int]]:
-        raise NotImplementedError("Batch querying is not supported for IVFFlatMultiTenantFaiss")
+        raise NotImplementedError(
+            "Batch querying is not supported for IVFFlatMultiTenantFaiss"
+        )
+
+    def query_with_complex_predicate(
+        self, x: np.ndarray, k: int, predicate: str
+    ) -> list[int]:
+        params = faiss.SearchParametersIVF(nprobe=self.nprobe)  # type: ignore
+        top_dists, top_ids = self.index.search(x[None], k, predicate, params=params)  # type: ignore
+        return top_ids[0].tolist()
 
 
 if __name__ == "__main__":
