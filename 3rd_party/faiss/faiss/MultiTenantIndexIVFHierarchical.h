@@ -331,8 +331,19 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndex {
 
     /* auxiliary data structures */
     std::unordered_map<std::string, ext_lid_t> filter_to_label;
-    bool track_stats = false;
-    mutable std::vector<int> search_stats;
+
+    /* profiling data structures */
+    struct SearchProfilingData {
+        double preproc_time_ms = 0.0;
+        double sort_time_ms = 0.0;
+        double build_temp_index_time_ms = 0.0;
+        double search_time_ms = 0.0;
+        size_t qualified_labels_count = 0;
+        size_t temp_nodes_count = 0;
+    };
+
+    mutable SearchProfilingData last_search_profile;
+    mutable bool enable_profiling = false;
 
     /* experimental */
     size_t search_ef;
@@ -374,13 +385,7 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndex {
         }
     }
 
-    void enable_stats_tracking(bool enable) {
-        track_stats = enable;
-    }
 
-    std::vector<int> get_search_stats() const {
-        return search_stats;
-    }
 
     /*
      * API functions
@@ -486,6 +491,16 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndex {
 
     // Utility method for efficient distance computation
     float compute_vector_distance(const float* query, int_vid_t vid) const;
+
+    // Enable/disable profiling for search_with_bitmap_filter calls
+    void set_profiling_enabled(bool enabled) const {
+        enable_profiling = enabled;
+    }
+
+    // Get profiling data from last search_with_bitmap_filter call
+    SearchProfilingData get_last_search_profile() const {
+        return last_search_profile;
+    }
 };
 
 namespace complex_predicate {

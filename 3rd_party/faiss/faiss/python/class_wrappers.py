@@ -1308,7 +1308,7 @@ def handle_MultiTenantIndex(the_class):
         filter_key : str
             String identifier for this filter for caching purposes.
         """
-        qualified_labels = np.ascontiguousarray(qualified_labels, dtype="int64")
+        qualified_labels = np.ascontiguousarray(qualified_labels, dtype="uint32")
         n_labels = qualified_labels.shape[0]
 
         self.build_index_for_filter_c(swig_ptr(qualified_labels), n_labels, filter_key)

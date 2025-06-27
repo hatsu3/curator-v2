@@ -1690,12 +1690,20 @@ void MultiTenantIndexIVFHierarchical::search_with_bitmap_filter(
         idx_t* labels,
         const SearchParameters* params) const {
 
+    // Initialize profiling data only if profiling is enabled
+    if (enable_profiling) {
+        last_search_profile = SearchProfilingData{};
+        last_search_profile.qualified_labels_count = qualified_labels_size;
+    }
+
     if (qualified_labels_size == 0) {
         heap_heapify<HeapForL2>(k, distances, labels);
         return;
     }
 
-    // Convert external labels to internal vector IDs
+    // PHASE 1: Preprocessing - Convert external labels to internal vector IDs
+    auto preproc_start = enable_profiling ? std::chrono::high_resolution_clock::now() : std::chrono::high_resolution_clock::time_point{};
+    
     std::vector<int_vid_t> qualified_vecs;
     qualified_vecs.reserve(qualified_labels_size);
     
@@ -1707,19 +1715,41 @@ void MultiTenantIndexIVFHierarchical::search_with_bitmap_filter(
         }
     }
     
+    if (enable_profiling) {
+        auto preproc_end = std::chrono::high_resolution_clock::now();
+        last_search_profile.preproc_time_ms = std::chrono::duration<double, std::milli>(preproc_end - preproc_start).count();
+    }
+
     if (qualified_vecs.empty()) {
         heap_heapify<HeapForL2>(k, distances, labels);
         return;
     }
 
-    // Sort qualified vectors' IDs in ascending order
+    // PHASE 2: Sorting - Sort qualified vectors' IDs in ascending order
+    auto sort_start = enable_profiling ? std::chrono::high_resolution_clock::now() : std::chrono::high_resolution_clock::time_point{};
+    
     std::sort(qualified_vecs.begin(), qualified_vecs.end());
+    
+    if (enable_profiling) {
+        auto sort_end = std::chrono::high_resolution_clock::now();
+        last_search_profile.sort_time_ms = std::chrono::duration<double, std::milli>(sort_end - sort_start).count();
+    }
 
-    // Build temporary index
+    // PHASE 3: Build temporary index
+    auto build_start = enable_profiling ? std::chrono::high_resolution_clock::now() : std::chrono::high_resolution_clock::time_point{};
+    
     std::vector<complex_predicate::TempIndexNode> nodes;
     complex_predicate::build_temp_index_for_filter(this, qualified_vecs, nodes);
+    
+    if (enable_profiling) {
+        auto build_end = std::chrono::high_resolution_clock::now();
+        last_search_profile.build_temp_index_time_ms = std::chrono::duration<double, std::milli>(build_end - build_start).count();
+        last_search_profile.temp_nodes_count = nodes.size();
+    }
 
-    // Search the temporary index
+    // PHASE 4: Search the temporary index
+    auto search_start = enable_profiling ? std::chrono::high_resolution_clock::now() : std::chrono::high_resolution_clock::time_point{};
+    
     for (idx_t i = 0; i < n; i++) {
         complex_predicate::search_temp_index(
                 this,
@@ -1730,6 +1760,11 @@ void MultiTenantIndexIVFHierarchical::search_with_bitmap_filter(
                 distances + i * k,
                 labels + i * k,
                 params);
+    }
+    
+    if (enable_profiling) {
+        auto search_end = std::chrono::high_resolution_clock::now();
+        last_search_profile.search_time_ms = std::chrono::duration<double, std::milli>(search_end - search_start).count();
     }
 }
 
