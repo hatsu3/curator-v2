@@ -117,7 +117,7 @@ def exp_per_predicate_hnsw_complex_predicate_param_sweep(
     for construction_ef, m in product(construction_ef_space, m_space):
         task_name = f"ef{construction_ef}_m{m}"
         command = batch_profiler.build_command(
-            module="benchmark.complex_predicate.per_predicate_hnsw",
+            module="benchmark.complex_predicate.baselines.per_predicate_hnsw",
             func="exp_per_predicate_hnsw_complex_predicate",
             output_path=str(results_dir / f"{task_name}.json"),
             construction_ef=construction_ef,

@@ -12,6 +12,7 @@ from indexes.hnsw_sepidx_hnswlib import HNSWMultiTenantSepIndexHnswlib as PerLab
 
 def exp_per_label_hnsw(
     output_path: str,
+    dataset_cache_path: str | Path,
     construction_ef: int = 32,
     m: int = 16,
     search_ef_space: list[int] = [32, 64, 128, 256],
@@ -20,11 +21,17 @@ def exp_per_label_hnsw(
     num_runs: int = 1,
     n_labels: int | None = None,
     seed: int = 42,
+    return_verbose: bool = False,
 ):
     profiler = IndexProfiler()
 
     print(f"Loading dataset {dataset_key} ...")
-    dataset = Dataset.from_dataset_key(dataset_key, test_size=test_size)
+    assert Path(
+        dataset_cache_path
+    ).exists(), f"Dataset cache path {dataset_cache_path} does not exist"
+    dataset = Dataset.from_dataset_key(
+        dataset_key, test_size=test_size, cache_path=dataset_cache_path
+    )
     if n_labels is not None:
         dataset = dataset.get_random_split(n_labels, seed=seed)
     profiler.set_dataset(dataset)
@@ -41,6 +48,7 @@ def exp_per_label_hnsw(
             "search_ef": search_ef_space[0],
         },
     )
+
     build_results = profiler.do_build(
         index_config=index_config,
         do_train=False,
@@ -51,7 +59,9 @@ def exp_per_label_hnsw(
     for search_ef in search_ef_space:
         print(f"Querying index with search_ef = {search_ef} ...")
         profiler.set_index_search_params({"search_ef": search_ef})
-        query_results = profiler.do_query(num_runs=num_runs)
+        query_results = profiler.do_query(
+            num_runs=num_runs, return_verbose=return_verbose
+        )
         results.append(
             {
                 "construction_ef": construction_ef,

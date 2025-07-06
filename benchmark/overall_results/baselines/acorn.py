@@ -17,11 +17,13 @@ def load_latencies_from_binary(latencies_path: str | Path) -> list[float]:
     with Path(latencies_path).open("rb") as file:
         num_queries = int.from_bytes(file.read(8), byteorder="little", signed=False)
         latencies = np.fromfile(file, dtype=np.float64, count=num_queries)
-    return latencies.tolist()
+    # Convert from milliseconds to seconds
+    return (latencies / 1000.0).tolist()
 
 
 def construct_acorn_index(
     dataset_dir: str | Path,
+    dataset_cache_path: str | Path,
     dataset_key: str,
     test_size: float,
     index_dir: str | Path,
@@ -33,7 +35,12 @@ def construct_acorn_index(
     profiler = IndexProfiler()
 
     print(f"Loading dataset {dataset_key} ...")
-    dataset = Dataset.from_dataset_key(dataset_key, test_size=test_size)
+    assert Path(
+        dataset_cache_path
+    ).exists(), f"Dataset cache path {dataset_cache_path} does not exist"
+    dataset = Dataset.from_dataset_key(
+        dataset_key, test_size=test_size, cache_path=dataset_cache_path
+    )
     profiler.set_dataset(dataset)
 
     print(f"Building index with m = {m}, gamma = {gamma}, m_beta = {m_beta} ...")
@@ -87,6 +94,7 @@ def construct_acorn_index(
 
 def evaluate_acorn_index(
     index_dir: str | Path,
+    dataset_cache_path: str | Path,
     search_ef_space: list[int],
     output_path: str | Path,
     num_runs: int = 1,
@@ -101,7 +109,12 @@ def evaluate_acorn_index(
     dataset_key = construct_params["dataset_key"]
     test_size = construct_params["test_size"]
     print(f"Loading dataset {dataset_key} ...")
-    dataset = Dataset.from_dataset_key(dataset_key, test_size=test_size)
+    assert Path(
+        dataset_cache_path
+    ).exists(), f"Dataset cache path {dataset_cache_path} does not exist"
+    dataset = Dataset.from_dataset_key(
+        dataset_key, test_size=test_size, cache_path=dataset_cache_path
+    )
     profiler.set_dataset(dataset)
 
     index_config = IndexConfig(
@@ -154,6 +167,7 @@ def evaluate_acorn_index(
 
 def exp_acorn(
     output_path: str,
+    dataset_cache_path: str | Path,
     dataset_dir: str,
     index_dir: str,
     m: int = 32,
@@ -168,7 +182,12 @@ def exp_acorn(
     profiler = IndexProfiler()
 
     print(f"Loading dataset {dataset_key} ...")
-    dataset = Dataset.from_dataset_key(dataset_key, test_size=test_size)
+    assert Path(
+        dataset_cache_path
+    ).exists(), f"Dataset cache path {dataset_cache_path} does not exist"
+    dataset = Dataset.from_dataset_key(
+        dataset_key, test_size=test_size, cache_path=dataset_cache_path
+    )
     profiler.set_dataset(dataset)
 
     print(f"Building index with m = {m}, gamma = {gamma}, m_beta = {m_beta} ...")
@@ -185,13 +204,22 @@ def exp_acorn(
             "search_ef": search_ef_space[0],
         },
     )
-    build_results = profiler.do_build(
-        index_config=index_config,
-        do_train=False,
-        batch_insert=True,  # acorn only supports batch insert
-    )
-    memory_usage = json.load(open(Path(index_dir) / "memory_usage.json"))
-    build_results["index_size_kb"] = memory_usage["memory_usage_kb"]
+
+    # Skip index build if index already exists
+    delete_index = False  # do not delete cached index
+    if (Path(index_dir) / "index.bin").exists():
+        print(f"Index already exists at {index_dir}/index.bin, skipping build...")
+        build_results = json.load(open(Path(index_dir) / "build_results.json"))
+        profiler.set_index(index_config.index_cls(**index_config.index_params))
+    else:
+        delete_index = True
+        build_results = profiler.do_build(
+            index_config=index_config,
+            do_train=False,
+            batch_insert=True,  # acorn only supports batch insert
+        )
+        memory_usage = json.load(open(Path(index_dir) / "memory_usage.json"))
+        build_results["index_size_kb"] = memory_usage["memory_usage_kb"]
 
     results = list()
     for search_ef in search_ef_space:
@@ -222,8 +250,9 @@ def exp_acorn(
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(results).to_csv(output_path, index=False)
 
-    print(f"Deleting index at {index_dir} ...")
-    shutil.rmtree(index_dir)
+    if delete_index:
+        print(f"Deleting index at {index_dir} ...")
+        shutil.rmtree(index_dir)
 
 
 def exp_acorn_param_sweep(

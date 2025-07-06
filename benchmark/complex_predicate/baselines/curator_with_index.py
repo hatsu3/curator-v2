@@ -1,18 +1,20 @@
 import json
+import time
 from itertools import product
 from pathlib import Path
-import time
 
 import fire
 
 from benchmark.complex_predicate.dataset import ComplexPredicateDataset
 from benchmark.complex_predicate.profiler import IndexProfilerForComplexPredicate
+from benchmark.complex_predicate.utils import compute_qualified_labels
 from benchmark.config import IndexConfig
 from benchmark.profiler import BatchProfiler
+from benchmark.utils import get_memory_usage
 from indexes.ivf_hier_faiss import IVFFlatMultiTenantBFHierFaiss as CuratorIndex
 
 
-def exp_curator_complex_predicate(
+def exp_curator_with_index_complex_predicate(
     output_path: str,
     nlist: int = 16,
     max_sl_size: int = 256,
@@ -48,7 +50,7 @@ def exp_curator_complex_predicate(
             "max_sl_size": max_sl_size,
             "max_leaf_size": max_sl_size,
             "clus_niter": 20,
-            "bf_capacity": dataset.num_filters,
+            "bf_capacity": 1000,
             "bf_error_rate": 0.01,
         },
         search_params={
@@ -63,13 +65,50 @@ def exp_curator_complex_predicate(
         batch_insert=False,
     )
 
-    print("Building bitmaps for filters ...")
-    begin_build_bitmap = time.time()
-    for __, filters in dataset.template_to_filters.items():
-        for filter in filters:
+    print("Indexing filters ...")
+    mem_usage_before = get_memory_usage()
+    filter_index_times = []
+    total_filters = sum(
+        len(filters) for filters in dataset.template_to_filters.values()
+    )
+
+    for template, filters in dataset.template_to_filters.items():
+        for i, filter_predicate in enumerate(filters):
             assert isinstance(profiler.index, CuratorIndex)
-            profiler.index.build_filter_bitmap(filter, dataset.train_mds)
-    build_results["bitmap_build_time_s"] = time.time() - begin_build_bitmap
+
+            # Inline index_filter function and measure build_index_for_filter timing
+            qualified_labels = compute_qualified_labels(
+                filter_predicate, dataset.train_mds
+            )
+
+            # Measure only the build_index_for_filter latency
+            start_time = time.time()
+            profiler.index.index.build_index_for_filter(qualified_labels, filter_predicate)  # type: ignore
+            end_time = time.time()
+
+            filter_index_time = end_time - start_time
+            filter_index_times.append(filter_index_time)
+
+            # Set filter label mapping
+            profiler.index.filter_to_label[filter_predicate] = (
+                profiler.index.index.get_filter_label(filter_predicate)
+            )
+
+            if (i + 1) % 10 == 0 or i == len(filters) - 1:
+                print(f"  {template}: Indexed {i + 1}/{len(filters)} filters")
+
+    mem_usage_after = get_memory_usage()
+    build_results["filter_index_size_kb"] = mem_usage_after - mem_usage_before
+    build_results["filter_index_times"] = filter_index_times
+    build_results["total_filters"] = total_filters
+
+    print(f"Indexed {total_filters} filters total")
+    print(
+        f"Filter indexing memory overhead: {build_results['filter_index_size_kb']:.2f} KB"
+    )
+    print(
+        f"Average filter index time: {sum(filter_index_times) / len(filter_index_times):.4f} seconds"
+    )
 
     results = list()
     for search_ef, beam_size, variance_boost in product(
@@ -104,7 +143,7 @@ def exp_curator_complex_predicate(
     json.dump(results, open(output_path, "w"))
 
 
-def exp_curator_complex_predicate_param_sweep(
+def exp_curator_with_index_complex_predicate_param_sweep(
     cpu_groups: list[str] = ["0-3", "4-7", "8-11", "12-15"],
     nlist_space: list[int] = [8, 16, 32],
     max_sl_size_space: list[int] = [64, 128, 256],
@@ -117,7 +156,7 @@ def exp_curator_complex_predicate_param_sweep(
     n_filters_per_template: int = 10,
     n_queries_per_filter: int = 100,
     gt_cache_dir: str = "data/ground_truth/complex_predicate",
-    output_dir: str | Path = "output/complex_predicate/curator",
+    output_dir: str | Path = "output/complex_predicate/curator_with_index",
 ):
     params = vars()
 
@@ -130,8 +169,8 @@ def exp_curator_complex_predicate_param_sweep(
     for nlist, max_sl_size in product(nlist_space, max_sl_size_space):
         task_name = f"nlist{nlist}_sl{max_sl_size}"
         command = batch_profiler.build_command(
-            module="benchmark.complex_predicate.curator",
-            func="exp_curator_complex_predicate",
+            module="benchmark.complex_predicate.baselines.curator_with_index",
+            func="exp_curator_with_index_complex_predicate",
             output_path=str(results_dir / f"{task_name}.json"),
             nlist=nlist,
             max_sl_size=max_sl_size,
@@ -151,20 +190,4 @@ def exp_curator_complex_predicate_param_sweep(
 
 
 if __name__ == "__main__":
-    """
-    python -m benchmark.complex_predicate.curator \
-        exp_curator_complex_predicate \
-            --output_path test_curator.json \
-            --nlist 16 \
-            --max_sl_size 256 \
-            --search_ef_space "[32, 64, 128, 256, 512]" \
-            --beam_size_space "[4]" \
-            --variance_boost_space "[0.4]" \
-            --dataset_key yfcc100m \
-            --test_size 0.01 \
-            --templates '["NOT {0}", "AND {0} {1}", "OR {0} {1}"]' \
-            --n_filters_per_template 10 \
-            --n_queries_per_filter 100 \
-            --gt_cache_dir data/ground_truth/complex_predicate
-    """
     fire.Fire()

@@ -75,7 +75,7 @@ class IVFFlatMultiTenantFaiss(Index):
         self, x: np.ndarray, k: int, predicate: str
     ) -> list[int]:
         params = faiss.SearchParametersIVF(nprobe=self.nprobe)  # type: ignore
-        top_dists, top_ids = self.index.search(x[None], k, predicate, params=params)  # type: ignore
+        top_dists, top_ids = self.index.search_with_filter(x[None], k, predicate, params=params)  # type: ignore
         return top_ids[0].tolist()
 
 

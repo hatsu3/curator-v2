@@ -1,0 +1,178 @@
+{
+  "Curator": {
+    "yfcc100m": {
+      "OR": {
+        "construction_params": {
+          "nlist": 32,
+          "max_sl_size": 256,
+          "beam_size": 4,
+          "variance_boost": 0.4
+        },
+        "search_param_combinations": {
+          "search_ef": [
+            32,
+            64,
+            128,
+            256,
+            512
+          ]
+        },
+        "approach_used": "recall",
+        "adaptive_recall_threshold": 0.86435
+      }
+    }
+  },
+  "Curator (Indexed)": {
+    "yfcc100m": {
+      "OR": {
+        "construction_params": {
+          "nlist": 32,
+          "max_sl_size": 256,
+          "beam_size": 4,
+          "variance_boost": 0.4
+        },
+        "search_param_combinations": {
+          "search_ef": [
+            32,
+            64,
+            128,
+            256,
+            512
+          ]
+        },
+        "approach_used": "recall",
+        "adaptive_recall_threshold": 0.8431
+      }
+    }
+  },
+  "Shared HNSW": {
+    "yfcc100m": {
+      "OR": {
+        "construction_params": {
+          "construction_ef": 64,
+          "m": 32
+        },
+        "search_param_combinations": {
+          "search_ef": [
+            16,
+            32,
+            64,
+            128,
+            256
+          ]
+        },
+        "approach_used": "latency",
+        "adaptive_latency_threshold": 0.033233099341392514
+      }
+    }
+  },
+  "Per-Predicate HNSW": {
+    "yfcc100m": {
+      "OR": {
+        "construction_params": {
+          "construction_ef": 32,
+          "m": 16
+        },
+        "search_param_combinations": {
+          "search_ef": [
+            16,
+            32,
+            64,
+            128,
+            256
+          ]
+        },
+        "approach_used": "latency",
+        "adaptive_latency_threshold": 0.00010774493217468261
+      }
+    }
+  },
+  "Shared IVF": {
+    "yfcc100m": {
+      "OR": {
+        "construction_params": {
+          "nlist": 1024
+        },
+        "search_param_combinations": {
+          "nprobe": [
+            8,
+            16,
+            32,
+            64,
+            128
+          ]
+        },
+        "approach_used": "recall",
+        "adaptive_recall_threshold": 0.9214
+      }
+    }
+  },
+  "Per-Predicate IVF": {
+    "yfcc100m": {
+      "OR": {
+        "construction_params": {
+          "nlist": 30
+        },
+        "search_param_combinations": {
+          "nprobe": [
+            1,
+            2,
+            4,
+            8,
+            16
+          ]
+        },
+        "approach_used": "recall",
+        "adaptive_recall_threshold": 0.86415
+      }
+    }
+  },
+  "Parlay IVF": {
+    "yfcc100m": {
+      "AND": {
+        "construction_params": {
+          "cutoff": 1000,
+          "ivf_cluster_size": 500,
+          "graph_degree": 16,
+          "ivf_max_iter": 10
+        },
+        "search_param_combinations": {
+          "ivf_search_radius": [
+            1000
+          ],
+          "graph_search_L": [
+            8,
+            16,
+            32,
+            64,
+            128
+          ]
+        },
+        "approach_used": "recall",
+        "adaptive_recall_threshold": 0.987
+      }
+    }
+  },
+  "ACORN": {
+    "yfcc100m": {
+      "OR": {
+        "construction_params": {
+          "m": 64,
+          "gamma": 20,
+          "m_beta": 128
+        },
+        "search_param_combinations": {
+          "search_ef": [
+            16,
+            32,
+            64,
+            128,
+            256
+          ]
+        },
+        "approach_used": "recall",
+        "adaptive_recall_threshold": 0.95
+      }
+    }
+  }
+}

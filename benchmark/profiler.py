@@ -125,7 +125,7 @@ class Dataset:
         cls,
         dataset_key: str,
         test_size: float,
-        cache_path: Path | None = None,
+        cache_path: str | Path | None = None,
         k: int = 10,
         verbose: bool = True,
     ):
@@ -251,6 +251,7 @@ class IndexProfiler:
         assert self.index is not None, "Index not set"
         assert self.dataset is not None, "Dataset not set"
 
+        print("Training index...")
         train_start = time.time()
         train_params = train_params or {}
         self.index.train(

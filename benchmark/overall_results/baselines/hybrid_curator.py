@@ -1,19 +1,17 @@
 from pathlib import Path
 
+import faiss
 import fire
 import pandas as pd
-
-import faiss
 
 from benchmark.config import IndexConfig
 from benchmark.profiler import Dataset, IndexProfiler
 from indexes.hybrid_curator import HybridCurator
 
-# TODO: determine sel_threshold based on profiling results
-# TODO: save index to a file
 
 def exp_hybrid_curator(
     output_path: str,
+    dataset_cache_path: str | Path,
     M: int = 32,
     gamma: int = 10,
     M_beta: int = 64,
@@ -24,11 +22,17 @@ def exp_hybrid_curator(
     search_ef_space: list[int] = [16, 32, 64, 128, 256],
     dataset_key: str = "yfcc100m",
     test_size: float = 0.01,
+    return_verbose: bool = False,
 ):
     profiler = IndexProfiler()
 
     print(f"Loading dataset {dataset_key} ...")
-    dataset = Dataset.from_dataset_key(dataset_key, test_size=test_size)
+    assert Path(
+        dataset_cache_path
+    ).exists(), f"Dataset cache path {dataset_cache_path} does not exist"
+    dataset = Dataset.from_dataset_key(
+        dataset_key, test_size=test_size, cache_path=dataset_cache_path
+    )
     profiler.set_dataset(dataset)
 
     print(
@@ -78,6 +82,7 @@ def exp_hybrid_curator(
         query_results = profiler.do_query(
             batch_query=False,
             num_threads=1,
+            return_verbose=return_verbose,
         )
         results.append(
             {
@@ -103,6 +108,7 @@ if __name__ == "__main__":
     python -m benchmark.overall_results.hybrid_curator \
         exp_hybrid_curator \
             --output_path test_hybrid_curator.csv \
+            --dataset_cache_path /path/to/dataset/cache \
             --M 32 \
             --gamma 10 \
             --M_beta 64 \

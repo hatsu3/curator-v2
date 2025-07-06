@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any, Literal
@@ -244,6 +245,10 @@ class ACORN(Index):
         access_lists: list[list[int]],
         num_threads: int = 1,
     ) -> list[list[int]]:
+        # Set environment variable to control OpenMP threads for FAISS
+        env = os.environ.copy()
+        env["OMP_NUM_THREADS"] = str(num_threads)
+
         subprocess.run(
             [
                 str(acorn_binary_path / "acorn_search_index"),
@@ -253,16 +258,22 @@ class ACORN(Index):
                 str(self.dataset_dir / "train_metadata.json"),
                 str(self.index_dir / "preds.bin"),
                 str(self.index_dir / "search_latency.bin"),
+                str(self.index_dir / "ndists.bin"),
                 str(self.search_ef),
             ],
             check=True,
+            env=env,
         )
 
         return load_preds_from_binary(self.index_dir / "preds.bin")
 
     def batch_query_with_complex_predicate(
-        self, X: np.ndarray, k: int, predicates: list[str]
+        self, X: np.ndarray, k: int, predicates: list[str], num_threads: int = 1
     ) -> list[list[int]]:
+        # Set environment variable to control OpenMP threads for FAISS
+        env = os.environ.copy()
+        env["OMP_NUM_THREADS"] = str(num_threads)
+
         subprocess.run(
             [
                 str(acorn_binary_path / "acorn_complex_search"),
@@ -275,6 +286,7 @@ class ACORN(Index):
                 str(self.search_ef),
             ],
             check=True,
+            env=env,
         )
 
         return load_preds_from_binary(self.index_dir / "preds.bin")

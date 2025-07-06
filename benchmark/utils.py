@@ -74,6 +74,21 @@ def get_dataset_config(dataset_key: str, test_size: float = 0.2):
             },
         )
         dim = 192
+    elif dataset_key == "yfcc100m-10m":
+        dataset_config = YFCC100MDatasetConfig(
+            dataset_params={
+                "data_path": YFCC100M_DIR
+                / "yfcc_subsampled_nvec_10000000_nlabel_1000_vecs.npy",
+                "test_size": test_size,
+            },
+            synthesize_metadata=False,
+            metadata_params={
+                "data_path": YFCC100M_DIR
+                / "yfcc_subsampled_nvec_10000000_nlabel_1000_mds.pkl",
+                "test_size": test_size,
+            },
+        )
+        dim = 192
     elif dataset_key.startswith("randperm"):
         from dataset import get_dataset  # pylint: disable=import-outside-toplevel
 

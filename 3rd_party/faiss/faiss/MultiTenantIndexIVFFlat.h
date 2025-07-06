@@ -54,7 +54,7 @@ struct MultiTenantIndexIVFFlat : MultiTenantIndexIVF {
      * @param labels output labels, size n * k
      * @param params search parameters
      */
-    void search(
+    void search_with_filter(
             idx_t n,
             const float* x,
             idx_t k,
@@ -77,7 +77,7 @@ struct MultiTenantIndexIVFFlat : MultiTenantIndexIVF {
      * @param params search parameters
      * @param ivf_stats search stats to be updated (can be null)
      */
-    void search_preassigned(
+    void search_preassigned_with_filter(
             idx_t n,
             const float* x,
             idx_t k,

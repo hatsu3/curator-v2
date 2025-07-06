@@ -1,5 +1,4 @@
 import json
-import shutil
 from itertools import product
 from pathlib import Path
 
@@ -150,7 +149,7 @@ def exp_acorn_complex_predicate_param_sweep(
             continue
 
         command = batch_profiler.build_command(
-            module="benchmark.complex_predicate.acorn",
+            module="benchmark.complex_predicate.baselines.acorn",
             func="exp_acorn_complex_predicate",
             output_path=str(output_path),
             dataset_dir=dataset_dir,

@@ -1373,15 +1373,81 @@ def handle_MultiTenantIndex(the_class):
         )
         return D, I
 
+    def replacement_search_with_filter(
+        self, x, k, filter_str, *, params=None, D=None, I=None
+    ):
+        """Find the k nearest neighbors using complex predicate filtering.
+
+        Parameters
+        ----------
+        x : array_like
+            Query vectors, shape (n, d) where d is appropriate for the index.
+            `dtype` must be float32.
+        k : int
+            Number of nearest neighbors.
+        filter_str : str
+            Predicate filter in Polish notation (e.g., "OR 1 2", "AND 1 2").
+        params : SearchParameters
+            Search parameters of the current search (overrides the class-level params)
+        D : array_like, optional
+            Distance array to store the result.
+        I : array_like, optional
+            Labels array to store the results.
+
+        Returns
+        -------
+        D : array_like
+            Distances of the nearest neighbors, shape (n, k). When not enough results are found
+            the label is set to +Inf or -Inf.
+        I : array_like
+            Labels of the nearest neighbors, shape (n, k).
+            When not enough results are found, the label is set to -1
+        """
+
+        n, d = x.shape
+        x = np.ascontiguousarray(x, dtype="float32")
+        assert d == self.d
+
+        assert k > 0
+
+        if D is None:
+            D = np.empty((n, k), dtype=np.float32)
+        else:
+            assert D.shape == (n, k)
+
+        if I is None:
+            I = np.empty((n, k), dtype=np.int64)
+        else:
+            assert I.shape == (n, k)
+
+        self.search_with_filter_c(
+            n, swig_ptr(x), k, filter_str, swig_ptr(D), swig_ptr(I), params
+        )
+        return D, I
+
+    # Each method may or may not exist on different subclasses, so handle them separately
     try:
         replace_method(
             the_class, "build_index_for_filter", replacement_build_index_for_filter
         )
+    except AttributeError:
+        # Only some subclasses have this method
+        pass
+
+    try:
         replace_method(
-            the_class, "search_with_bitmap_filter", replacement_search_with_bitmap_filter
+            the_class,
+            "search_with_bitmap_filter",
+            replacement_search_with_bitmap_filter,
         )
-    except AttributeError as e:
-        # Only Curator has these methods. Other subclasses of MultiTenantIndex raise AttributeError.
+    except AttributeError:
+        # Only some subclasses have this method
+        pass
+
+    try:
+        replace_method(the_class, "search_with_filter", replacement_search_with_filter)
+    except AttributeError:
+        # Only some subclasses have this method
         pass
 
     replace_method(the_class, "add_vector", replacement_add_vector)

@@ -48,6 +48,9 @@ class FilteredDiskANN(Index):
                 num_threads=self.search_threads,
                 initial_search_complexity=self.ef_search,
                 enable_filters=True,
+                distance_metric="l2",
+                vector_dtype=np.float32,
+                dimensions=self.d,
             )
 
         self.track_stats: bool = False
@@ -115,6 +118,9 @@ class FilteredDiskANN(Index):
             num_threads=self.search_threads,
             initial_search_complexity=self.ef_search,
             enable_filters=True,
+            distance_metric="l2",
+            vector_dtype=np.float32,
+            dimensions=self.d,
         )
 
     def grant_access(self, label: int, tenant_id: int) -> None:
@@ -136,15 +142,7 @@ class FilteredDiskANN(Index):
             k,
             complexity=self.ef_search,
             filter_label=filter_label,
-            return_stats=self.track_stats,
         )
-
-        if self.track_stats:
-            assert isinstance(res, dap.QueryResponseWithStats)
-            self.search_stats = {
-                "n_hops": res.hops,
-                "n_dists": res.dist_comps,
-            }
 
         if self.label_map:
             return [self.label_map[id] for id in res.identifiers.tolist()]

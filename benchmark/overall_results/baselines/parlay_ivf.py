@@ -3,41 +3,62 @@ from itertools import product
 from pathlib import Path
 
 import fire
+import pandas as pd
 
-from benchmark.complex_predicate.dataset import ComplexPredicateDataset
-from benchmark.complex_predicate.profiler import IndexProfilerForComplexPredicate
 from benchmark.config import IndexConfig
-from benchmark.profiler import BatchProfiler
+from benchmark.profiler import BatchProfiler, Dataset, IndexProfiler
 from indexes.parlay_ivf import ParlayIVF
 
 
-def exp_parlay_ivf_complex_predicate(
+def write_dataset(
+    dataset_dir: str | Path = "data/parlay_ivf/overall_results",
+    dataset_key: str = "yfcc100m",
+    test_size: float = 0.01,
+    overwrite: bool = False,
+):
+    dataset_dir = Path(dataset_dir) / f"{dataset_key}_test{test_size}"
+    dataset = Dataset.from_dataset_key(dataset_key, test_size=test_size)
+    ParlayIVF(dataset_dir).write_dataset(
+        dataset.train_vecs, dataset.train_mds, overwrite=overwrite
+    )
+
+
+def exp_parlay_ivf(
     output_path: str,
-    ivf_cluster_size: int = 500,
+    dataset_cache_path: str | Path,
+    dataset_dir: str | Path = "data/parlay_ivf/overall_results",
+    cutoff: int = 10000,
+    ivf_cluster_size: int = 5000,
     graph_degree: int = 16,
     ivf_max_iter: int = 10,
     ivf_search_radius_space: list[int] = [500, 1000, 2000],
     graph_search_L_space: list[int] = [32, 64, 128],
-    construct_threads: int = 4,
+    construct_threads: int = 1,
     dataset_key: str = "yfcc100m",
     test_size: float = 0.01,
-    templates: list[str] = ["NOT {0}", "AND {0} {1}", "OR {0} {1}"],
-    n_filters_per_template: int = 10,
-    n_queries_per_filter: int = 100,
-    gt_cache_dir: str = "data/ground_truth/complex_predicate",
+    num_runs: int = 1,
+    return_verbose: bool = False,
 ):
-    profiler = IndexProfilerForComplexPredicate()
+    profiler = IndexProfiler()
 
-    print(f"Loading dataset {dataset_key} ...")
-    dataset = ComplexPredicateDataset.from_dataset_key(
-        dataset_key,
-        test_size=test_size,
-        templates=templates,
-        n_filters_per_template=n_filters_per_template,
-        n_queries_per_filter=n_queries_per_filter,
-        gt_cache_dir=gt_cache_dir,
+    dataset_dir = Path(dataset_dir) / f"{dataset_key}_test{test_size}"
+    if not dataset_dir.is_dir():
+        raise FileNotFoundError(
+            f"Dataset directory {dataset_dir} not found. "
+            f"Please write the dataset first."
+        )
+
+    # hacking: ParlayIVF loads dataset from disk
+    profiler.set_dataset(
+        Dataset(
+            train_vecs=None,  # type: ignore
+            train_mds=None,  # type: ignore
+            test_vecs=None,  # type: ignore
+            test_mds=None,  # type: ignore
+            ground_truth=None,  # type: ignore
+            all_labels=None,  # type: ignore
+        )
     )
-    profiler.set_dataset(dataset)
 
     print(
         f"Building index with ivf_cluster_size = {ivf_cluster_size}, "
@@ -46,9 +67,10 @@ def exp_parlay_ivf_complex_predicate(
     index_config = IndexConfig(
         index_cls=ParlayIVF,
         index_params={
+            "dataset_dir": str(dataset_dir),
             "index_dir": "",
             "cluster_size": ivf_cluster_size,
-            "cutoff": 10000,
+            "cutoff": cutoff,
             "max_iter": ivf_max_iter,
             "weight_classes": [100000, 400000],
             "max_degrees": [graph_degree] * 3,
@@ -56,18 +78,24 @@ def exp_parlay_ivf_complex_predicate(
             "build_threads": construct_threads,
         },
         search_params={
-            "target_points": ivf_search_radius_space[0],
+            "target_points": 1000,
             "tiny_cutoff": 1000,
-            "beam_widths": [graph_search_L_space[0]] * 3,
+            "beam_widths": [50] * 3,
             "search_limits": [100000, 400000, 3000000],
             "search_threads": 1,
         },
     )
+
     build_results = profiler.do_build(
         index_config=index_config,
         do_train=False,
         batch_insert=True,
+        with_labels=False,
     )
+
+    assert Path(dataset_cache_path).exists(), f"Dataset cache path {dataset_cache_path} does not exist"
+    dataset = Dataset.from_dataset_key(dataset_key, test_size=test_size, cache_path=dataset_cache_path)
+    profiler.set_dataset(dataset)
 
     results = list()
     for ivf_search_radius, graph_search_L in product(
@@ -83,41 +111,42 @@ def exp_parlay_ivf_complex_predicate(
                 "beam_widths": [graph_search_L] * 3,
             }
         )
-        per_template_results = profiler.do_query(templates=["AND {0} {1}"])
+        query_results = profiler.do_query(
+            batch_query=False, num_runs=num_runs, return_verbose=return_verbose
+        )
         results.append(
             {
+                "cutoff": cutoff,
                 "ivf_cluster_size": ivf_cluster_size,
                 "graph_degree": graph_degree,
                 "ivf_max_iter": ivf_max_iter,
                 "ivf_search_radius": ivf_search_radius,
                 "graph_search_L": graph_search_L,
-                "per_template_results": per_template_results,
                 **build_results,
+                **query_results,
             }
         )
 
     print(f"Saving results to {output_path} ...")
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    json.dump(results, open(output_path, "w"))
+    pd.DataFrame(results).to_csv(output_path, index=False)
 
 
-def exp_parlay_ivf_complex_predicate_param_sweep(
-    cpu_groups: list[str] = ["0-3", "4-7", "8-11", "12-15"],
+def exp_parlay_ivf_param_sweep(
+    cpu_range: tuple[int, int] = (0, 15),
+    cutoff_space: list[int] = [1000, 5000, 10000],
     ivf_cluster_size_space: list[int] = [100, 500, 1000],
     graph_degree_space: list[int] = [8, 12, 16],
     ivf_max_iter_space: list[int] = [10],
     ivf_search_radius_space: list[int] = [500, 1000, 2000],
     graph_search_L_space: list[int] = [32, 64, 128],
-    construct_threads: int = 4,
+    construct_threads: int = 1,
     dataset_key: str = "yfcc100m",
     test_size: float = 0.01,
-    templates: list[str] = ["NOT {0}", "AND {0} {1}", "OR {0} {1}"],
-    n_filters_per_template: int = 10,
-    n_queries_per_filter: int = 100,
-    gt_cache_dir: str = "data/ground_truth/complex_predicate",
-    output_dir: str | Path = "output/complex_predicate/parlay_ivf",
+    output_dir: str | Path = "output/overall_results/parlay_ivf",
 ):
     params = vars()
+    cpu_groups = list(map(str, range(cpu_range[0], cpu_range[1] + 1)))
 
     output_dir = Path(output_dir) / f"{dataset_key}_test{test_size}"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -125,14 +154,15 @@ def exp_parlay_ivf_complex_predicate_param_sweep(
     results_dir, logs_dir = output_dir / "results", output_dir / "logs"
     batch_profiler = BatchProfiler(cpu_groups, show_progress=True, log_dir=logs_dir)
 
-    for ivf_cluster_size, graph_degree, ivf_max_iter in product(
-        ivf_cluster_size_space, graph_degree_space, ivf_max_iter_space
+    for cutoff, ivf_cluster_size, graph_degree, ivf_max_iter in product(
+        cutoff_space, ivf_cluster_size_space, graph_degree_space, ivf_max_iter_space
     ):
-        task_name = f"cluster{ivf_cluster_size}_degree{graph_degree}_iter{ivf_max_iter}"
+        task_name = f"cutoff{cutoff}c{ivf_cluster_size}r{graph_degree}i{ivf_max_iter}"
         command = batch_profiler.build_command(
-            module="benchmark.complex_predicate.parlay_ivf",
-            func="exp_parlay_ivf_complex_predicate",
-            output_path=str(results_dir / f"{task_name}.json"),
+            module="benchmark.overall_results.parlay_ivf",
+            func="exp_parlay_ivf",
+            output_path=str(results_dir / f"{task_name}.csv"),
+            cutoff=cutoff,
             ivf_cluster_size=ivf_cluster_size,
             graph_degree=graph_degree,
             ivf_max_iter=ivf_max_iter,
@@ -141,10 +171,6 @@ def exp_parlay_ivf_complex_predicate_param_sweep(
             construct_threads=construct_threads,
             dataset_key=dataset_key,
             test_size=test_size,
-            templates=templates,
-            n_filters_per_template=n_filters_per_template,
-            n_queries_per_filter=n_queries_per_filter,
-            gt_cache_dir=gt_cache_dir,
         )
         batch_profiler.submit(task_name, command)
 

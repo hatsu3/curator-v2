@@ -3,17 +3,16 @@ from itertools import product
 from pathlib import Path
 
 import fire
+import pandas as pd
 
-from benchmark.complex_predicate.dataset import ComplexPredicateDataset
-from benchmark.complex_predicate.profiler import IndexProfilerForComplexPredicate
 from benchmark.config import IndexConfig
-from benchmark.profiler import BatchProfiler
-from benchmark.utils import get_memory_usage
+from benchmark.profiler import BatchProfiler, Dataset, IndexProfiler
 from indexes.ivf_hier_faiss import IVFFlatMultiTenantBFHierFaiss as CuratorIndex
 
 
-def exp_curator_with_index_complex_predicate(
+def exp_curator_opt(
     output_path: str,
+    dataset_cache_path: str | Path,
     nlist: int = 16,
     max_sl_size: int = 256,
     search_ef_space: list[int] = [32, 64, 128, 256, 512],
@@ -21,25 +20,19 @@ def exp_curator_with_index_complex_predicate(
     variance_boost_space: list[float] = [0.4],
     dataset_key: str = "yfcc100m",
     test_size: float = 0.01,
-    templates: list[str] = ["NOT {0}", "AND {0} {1}", "OR {0} {1}"],
-    n_filters_per_template: int = 10,
-    n_queries_per_filter: int = 100,
-    gt_cache_dir: str = "data/ground_truth/complex_predicate",
+    num_runs: int = 1,
+    return_verbose: bool = False,
 ):
-    profiler = IndexProfilerForComplexPredicate()
+    profiler = IndexProfiler()
 
     print(f"Loading dataset {dataset_key} ...")
-    dataset = ComplexPredicateDataset.from_dataset_key(
-        dataset_key,
-        test_size=test_size,
-        templates=templates,
-        n_filters_per_template=n_filters_per_template,
-        n_queries_per_filter=n_queries_per_filter,
-        gt_cache_dir=gt_cache_dir,
+    assert Path(dataset_cache_path).exists(), f"Dataset cache path {dataset_cache_path} does not exist"
+    dataset = Dataset.from_dataset_key(
+        dataset_key, test_size=test_size, cache_path=dataset_cache_path
     )
     profiler.set_dataset(dataset)
 
-    print(f"Building index with nlist = {nlist}, max_sl_size = {max_sl_size} ...")
+    print(f"Building index with nlist = {nlist}, max_sl_size = {max_sl_size} ... ")
     index_config = IndexConfig(
         index_cls=CuratorIndex,
         index_params={
@@ -48,13 +41,13 @@ def exp_curator_with_index_complex_predicate(
             "max_sl_size": max_sl_size,
             "max_leaf_size": max_sl_size,
             "clus_niter": 20,
-            "bf_capacity": 1000,
+            "bf_capacity": dataset.num_labels,
             "bf_error_rate": 0.01,
         },
         search_params={
+            "variance_boost": variance_boost_space[0],
             "search_ef": search_ef_space[0],
             "beam_size": beam_size_space[0],
-            "variance_boost": variance_boost_space[0],
         },
     )
     build_results = profiler.do_build(
@@ -63,22 +56,13 @@ def exp_curator_with_index_complex_predicate(
         batch_insert=False,
     )
 
-    print("Indexing filters ...")
-    mem_usage_before = get_memory_usage()
-    for __, filters in dataset.template_to_filters.items():
-        for filter in filters:
-            assert isinstance(profiler.index, CuratorIndex)
-            profiler.index.index_filter(filter, dataset.train_mds)
-    mem_usage_after = get_memory_usage()
-    build_results["filter_index_size_kb"] = mem_usage_after - mem_usage_before
-
     results = list()
     for search_ef, beam_size, variance_boost in product(
         search_ef_space, beam_size_space, variance_boost_space
     ):
         print(
             f"Querying index with search_ef = {search_ef}, beam_size = {beam_size}, "
-            f"variance_boost = {variance_boost} ..."
+            f"variance_boost = {variance_boost} ... "
         )
         profiler.set_index_search_params(
             {
@@ -87,7 +71,9 @@ def exp_curator_with_index_complex_predicate(
                 "variance_boost": variance_boost,
             }
         )
-        per_template_results = profiler.do_query()
+        query_results = profiler.do_query(
+            num_runs=num_runs, return_verbose=return_verbose
+        )
         results.append(
             {
                 "nlist": nlist,
@@ -95,32 +81,33 @@ def exp_curator_with_index_complex_predicate(
                 "search_ef": search_ef,
                 "beam_size": beam_size,
                 "variance_boost": variance_boost,
-                "per_template_results": per_template_results,
                 **build_results,
+                **query_results,
             }
         )
 
+    delete_results = profiler.do_delete()
+    for result in results:
+        result.update(delete_results)
+
     print(f"Saving results to {output_path} ...")
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    json.dump(results, open(output_path, "w"))
+    pd.DataFrame(results).to_csv(output_path, index=False)
 
 
-def exp_curator_with_index_complex_predicate_param_sweep(
-    cpu_groups: list[str] = ["0-3", "4-7", "8-11", "12-15"],
-    nlist_space: list[int] = [8, 16, 32],
-    max_sl_size_space: list[int] = [64, 128, 256],
-    search_ef_space: list[int] = [32, 64, 128, 256, 512],
+def exp_curator_opt_param_sweep(
+    cpu_range: tuple[int, int] = (0, 15),
+    nlist_space: list[int] = [16, 32],
+    max_sl_size_space: list[int] = [16, 32, 64, 128, 256, 384],
+    search_ef_space: list[int] = [32, 64, 128, 256, 512, 768, 1024],
     beam_size_space: list[int] = [1, 2, 4, 8],
     variance_boost_space: list[float] = [0.4],
     dataset_key: str = "yfcc100m",
     test_size: float = 0.01,
-    templates: list[str] = ["NOT {0}", "AND {0} {1}", "OR {0} {1}"],
-    n_filters_per_template: int = 10,
-    n_queries_per_filter: int = 100,
-    gt_cache_dir: str = "data/ground_truth/complex_predicate",
-    output_dir: str | Path = "output/complex_predicate/curator_with_index",
+    output_dir: str | Path = "output/overall_results/curator_opt",
 ):
     params = vars()
+    cpu_groups = list(map(str, range(cpu_range[0], cpu_range[1] + 1)))
 
     output_dir = Path(output_dir) / f"{dataset_key}_test{test_size}"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -130,10 +117,18 @@ def exp_curator_with_index_complex_predicate_param_sweep(
 
     for nlist, max_sl_size in product(nlist_space, max_sl_size_space):
         task_name = f"nlist{nlist}_sl{max_sl_size}"
+
+        if max_sl_size < nlist:
+            continue
+
+        if (results_dir / f"{task_name}.csv").exists():
+            print(f"Skipping finished task {task_name} ...")
+            continue
+
         command = batch_profiler.build_command(
-            module="benchmark.complex_predicate.curator_with_index",
-            func="exp_curator_with_index_complex_predicate",
-            output_path=str(results_dir / f"{task_name}.json"),
+            module="benchmark.overall_results.curator_opt",
+            func="exp_curator_opt",
+            output_path=str(results_dir / f"{task_name}.csv"),
             nlist=nlist,
             max_sl_size=max_sl_size,
             search_ef_space=search_ef_space,
@@ -141,10 +136,6 @@ def exp_curator_with_index_complex_predicate_param_sweep(
             variance_boost_space=variance_boost_space,
             dataset_key=dataset_key,
             test_size=test_size,
-            templates=templates,
-            n_filters_per_template=n_filters_per_template,
-            n_queries_per_filter=n_queries_per_filter,
-            gt_cache_dir=gt_cache_dir,
         )
         batch_profiler.submit(task_name, command)
 
@@ -152,4 +143,16 @@ def exp_curator_with_index_complex_predicate_param_sweep(
 
 
 if __name__ == "__main__":
+    """
+    python -m benchmark.overall_results.curator_opt \
+        exp_curator_opt \
+            --output_path test_curator.csv \
+            --nlist 16 \
+            --max_sl_size 256 \
+            --search_ef_space "[128]" \
+            --beam_size_space "[4]" \
+            --variance_boost_space "[0.4]" \
+            --dataset_key yfcc100m \
+            --test_size 0.01
+    """
     fire.Fire()

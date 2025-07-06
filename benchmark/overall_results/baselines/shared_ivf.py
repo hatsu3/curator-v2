@@ -14,19 +14,26 @@ from indexes.ivf_flat_mt_faiss import IVFFlatMultiTenantFaiss as SharedIVF
 # time is dominated by the query time for shared IVF
 def exp_shared_ivf(
     output_path: str,
+    dataset_cache_path: str | Path,
     nlist: int = 100,
     nprobe: int = 8,
     dataset_key: str = "yfcc100m",
     test_size: float = 0.01,
     num_runs: int = 1,
+    return_verbose: bool = False,
 ):
     profiler = IndexProfiler()
 
-    print(f"Loading dataset {dataset_key} ...")
-    dataset = Dataset.from_dataset_key(dataset_key, test_size=test_size)
+    print(f"Loading dataset {dataset_key} ...", flush=True)
+    assert Path(
+        dataset_cache_path
+    ).exists(), f"Dataset cache path {dataset_cache_path} does not exist"
+    dataset = Dataset.from_dataset_key(
+        dataset_key, test_size=test_size, cache_path=dataset_cache_path
+    )
     profiler.set_dataset(dataset)
 
-    print(f"Building index with nlist = {nlist} ...")
+    print(f"Building index with nlist = {nlist} ...", flush=True)
     index_config = IndexConfig(
         index_cls=SharedIVF,
         index_params={
@@ -37,6 +44,7 @@ def exp_shared_ivf(
             "nprobe": nprobe,
         },
     )
+
     build_results = profiler.do_build(
         index_config=index_config,
         do_train=True,
@@ -45,7 +53,7 @@ def exp_shared_ivf(
 
     print(f"Querying index with nprobe = {nprobe} ...")
     profiler.set_index_search_params({"nprobe": nprobe})
-    query_results = profiler.do_query(num_runs=num_runs)
+    query_results = profiler.do_query(num_runs=num_runs, return_verbose=return_verbose)
     results = [
         {
             "nlist": nlist,

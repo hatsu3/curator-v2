@@ -210,9 +210,7 @@ class ParlayIVF(Index):
         access_lists: list[list[int]] | None = None,
     ) -> None:
         if X is not None or access_lists is not None:
-            raise ValueError(
-                "ParlayIVF loads data from files directly during batch insertion"
-            )
+            print("WARNING: ParlayIVF loads data from files directly during batch insertion")
 
         data_path = self.dataset_dir / "data.bin"
         access_lists_path = self.dataset_dir / "access_lists.bin"

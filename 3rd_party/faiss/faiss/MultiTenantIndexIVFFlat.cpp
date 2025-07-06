@@ -266,7 +266,7 @@ class ComplexPredicateSelector : public IDSelector {
 
 } // anonymous namespace
 
-void MultiTenantIndexIVFFlat::search_preassigned(
+void MultiTenantIndexIVFFlat::search_preassigned_with_filter(
         idx_t n,
         const float* x,
         idx_t k,
@@ -580,7 +580,7 @@ void MultiTenantIndexIVFFlat::search_preassigned(
     }
 }
 
-void MultiTenantIndexIVFFlat::search(
+void MultiTenantIndexIVFFlat::search_with_filter(
         idx_t n,
         const float* x,
         idx_t k,
@@ -620,7 +620,7 @@ void MultiTenantIndexIVFFlat::search(
         double t1 = getmillisecs();
         invlists->prefetch_lists(idx.get(), n * nprobe);
 
-        search_preassigned(
+        search_preassigned_with_filter(
                 n,
                 x,
                 k,
