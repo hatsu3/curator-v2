@@ -43,6 +43,11 @@ python -m benchmark.overall_results.plotting.memory_footprint2 plot_memory_footp
     --output_path "output/overall_results2/figs/memory_footprint.pdf"
 
 
+# Update Performance
+python -m benchmark.overall_results.plotting.update_perf2 plot_update_results \
+    --output_dir "output/overall_results2" \
+    --output_path "output/overall_results2/figs/update_perf.pdf"
+
 # Complex Predicate
 python -m benchmark.complex_predicate.plotting plot_optimal_results_clean \
     --output_dir "output/complex_predicate_optimal" \

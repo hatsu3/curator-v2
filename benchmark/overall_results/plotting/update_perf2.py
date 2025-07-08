@@ -22,7 +22,7 @@ Usage:
     # Plot with custom output directory and datasets
     python -m benchmark.overall_results.plotting.update_perf2 plot_update_results \
         --output_dir output/overall_results2 \
-        --datasets '["arxiv"]' \
+        --datasets '["yfcc100m", "arxiv"]' \
         --output_path output/overall_results2/figs/update_perf.pdf
 
 Requirements:
@@ -47,12 +47,20 @@ CURATOR_DELETION_PATHS = {
     "arXiv": "output/overall_results/curator/arxiv-large-10_test0.005/results/nlist32_sl256.csv",
 }
 
+# SHARED IVF MISSING RESULTS FALLBACK
+# NOTE: Shared IVF results are missing for YFCC100M in the new results, so we use old results
+# This should be updated when new results are available
+SHARED_IVF_FALLBACK_PATHS = {
+    "YFCC100M": "output/overall_results/shared_ivf/yfcc100m-10m_test0.001/results/nlist32768_nprobe32.csv",
+}
+
 
 def load_algorithm_update_performance(
     output_dir: str,
     algorithm: str,
     dataset_key: str,
     test_size: float,
+    dataset_display_name: str = "",
 ) -> dict | None:
     """Load update performance metrics for a specific algorithm and dataset.
 
@@ -61,6 +69,7 @@ def load_algorithm_update_performance(
         algorithm: Algorithm name (e.g., 'curator', 'shared_hnsw', etc.)
         dataset_key: Dataset key (e.g., 'yfcc100m-10m', 'arxiv-large-10')
         test_size: Test size fraction
+        dataset_display_name: Display name for dataset (for fallback handling)
 
     Returns:
         Dictionary with update performance metrics, or None if not found
@@ -68,6 +77,18 @@ def load_algorithm_update_performance(
     results_path = (
         Path(output_dir) / algorithm / f"{dataset_key}_test{test_size}" / "results.csv"
     )
+
+    # Special handling for Shared IVF on YFCC100M - use old results if new ones are missing
+    if (
+        algorithm == "shared_ivf"
+        and dataset_display_name == "YFCC100M"
+        and dataset_display_name in SHARED_IVF_FALLBACK_PATHS
+    ):
+        fallback_path = SHARED_IVF_FALLBACK_PATHS[dataset_display_name]
+        print(
+            f"Using fallback results for Shared IVF on {dataset_display_name}: {fallback_path}"
+        )
+        results_path = Path(fallback_path)
 
     if not results_path.exists():
         print(f"Warning: Results file not found: {results_path}")
@@ -234,6 +255,7 @@ def load_update_performance_results(
                 algorithm=dir_name,
                 dataset_key=config["dataset_key"],
                 test_size=config["test_size"],
+                dataset_display_name=display_name,
             )
 
             result["update_performance"][display_name] = update_perf
@@ -398,7 +420,8 @@ def plot_update_results(
     ax3 = fig.add_subplot(gs[1, 3:])
 
     # Plot 1: Label Insertion (access_grant_lat_avg)
-    label_insertion_df: pd.DataFrame = df[df["access_grant_lat_avg"].notna()].copy()
+    label_insertion_df = df[df["access_grant_lat_avg"].notna()].copy()
+    assert isinstance(label_insertion_df, pd.DataFrame)
     if not label_insertion_df.empty:
         available_label_algorithms = [
             k for k in filtered_index_keys if k in set(label_insertion_df["index_key"])
@@ -422,6 +445,7 @@ def plot_update_results(
     vector_insertion_df = df[
         (~df["index_key"].str.startswith("P-")) & (df["insert_lat_avg"].notna())
     ].copy()
+    assert isinstance(vector_insertion_df, pd.DataFrame)
     if not vector_insertion_df.empty:
         non_p_algorithms = [k for k in filtered_index_keys if not k.startswith("P-")]
         available_non_p = [
@@ -484,6 +508,67 @@ def plot_update_results(
     ax3.set_xlabel("")
     ax3.set_ylabel("")
     ax3.grid(axis="y", which="major", linestyle="-", alpha=0.6)
+
+    # Add red crosses for missing data
+    def add_red_crosses_for_missing_data(
+        ax, available_data, algorithms, datasets, metric_name
+    ):
+        """Add red crosses for missing data points in a subplot."""
+        if not available_data:
+            return
+
+        # Get bar width for positioning
+        bar_width = 0.8 / len(datasets)
+
+        # Use minimum y value for cross position
+        min_y = min(row[1] for row in available_data)
+        cross_y = min_y
+
+        for i, algorithm in enumerate(algorithms):
+            for j, dataset in enumerate(datasets):
+                # Check if this combination has data
+                has_data = any(
+                    row[0] == algorithm and row[2] == dataset for row in available_data
+                )
+
+                if not has_data:
+                    # Calculate x position for this bar
+                    x_pos = i + (j - (len(datasets) - 1) / 2) * bar_width
+
+                    # Add red cross
+                    ax.plot(x_pos, cross_y, "rx", markersize=10, markeredgewidth=3)
+                    print(
+                        f"Adding red cross for missing {metric_name}: {algorithm} on {dataset} at ({x_pos:.2f}, {cross_y:.4f})"
+                    )
+
+    # Add red crosses for Plot 1: Label Insertion
+    if not label_insertion_df.empty:
+        label_data = [
+            (row["index_key"], row["access_grant_lat_avg"], row["dataset"])
+            for _, row in label_insertion_df.iterrows()
+        ]
+        add_red_crosses_for_missing_data(
+            ax1,
+            label_data,
+            filtered_index_keys,
+            dataset_display_names,
+            "label insertion",
+        )
+
+    # Add red crosses for Plot 2: Vector Insertion (non-P algorithms only)
+    if not vector_insertion_df.empty:
+        vector_data = [
+            (row["index_key"], row["insert_lat_avg"], row["dataset"])
+            for _, row in vector_insertion_df.iterrows()
+        ]
+        non_p_algorithms = [k for k in filtered_index_keys if not k.startswith("P-")]
+        add_red_crosses_for_missing_data(
+            ax2,
+            vector_data,
+            non_p_algorithms,
+            dataset_display_names,
+            "vector insertion",
+        )
 
     # Set consistent y-axis limits
     ylim_min = float("inf")
