@@ -27,6 +27,7 @@ def exp_curator_with_index_complex_predicate(
     n_filters_per_template: int = 10,
     n_queries_per_filter: int = 100,
     gt_cache_dir: str = "data/ground_truth/complex_predicate",
+    use_temp_index_caching: bool = False,
 ):
     profiler = IndexProfilerForComplexPredicate()
 
@@ -52,6 +53,7 @@ def exp_curator_with_index_complex_predicate(
             "clus_niter": 20,
             "bf_capacity": 1000,
             "bf_error_rate": 0.01,
+            "use_temp_index_caching": use_temp_index_caching,
         },
         search_params={
             "search_ef": search_ef_space[0],
@@ -102,6 +104,17 @@ def exp_curator_with_index_complex_predicate(
     build_results["filter_index_times"] = filter_index_times
     build_results["total_filters"] = total_filters
 
+    # Add temp index memory usage for temp caching strategy
+    if use_temp_index_caching:
+        if hasattr(profiler.index, "get_cached_temp_index_memory_usage"):
+            build_results["temp_index_size_kb"] = (
+                profiler.index.get_cached_temp_index_memory_usage() / 1024  # type: ignore
+            )
+        else:
+            build_results["temp_index_size_kb"] = 0
+    else:
+        build_results["temp_index_size_kb"] = 0
+
     print(f"Indexed {total_filters} filters total")
     print(
         f"Filter indexing memory overhead: {build_results['filter_index_size_kb']:.2f} KB"
@@ -109,6 +122,9 @@ def exp_curator_with_index_complex_predicate(
     print(
         f"Average filter index time: {sum(filter_index_times) / len(filter_index_times):.4f} seconds"
     )
+    if use_temp_index_caching:
+        temp_index_mb = build_results["temp_index_size_kb"] / 1024
+        print(f"Temp index memory usage: {temp_index_mb:.2f} MB")
 
     results = list()
     for search_ef, beam_size, variance_boost in product(
@@ -133,6 +149,7 @@ def exp_curator_with_index_complex_predicate(
                 "search_ef": search_ef,
                 "beam_size": beam_size,
                 "variance_boost": variance_boost,
+                "use_temp_index_caching": use_temp_index_caching,
                 "per_template_results": per_template_results,
                 **build_results,
             }
@@ -157,6 +174,7 @@ def exp_curator_with_index_complex_predicate_param_sweep(
     n_queries_per_filter: int = 100,
     gt_cache_dir: str = "data/ground_truth/complex_predicate",
     output_dir: str | Path = "output/complex_predicate/curator_with_index",
+    use_temp_index_caching: bool = False,
 ):
     params = vars()
 
@@ -183,6 +201,7 @@ def exp_curator_with_index_complex_predicate_param_sweep(
             n_filters_per_template=n_filters_per_template,
             n_queries_per_filter=n_queries_per_filter,
             gt_cache_dir=gt_cache_dir,
+            use_temp_index_caching=use_temp_index_caching,
         )
         batch_profiler.submit(task_name, command)
 

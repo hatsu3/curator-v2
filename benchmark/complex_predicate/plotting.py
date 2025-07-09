@@ -28,6 +28,7 @@ from typing import Dict, List, Optional
 
 import fire
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
 
@@ -441,15 +442,17 @@ def print_optimal_summary(
                 continue
 
             # Find best result (highest recall, if tied then lowest latency)
-            max_recall_idx = template_df["recall_at_k"].idxmax()
+            recall_series = template_df["recall_at_k"]
+            max_recall_idx = recall_series.idxmax()
             best_idx = template_df.loc[max_recall_idx]
 
             # If there are multiple with same max recall, pick the one with min latency
-            max_recall_value = template_df["recall_at_k"].max()
+            max_recall_value = recall_series.max()
             max_recall_df = template_df[template_df["recall_at_k"] == max_recall_value]
 
             if len(max_recall_df) > 1:
-                min_latency_idx = max_recall_df["query_lat_avg"].idxmin()
+                latency_series = max_recall_df["query_lat_avg"]
+                min_latency_idx = latency_series.idxmin()
                 best_idx = max_recall_df.loc[min_latency_idx]
 
             print(f"  {algorithm_name}:")
@@ -457,10 +460,11 @@ def print_optimal_summary(
                 f"    Best: Recall@10={best_idx['recall_at_k']:.3f}, Latency={float(best_idx['query_lat_avg'])*1000:.2f}ms"
             )
             print(
-                f"    Range: Recall@10=[{float(template_df['recall_at_k'].min()):.3f}, {float(template_df['recall_at_k'].max()):.3f}]"
+                f"    Range: Recall@10=[{float(recall_series.min()):.3f}, {float(recall_series.max()):.3f}]"
             )
+            latency_series = template_df["query_lat_avg"]
             print(
-                f"           Latency=[{float(template_df['query_lat_avg'].min())*1000:.2f}, {float(template_df['query_lat_avg'].max())*1000:.2f}]ms"
+                f"           Latency=[{float(latency_series.min())*1000:.2f}, {float(latency_series.max())*1000:.2f}]ms"
             )
             print(
                 f"    Configurations: {len(template_df)} search parameter combinations"
@@ -623,8 +627,8 @@ def plot_optimal_results_clean(
         combined_df["query_lat_avg"] *= 1000  # Convert to ms
 
         # Separate fast and slow algorithms
-        fast_data = combined_df[~combined_df["algorithm"].isin(slow_algorithms)]
-        slow_data = combined_df[combined_df["algorithm"].isin(slow_algorithms)]
+        fast_data = combined_df[~combined_df["algorithm"].isin(list(slow_algorithms))]
+        slow_data = combined_df[combined_df["algorithm"].isin(list(slow_algorithms))]
 
         print(f"Fast algorithms: {fast_data['algorithm'].unique().tolist()}")
         print(f"Slow algorithms: {slow_data['algorithm'].unique().tolist()}")
@@ -674,6 +678,7 @@ def plot_optimal_results_clean(
 
             ax_fast.set_xticks([0.01, 0.1])
             ax_fast.set_xticklabels(["10⁻²", "10⁻¹"])
+            ax_fast.tick_params(axis="x", which="minor", labelbottom=False)
 
             subplot_titles.append(f"{base_title} - Fast")
         else:
@@ -711,8 +716,8 @@ def plot_optimal_results_clean(
             ax_slow.set_xlabel("Query Latency (ms)")
             ax_slow.set_xscale("log")
 
-            ax_slow.set_xticks([10, 1000])
-            ax_slow.set_xticklabels(["10¹", "10³"])
+            ax_slow.set_xticks([0.1, 10, 1000])
+            ax_slow.set_xticklabels(["10⁻¹", "10¹", "10³"])
 
             subplot_titles.append(f"{base_title} - Slow")
         else:
@@ -777,6 +782,874 @@ def plot_optimal_results_clean(
         plt.savefig(output_path, bbox_inches="tight")
 
     print("Clean plot saved successfully!")
+
+
+"""
+Plotting profiling results produced by experiments/curator_prof.py.
+
+    python -m benchmark.complex_predicate.plotting plot_profiling_latency_breakdown \
+        --profiling_results_path test_curator_prof.json \
+        --output_path test_curator_prof_breakdown.pdf
+
+    python -m benchmark.complex_predicate.plotting print_profiling_summary \
+        --profiling_results_path test_curator_prof.json
+    
+    python -m benchmark.complex_predicate.plotting plot_profiling_pie_charts \
+        --profiling_results_path test_curator_prof.json \
+        --output_path test_curator_prof_pie.pdf
+"""
+
+
+def plot_profiling_latency_breakdown(
+    profiling_results_path: str,
+    output_path: str = "profiling_latency_breakdown.pdf",
+    templates: List[str] = ["AND", "OR"],
+    font_size: int = 14,
+    figsize: tuple = (12, 6),
+):
+    """Plot stacked bar chart showing search latency breakdown from profiling results.
+
+    The search_with_bitmap_filter function has 4 phases:
+    1. Preprocessing: Convert external labels to internal vector IDs
+    2. Sorting: Sort qualified vectors' IDs in ascending order
+    3. Build temporary index: Build temporary index structure
+    4. Search: Search the temporary index
+
+    Args:
+        profiling_results_path: Path to JSON file with profiling results
+        output_path: Path to save the output plot
+        templates: List of query templates to analyze
+        font_size: Font size for the plot
+        figsize: Figure size
+    """
+    print(f"=== Plotting Profiling Latency Breakdown ===")
+    print(f"Profiling results: {profiling_results_path}")
+    print(f"Templates: {templates}")
+    print(f"Output path: {output_path}")
+    print()
+
+    # Load profiling results
+    with open(profiling_results_path, "r") as f:
+        data = json.load(f)
+
+    # Handle both single result and list of results
+    if isinstance(data, list):
+        results = data
+    else:
+        results = [data]
+
+    # Extract profiling data for each template
+    template_data = {}
+
+    for result in results:
+        per_template_results = result.get("per_template_results", {})
+
+        for template_key, template_result in per_template_results.items():
+            # Clean template name (remove parameters like {0} {1})
+            clean_template = template_key.split(" ")[0]
+
+            if clean_template not in templates:
+                continue
+
+            if clean_template not in template_data:
+                template_data[clean_template] = {
+                    "preproc_times": [],
+                    "sort_times": [],
+                    "build_temp_index_times": [],
+                    "search_times": [],
+                    "total_times": [],
+                    "config_labels": [],
+                }
+
+            # Extract profiling times (convert to ms if needed)
+            preproc_times = template_result.get("preproc_times_ms", [])
+            sort_times = template_result.get("sort_times_ms", [])
+            build_times = template_result.get("build_temp_index_times_ms", [])
+            search_times = template_result.get("search_times_ms", [])
+
+            if preproc_times and sort_times and build_times and search_times:
+                # Calculate average times for this configuration
+                avg_preproc = np.mean(preproc_times)
+                avg_sort = np.mean(sort_times)
+                avg_build = np.mean(build_times)
+                avg_search = np.mean(search_times)
+                total_time = avg_preproc + avg_sort + avg_build + avg_search
+
+                template_data[clean_template]["preproc_times"].append(avg_preproc)
+                template_data[clean_template]["sort_times"].append(avg_sort)
+                template_data[clean_template]["build_temp_index_times"].append(
+                    avg_build
+                )
+                template_data[clean_template]["search_times"].append(avg_search)
+                template_data[clean_template]["total_times"].append(total_time)
+
+                # Store search_ef for x-axis labeling
+                search_ef = result.get("search_ef", "?")
+                template_data[clean_template]["config_labels"].append(search_ef)
+
+    if not template_data:
+        print("No profiling data found for specified templates!")
+        return
+
+    # Set up plotting
+    plt.rcParams.update({"font.size": font_size})
+    n_templates = len(template_data)
+    fig, axes = plt.subplots(1, n_templates, figsize=figsize)
+
+    if n_templates == 1:
+        axes = [axes]
+
+    # Colors for each phase
+    colors = {
+        "preproc": "#1f77b4",  # blue
+        "sort": "#ff7f0e",  # orange
+        "build": "#2ca02c",  # green
+        "search": "#d62728",  # red
+    }
+
+    for i, (template, data) in enumerate(template_data.items()):
+        ax = axes[i]
+
+        n_configs = len(data["preproc_times"])
+        x_pos = np.arange(n_configs)
+
+        # Create stacked bar chart
+        bottom = np.zeros(n_configs)
+
+        # Preprocessing phase
+        bars1 = ax.bar(
+            x_pos,
+            data["preproc_times"],
+            color=colors["preproc"],
+            label="Preprocessing",
+            bottom=bottom,
+        )
+        bottom += data["preproc_times"]
+
+        # Sorting phase
+        bars2 = ax.bar(
+            x_pos,
+            data["sort_times"],
+            color=colors["sort"],
+            label="Sorting",
+            bottom=bottom,
+        )
+        bottom += data["sort_times"]
+
+        # Build temp index phase
+        bars3 = ax.bar(
+            x_pos,
+            data["build_temp_index_times"],
+            color=colors["build"],
+            label="Build Temp Index",
+            bottom=bottom,
+        )
+        bottom += data["build_temp_index_times"]
+
+        # Search phase
+        bars4 = ax.bar(
+            x_pos,
+            data["search_times"],
+            color=colors["search"],
+            label="Search",
+            bottom=bottom,
+        )
+
+        # Formatting
+        ax.set_xlabel("search_ef")
+        if i == 0:
+            ax.set_ylabel("Latency (ms)")
+        ax.set_title(f"{template} Template")
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(data["config_labels"], rotation=45)
+        ax.grid(True, alpha=0.3)
+
+        # Add percentage labels on bars
+        for j in range(n_configs):
+            total = data["total_times"][j]
+
+            # Add percentage text for each phase
+            phases = [
+                (data["preproc_times"][j], "Prep"),
+                (data["sort_times"][j], "Sort"),
+                (data["build_temp_index_times"][j], "Build"),
+                (data["search_times"][j], "Search"),
+            ]
+
+            y_offset = 0
+            for phase_time, phase_label in phases:
+                if phase_time > total * 0.05:  # Only show if >5% of total
+                    pct = 100 * phase_time / total
+                    ax.text(
+                        j,
+                        y_offset + phase_time / 2,
+                        f"{pct:.1f}%",
+                        ha="center",
+                        va="center",
+                        fontsize=font_size - 4,
+                        color="white",
+                        weight="bold",
+                    )
+                y_offset += phase_time
+
+    # Add legend
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 1.05), ncol=4)
+
+    plt.tight_layout()
+
+    # Save plot
+    print(f"Saving profiling plot to {output_path}")
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, bbox_inches="tight")
+    print("Profiling plot saved successfully!")
+
+
+def print_profiling_summary(
+    profiling_results_path: str,
+    templates: List[str] = ["AND", "OR"],
+):
+    """Print summary statistics of profiling results showing latency breakdown percentages.
+
+    Args:
+        profiling_results_path: Path to JSON file with profiling results
+        templates: List of query templates to analyze
+    """
+    print(f"=== Profiling Summary ===")
+    print(f"Profiling results: {profiling_results_path}")
+    print(f"Templates: {templates}")
+    print()
+
+    # Load profiling results
+    with open(profiling_results_path, "r") as f:
+        data = json.load(f)
+
+    # Handle both single result and list of results
+    if isinstance(data, list):
+        results = data
+    else:
+        results = [data]
+
+    # Process each template
+    for template in templates:
+        print(f"--- Template: {template} ---")
+
+        all_preproc_times = []
+        all_sort_times = []
+        all_build_times = []
+        all_search_times = []
+        all_total_times = []
+        all_qualified_counts = []
+        all_temp_nodes_counts = []
+
+        config_count = 0
+
+        for result in results:
+            per_template_results = result.get("per_template_results", {})
+
+            for template_key, template_result in per_template_results.items():
+                # Clean template name (remove parameters like {0} {1})
+                clean_template = template_key.split(" ")[0]
+
+                if clean_template != template:
+                    continue
+
+                config_count += 1
+
+                # Extract profiling times
+                preproc_times = template_result.get("preproc_times_ms", [])
+                sort_times = template_result.get("sort_times_ms", [])
+                build_times = template_result.get("build_temp_index_times_ms", [])
+                search_times = template_result.get("search_times_ms", [])
+                qualified_counts = template_result.get("qualified_labels_counts", [])
+                temp_nodes_counts = template_result.get("temp_nodes_counts", [])
+
+                if preproc_times and sort_times and build_times and search_times:
+                    all_preproc_times.extend(preproc_times)
+                    all_sort_times.extend(sort_times)
+                    all_build_times.extend(build_times)
+                    all_search_times.extend(search_times)
+
+                    # Calculate total times for each query
+                    total_times = [
+                        p + s + b + search
+                        for p, s, b, search in zip(
+                            preproc_times, sort_times, build_times, search_times
+                        )
+                    ]
+                    all_total_times.extend(total_times)
+
+                    all_qualified_counts.extend(qualified_counts)
+                    all_temp_nodes_counts.extend(temp_nodes_counts)
+
+        if not all_total_times:
+            print(f"  No profiling data found for {template}")
+            continue
+
+        print(f"  Configurations analyzed: {config_count}")
+        print(f"  Total queries: {len(all_total_times)}")
+        print()
+
+        # Calculate statistics for each phase
+        total_avg = np.mean(all_total_times)
+        total_std = np.std(all_total_times)
+
+        preproc_avg = np.mean(all_preproc_times)
+        preproc_std = np.std(all_preproc_times)
+        preproc_pct_avg = 100 * preproc_avg / total_avg
+        preproc_pct_std = 100 * preproc_std / total_avg
+
+        sort_avg = np.mean(all_sort_times)
+        sort_std = np.std(all_sort_times)
+        sort_pct_avg = 100 * sort_avg / total_avg
+        sort_pct_std = 100 * sort_std / total_avg
+
+        build_avg = np.mean(all_build_times)
+        build_std = np.std(all_build_times)
+        build_pct_avg = 100 * build_avg / total_avg
+        build_pct_std = 100 * build_std / total_avg
+
+        search_avg = np.mean(all_search_times)
+        search_std = np.std(all_search_times)
+        search_pct_avg = 100 * search_avg / total_avg
+        search_pct_std = 100 * search_std / total_avg
+
+        print(f"  Overall latency: {total_avg:.3f} ± {total_std:.3f} ms")
+        print()
+        print(f"  Phase breakdown (avg ± std):")
+        print(
+            f"    Preprocessing:     {preproc_avg:.3f} ± {preproc_std:.3f} ms ({preproc_pct_avg:.1f} ± {preproc_pct_std:.1f}%)"
+        )
+        print(
+            f"    Sorting:           {sort_avg:.3f} ± {sort_std:.3f} ms ({sort_pct_avg:.1f} ± {sort_pct_std:.1f}%)"
+        )
+        print(
+            f"    Build Temp Index:  {build_avg:.3f} ± {build_std:.3f} ms ({build_pct_avg:.1f} ± {build_pct_std:.1f}%)"
+        )
+        print(
+            f"    Search:            {search_avg:.3f} ± {search_std:.3f} ms ({search_pct_avg:.1f} ± {search_pct_std:.1f}%)"
+        )
+        print()
+
+        # Additional statistics
+        qualified_avg = np.mean(all_qualified_counts)
+        qualified_std = np.std(all_qualified_counts)
+        nodes_avg = np.mean(all_temp_nodes_counts)
+        nodes_std = np.std(all_temp_nodes_counts)
+
+        print(f"  Additional metrics:")
+        print(f"    Qualified labels:  {qualified_avg:.1f} ± {qualified_std:.1f}")
+        print(f"    Temp nodes:        {nodes_avg:.1f} ± {nodes_std:.1f}")
+        print()
+
+
+def plot_profiling_pie_charts(
+    profiling_results_path: str,
+    output_path: str = "profiling_pie_charts.pdf",
+    templates: List[str] = ["AND", "OR"],
+    font_size: int = 14,
+    figsize: tuple = (10, 5),
+):
+    """Plot pie charts showing average latency breakdown for each template.
+
+    Args:
+        profiling_results_path: Path to JSON file with profiling results
+        output_path: Path to save the output plot
+        templates: List of query templates to analyze
+        font_size: Font size for the plot
+        figsize: Figure size
+    """
+    print(f"=== Plotting Profiling Pie Charts ===")
+    print(f"Profiling results: {profiling_results_path}")
+    print(f"Templates: {templates}")
+    print(f"Output path: {output_path}")
+    print()
+
+    # Load profiling results
+    with open(profiling_results_path, "r") as f:
+        data = json.load(f)
+
+    # Handle both single result and list of results
+    if isinstance(data, list):
+        results = data
+    else:
+        results = [data]
+
+    # Calculate average times for each template
+    template_averages = {}
+
+    for template in templates:
+        all_preproc_times = []
+        all_sort_times = []
+        all_build_times = []
+        all_search_times = []
+
+        for result in results:
+            per_template_results = result.get("per_template_results", {})
+
+            for template_key, template_result in per_template_results.items():
+                # Clean template name (remove parameters like {0} {1})
+                clean_template = template_key.split(" ")[0]
+
+                if clean_template != template:
+                    continue
+
+                # Extract profiling times
+                preproc_times = template_result.get("preproc_times_ms", [])
+                sort_times = template_result.get("sort_times_ms", [])
+                build_times = template_result.get("build_temp_index_times_ms", [])
+                search_times = template_result.get("search_times_ms", [])
+
+                if preproc_times and sort_times and build_times and search_times:
+                    all_preproc_times.extend(preproc_times)
+                    all_sort_times.extend(sort_times)
+                    all_build_times.extend(build_times)
+                    all_search_times.extend(search_times)
+
+        if all_preproc_times:
+            template_averages[template] = {
+                "preproc": np.mean(all_preproc_times),
+                "sort": np.mean(all_sort_times),
+                "build": np.mean(all_build_times),
+                "search": np.mean(all_search_times),
+            }
+
+    if not template_averages:
+        print("No profiling data found for specified templates!")
+        return
+
+    # Set up plotting
+    plt.rcParams.update({"font.size": font_size})
+    n_templates = len(template_averages)
+    fig, axes = plt.subplots(1, n_templates, figsize=figsize)
+
+    if n_templates == 1:
+        axes = [axes]
+
+    # Colors for each phase (same as stacked bar chart)
+    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
+    labels = ["Preprocessing", "Sorting", "Build Temp Index", "Search"]
+
+    for i, (template, averages) in enumerate(template_averages.items()):
+        ax = axes[i]
+
+        # Calculate values and percentages
+        values = [
+            averages["preproc"],
+            averages["sort"],
+            averages["build"],
+            averages["search"],
+        ]
+        total = sum(values)
+        percentages = [100 * v / total for v in values]
+
+        # Create pie chart
+        wedges, texts, autotexts = ax.pie(
+            values,
+            labels=labels,
+            colors=colors,
+            autopct="%1.1f%%",
+            startangle=90,
+            textprops={"fontsize": font_size - 2},
+        )
+
+        # Make percentage text bold and white
+        for autotext in autotexts:
+            autotext.set_color("white")
+            autotext.set_weight("bold")
+
+        ax.set_title(
+            f"{template} Template\n(Total: {total:.2f} ms)", fontsize=font_size
+        )
+
+    plt.tight_layout()
+
+    # Save plot
+    print(f"Saving profiling pie charts to {output_path}")
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, bbox_inches="tight")
+    print("Profiling pie charts saved successfully!")
+
+
+"""
+Plotting functions for temp index evaluation results produced by experiments/eval_temp_index.py
+
+python -m benchmark.complex_predicate.plotting \
+    print_eval_temp_index_summary \
+        --results_path eval_temp_index.json \
+        --templates '["AND {0} {1}", "OR {0} {1}"]'
+
+python -m benchmark.complex_predicate.plotting \
+    plot_eval_temp_index \
+        --results_path eval_temp_index.json \
+        --output_path eval_temp_index.pdf \
+        --templates '["OR", "AND"]'
+"""
+
+
+def print_eval_temp_index_summary(
+    results_path: str,
+    templates: List[str] = ["AND", "OR"],
+):
+    """Print summary statistics for temp index evaluation results comparing strategies.
+
+    Args:
+        results_path: Path to JSON file with temp index evaluation results
+        templates: List of query templates to analyze
+    """
+    print(f"=== Temp Index Strategy Comparison Summary ===")
+    print(f"Results file: {results_path}")
+    print(f"Templates: {templates}")
+    print()
+
+    # Load results
+    with open(results_path, "r") as f:
+        data = json.load(f)
+
+    # Handle both single result and list of results
+    if isinstance(data, list):
+        results = data
+    else:
+        results = [data]
+
+    # Group results by index strategy
+    strategy_results = {}
+
+    for result in results:
+        strategy = result.get("index_strategy", "unknown")
+        if strategy not in strategy_results:
+            strategy_results[strategy] = []
+        strategy_results[strategy].append(result)
+
+    # Process each template
+    for template in templates:
+        print(f"--- Template: {template} ---")
+
+        for strategy, strategy_data in strategy_results.items():
+            print(f"  Strategy: {strategy}")
+
+            # Collect performance metrics
+            recalls = []
+            latencies = []
+            search_efs = []
+
+            # Collect indexing metrics (should be same across search_ef for same strategy)
+            filter_index_times = []
+            filter_index_size_kb = []
+            temp_index_size_kb = []
+            total_filters = None
+
+            for result in strategy_data:
+                per_template_results = result.get("per_template_results", {})
+
+                for template_key, template_result in per_template_results.items():
+                    # Clean template name (remove parameters like {0} {1})
+                    clean_template = template_key.split(" ")[0]
+
+                    if clean_template != template:
+                        continue
+
+                    # Query performance metrics
+                    recalls.append(template_result.get("recall_at_k", 0))
+                    latencies.append(
+                        template_result.get("query_lat_avg", 0) * 1000
+                    )  # Convert to ms
+                    search_efs.append(result.get("search_ef", 0))
+
+                # Indexing metrics (collect once per strategy)
+                if result.get("filter_index_times"):
+                    filter_index_times.extend(result["filter_index_times"])
+                if result.get("filter_index_size_kb") is not None:
+                    filter_index_size_kb.append(result["filter_index_size_kb"])
+
+                # Handle both possible field names for temp index size
+                if result.get("temp_index_size_kb") is not None:
+                    temp_index_size_kb.append(result["temp_index_size_kb"])
+                elif result.get("temp_index_size_bytes") is not None:
+                    temp_index_size_kb.append(result["temp_index_size_bytes"] / 1024)
+
+                if result.get("total_filters") is not None:
+                    total_filters = result["total_filters"]
+
+            if not recalls:
+                print(f"    No data found for {template}")
+                continue
+
+            # Performance summary
+            if recalls and latencies:
+                print(f"    Query Performance:")
+                print(
+                    f"      Recall@10: [{min(recalls):.3f}, {max(recalls):.3f}] (best: {max(recalls):.3f})"
+                )
+                print(
+                    f"      Latency:   [{min(latencies):.2f}, {max(latencies):.2f}] ms (best: {min(latencies):.2f} ms)"
+                )
+                print(f"      Search_ef: [{min(search_efs)}, {max(search_efs)}]")
+                print(f"      Configurations: {len(recalls)}")
+
+            # Indexing summary
+            if filter_index_times:
+                avg_filter_time = sum(filter_index_times) / len(filter_index_times)
+                print(f"    Indexing Performance:")
+                print(f"      Total filters: {total_filters}")
+                print(f"      Avg filter index time: {avg_filter_time:.4f} seconds")
+                if filter_index_size_kb:
+                    avg_filter_size = sum(filter_index_size_kb) / len(
+                        filter_index_size_kb
+                    )
+                    print(f"      Filter index memory: {avg_filter_size:.2f} KB")
+                if temp_index_size_kb:
+                    avg_temp_size = sum(temp_index_size_kb) / len(temp_index_size_kb)
+                    print(
+                        f"      Temp index memory: {avg_temp_size:.2f} KB ({avg_temp_size/1024:.2f} MB)"
+                    )
+
+            print()
+
+        # Compare strategies for this template
+        if (
+            len(strategy_results) == 2
+            and "direct_indexing" in strategy_results
+            and "temp_caching" in strategy_results
+        ):
+            print(f"  Strategy Comparison:")
+
+            # Get best performance for each strategy
+            direct_results = []
+            temp_results = []
+
+            for result in strategy_results["direct_indexing"]:
+                per_template_results = result.get("per_template_results", {})
+                for template_key, template_result in per_template_results.items():
+                    clean_template = template_key.split(" ")[0]
+                    if clean_template == template:
+                        direct_results.append(
+                            (
+                                template_result.get("recall_at_k", 0),
+                                template_result.get("query_lat_avg", 0) * 1000,
+                                result.get("search_ef", 0),
+                            )
+                        )
+
+            for result in strategy_results["temp_caching"]:
+                per_template_results = result.get("per_template_results", {})
+                for template_key, template_result in per_template_results.items():
+                    clean_template = template_key.split(" ")[0]
+                    if clean_template == template:
+                        temp_results.append(
+                            (
+                                template_result.get("recall_at_k", 0),
+                                template_result.get("query_lat_avg", 0) * 1000,
+                                result.get("search_ef", 0),
+                            )
+                        )
+
+            if direct_results and temp_results:
+                # Find best recall for each strategy
+                direct_best = max(direct_results, key=lambda x: x[0])
+                temp_best = max(temp_results, key=lambda x: x[0])
+
+                # Find best latency for each strategy (among results with max recall)
+                direct_max_recall = max(r[0] for r in direct_results)
+                temp_max_recall = max(r[0] for r in temp_results)
+
+                direct_best_latency = min(
+                    r[1] for r in direct_results if r[0] == direct_max_recall
+                )
+                temp_best_latency = min(
+                    r[1] for r in temp_results if r[0] == temp_max_recall
+                )
+
+                print(
+                    f"    Best recall - Direct: {direct_best[0]:.3f}, Temp: {temp_best[0]:.3f}"
+                )
+                print(
+                    f"    Best latency - Direct: {direct_best_latency:.2f} ms, Temp: {temp_best_latency:.2f} ms"
+                )
+
+                # Memory comparison
+                direct_memory = strategy_results["direct_indexing"][0].get(
+                    "filter_index_size_kb", 0
+                )
+                temp_memory = strategy_results["temp_caching"][0].get(
+                    "temp_index_size_kb", 0
+                )
+                if temp_memory == 0:
+                    temp_memory = (
+                        strategy_results["temp_caching"][0].get(
+                            "temp_index_size_bytes", 0
+                        )
+                        / 1024
+                    )
+
+                if direct_memory > 0 and temp_memory > 0:
+                    memory_ratio = temp_memory / direct_memory
+                    print(f"    Memory ratio (temp/direct): {memory_ratio:.2f}x")
+
+                print()
+
+        print()
+
+
+def plot_eval_temp_index(
+    results_path: str,
+    output_path: str = "eval_temp_index.pdf",
+    templates: List[str] = ["OR", "AND"],
+    font_size: int = 14,
+    subplot_size: tuple = (3, 2.5),
+):
+    """Plot recall vs latency curves comparing direct_indexing and temp_caching strategies.
+
+    Args:
+        results_path: Path to JSON file with temp index evaluation results
+        output_path: Path to save the output plot
+        templates: List of query templates to plot
+        font_size: Font size for the plot
+        subplot_size: Figure size per template subplot
+    """
+    print(f"=== Plotting Temp Index Strategy Comparison ===")
+    print(f"Results file: {results_path}")
+    print(f"Templates: {templates}")
+    print(f"Output path: {output_path}")
+    print()
+
+    # Load results
+    with open(results_path, "r") as f:
+        data = json.load(f)
+
+    # Handle both single result and list of results
+    if isinstance(data, list):
+        results = data
+    else:
+        results = [data]
+
+    # Set up plotting
+    plt.rcParams.update({"font.size": font_size})
+    fig_width = subplot_size[0] * len(templates)
+    fig_height = subplot_size[1]
+    fig, axes = plt.subplots(1, len(templates), figsize=(fig_width, fig_height))
+
+    # Handle single template case
+    if len(templates) == 1:
+        axes = [axes]
+
+    # Colors and markers for strategies
+    strategy_colors = {
+        "direct_indexing": "#1f77b4",  # blue
+        "temp_caching": "#ff7f0e",  # orange
+    }
+
+    strategy_markers = {
+        "direct_indexing": "o",
+        "temp_caching": "^",
+    }
+
+    strategy_labels = {
+        "direct_indexing": "Direct Indexing",
+        "temp_caching": "Temp Caching",
+    }
+
+    # Plot each template
+    for i, (template, ax) in enumerate(zip(templates, axes)):
+        template_results = []
+
+        # Group results by strategy
+        strategy_data = {}
+        for result in results:
+            strategy = result.get("index_strategy", "unknown")
+            if strategy not in strategy_data:
+                strategy_data[strategy] = []
+            strategy_data[strategy].append(result)
+
+        # Process each strategy
+        for strategy, strategy_results in strategy_data.items():
+            if strategy not in strategy_colors:
+                continue
+
+            strategy_points = []
+
+            for result in strategy_results:
+                per_template_results = result.get("per_template_results", {})
+
+                for template_key, template_result in per_template_results.items():
+                    # Clean template name (remove parameters like {0} {1})
+                    clean_template = template_key.split(" ")[0]
+
+                    if clean_template != template:
+                        continue
+
+                    recall = template_result.get("recall_at_k", 0)
+                    latency = (
+                        template_result.get("query_lat_avg", 0) * 1000
+                    )  # Convert to ms
+                    search_ef = result.get("search_ef", 0)
+
+                    strategy_points.append(
+                        {
+                            "recall": recall,
+                            "latency": latency,
+                            "search_ef": search_ef,
+                            "strategy": strategy_labels[strategy],
+                        }
+                    )
+
+            if strategy_points:
+                strategy_df = pd.DataFrame(strategy_points)
+                strategy_df = strategy_df.sort_values("search_ef")
+
+                ax.plot(
+                    strategy_df["latency"],
+                    strategy_df["recall"],
+                    color=strategy_colors[strategy],
+                    marker=strategy_markers[strategy],
+                    markersize=6,
+                    linewidth=2,
+                    label=strategy_labels[strategy],
+                    alpha=0.8,
+                )
+
+        if i == 0:
+            ax.set_ylabel("Recall@10")
+        else:
+            ax.set_ylabel("")
+
+        ax.set_xlabel("Query Latency (ms)")
+        ax.set_xscale("log")
+        ax.set_title(f"{template} Template", fontsize=font_size - 2)
+
+        # Ensure x-axis ticks are visible
+        ax.tick_params(axis="x", which="major", labelsize=font_size - 2)
+        ax.tick_params(axis="y", which="major", labelsize=font_size - 2)
+
+        ax.grid(visible=True, which="major", axis="both", linestyle="-", alpha=0.6)
+        ax.minorticks_off()
+
+    # Create shared legend
+    handles, labels = axes[0].get_legend_handles_labels()
+    legend = fig.legend(
+        handles,
+        labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.15),
+        ncol=len(strategy_labels),
+        fontsize=font_size - 2,
+        columnspacing=1.0,
+        handletextpad=0.5,
+    )
+
+    # Remove individual legends
+    for ax in axes:
+        if ax.get_legend():
+            ax.get_legend().remove()
+
+    fig.tight_layout()
+
+    # Save plot
+    print(f"Saving plot to {output_path} ...")
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, bbox_extra_artists=(legend,), bbox_inches="tight")
+
+    print("Plot saved successfully!")
 
 
 if __name__ == "__main__":

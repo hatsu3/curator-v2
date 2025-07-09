@@ -25,7 +25,17 @@ def exp_curator_complex_predicate(
     n_filters_per_template: int = 10,
     n_queries_per_filter: int = 100,
     gt_cache_dir: str = "data/ground_truth/complex_predicate",
+    use_optimized_search: bool = True,
 ):
+    """
+    Run curator complex predicate benchmark.
+
+    Parameters
+    ----------
+    use_optimized_search : bool
+        If True, enables optimized search mode that skips preprocessing and sorting phases
+        when sorted internal vector IDs are available.
+    """
     profiler = IndexProfilerForComplexPredicate()
 
     print(f"Loading dataset {dataset_key} ...")
@@ -63,13 +73,21 @@ def exp_curator_complex_predicate(
         batch_insert=False,
     )
 
+    # Set optimized search mode
+    assert isinstance(profiler.index, CuratorIndex)
+    profiler.index.index.set_optimized_search_enabled(use_optimized_search)
+    print(f"Optimized search mode: {'enabled' if use_optimized_search else 'disabled'}")
+
     print("Building bitmaps for filters ...")
     begin_build_bitmap = time.time()
     for __, filters in dataset.template_to_filters.items():
         for filter in filters:
-            assert isinstance(profiler.index, CuratorIndex)
-            profiler.index.build_filter_bitmap(filter, dataset.train_mds)
+            if use_optimized_search:
+                profiler.index.build_filter_sorted_vids(filter, dataset.train_mds)
+            else:
+                profiler.index.build_filter_bitmap(filter, dataset.train_mds)
     build_results["bitmap_build_time_s"] = time.time() - begin_build_bitmap
+    build_results["use_optimized_search"] = use_optimized_search
 
     results = list()
     for search_ef, beam_size, variance_boost in product(
@@ -118,7 +136,16 @@ def exp_curator_complex_predicate_param_sweep(
     n_queries_per_filter: int = 100,
     gt_cache_dir: str = "data/ground_truth/complex_predicate",
     output_dir: str | Path = "output/complex_predicate/curator",
+    use_optimized_search: bool = False,
 ):
+    """
+    Parameter sweep with optional optimized search mode.
+
+    Parameters
+    ----------
+    use_optimized_search : bool
+        If True, enables optimized search mode for all parameter combinations.
+    """
     params = vars()
 
     output_dir = Path(output_dir) / f"{dataset_key}_test{test_size}"
@@ -144,6 +171,7 @@ def exp_curator_complex_predicate_param_sweep(
             n_filters_per_template=n_filters_per_template,
             n_queries_per_filter=n_queries_per_filter,
             gt_cache_dir=gt_cache_dir,
+            use_optimized_search=use_optimized_search,
         )
         batch_profiler.submit(task_name, command)
 
@@ -151,20 +179,4 @@ def exp_curator_complex_predicate_param_sweep(
 
 
 if __name__ == "__main__":
-    """
-    python -m benchmark.complex_predicate.curator \
-        exp_curator_complex_predicate \
-            --output_path test_curator.json \
-            --nlist 16 \
-            --max_sl_size 256 \
-            --search_ef_space "[32, 64, 128, 256, 512]" \
-            --beam_size_space "[4]" \
-            --variance_boost_space "[0.4]" \
-            --dataset_key yfcc100m \
-            --test_size 0.01 \
-            --templates '["NOT {0}", "AND {0} {1}", "OR {0} {1}"]' \
-            --n_filters_per_template 10 \
-            --n_queries_per_filter 100 \
-            --gt_cache_dir data/ground_truth/complex_predicate
-    """
     fire.Fire()
