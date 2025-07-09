@@ -191,7 +191,8 @@ MultiTenantIndexIVFHierarchical::MultiTenantIndexIVFHierarchical(
         float prune_thres,
         float variance_boost,
         size_t search_ef,
-        size_t beam_size)
+        size_t beam_size,
+        bool use_temp_index_caching)
         : MultiTenantIndex(d, metric),
           storage(new IndexFlat(d, metric)),
           own_fields(true),
@@ -205,7 +206,8 @@ MultiTenantIndexIVFHierarchical::MultiTenantIndexIVFHierarchical(
           prune_thres(prune_thres),
           variance_boost(variance_boost),
           search_ef(search_ef),
-          beam_size(beam_size) {
+          beam_size(beam_size),
+          use_temp_index_caching(use_temp_index_caching) {
     FAISS_ASSERT_FMT(
             n_clusters <= CURATOR_MAX_BRANCH_FACTOR,
             "n_clusters should be less than or equal to %zu",
@@ -232,7 +234,8 @@ MultiTenantIndexIVFHierarchical::MultiTenantIndexIVFHierarchical(
         float prune_thres,
         float variance_boost,
         size_t search_ef,
-        size_t beam_size)
+        size_t beam_size,
+        bool use_temp_index_caching)
         : MultiTenantIndex(storage->d, storage->metric_type),
           storage(storage),
           own_fields(false),
@@ -246,7 +249,8 @@ MultiTenantIndexIVFHierarchical::MultiTenantIndexIVFHierarchical(
           prune_thres(prune_thres),
           variance_boost(variance_boost),
           search_ef(search_ef),
-          beam_size(beam_size) {
+          beam_size(beam_size),
+          use_temp_index_caching(use_temp_index_caching) {
     FAISS_ASSERT_FMT(
             n_clusters <= CURATOR_MAX_BRANCH_FACTOR,
             "n_clusters should be less than or equal to %zu",
@@ -823,6 +827,25 @@ void MultiTenantIndexIVFHierarchical::search_one(
         const SearchParameters* params) const {
     using Candidate = std::pair<float, const TreeNode*>;
 
+    // Check if this tenant ID corresponds to a cached temp index
+    std::vector<int_vid_t>* qualified_vecs = nullptr;
+    std::vector<complex_predicate::TempIndexNode>* temp_nodes = nullptr;
+    
+    if (get_cached_temp_index_data(tid, qualified_vecs, temp_nodes)) {
+        // Use temp index search instead of regular search
+        complex_predicate::search_temp_index(
+            this,
+            *qualified_vecs,
+            *temp_nodes,
+            x,
+            k,
+            distances,
+            labels,
+            params
+        );
+        return;
+    }
+
     // Require search_ef > 0 to always use the experimental search
     FAISS_THROW_IF_NOT_MSG(search_ef > 0, "search_ef must be greater than 0");
 
@@ -1268,15 +1291,30 @@ void MultiTenantIndexIVFHierarchical::build_index_for_filter(
         return;
     }
 
-    // Allocate new tenant ID for this filter
+    // Always allocate new tenant ID for this filter (both approaches need this)
     ext_lid_t filter_label = tid_allocator.allocate_reserved_label();
     int_lid_t filter_tid = tid_allocator.allocate_id(filter_label);
 
-    // Store the mapping for this bitmap filter using the provided key
+    // Store the mapping for this filter using the provided key
     filter_to_label.emplace(filter_key, filter_label);
 
-    // Grant access to all qualified vectors
-    batch_grant_access(qualified_vecs, filter_tid);
+    if (use_temp_index_caching) {
+        // Alternative approach: Cache temporary index structures without modifying main index
+        // Sort qualified vectors' IDs in ascending order for efficient tree building
+        std::sort(qualified_vecs.begin(), qualified_vecs.end());
+        
+        // Build temporary index structure
+        std::vector<complex_predicate::TempIndexNode> temp_nodes;
+        complex_predicate::build_temp_index_for_filter(this, qualified_vecs, temp_nodes);
+        
+        // Cache the temporary index and qualified vectors for this filter (using tenant ID as key)
+        cached_temp_indexes.emplace(filter_tid, std::move(temp_nodes));
+        cached_qualified_vecs.emplace(filter_tid, std::move(qualified_vecs));
+    } else {
+        // Original approach: Direct indexing using batch_grant_access
+        // Grant access to all qualified vectors
+        batch_grant_access(qualified_vecs, filter_tid);
+    }
 }
 
 ext_lid_t MultiTenantIndexIVFHierarchical::get_filter_label(const std::string& filter_key) const {
@@ -1287,6 +1325,49 @@ ext_lid_t MultiTenantIndexIVFHierarchical::get_filter_label(const std::string& f
     
     ext_lid_t filter_label = it->second;
     return filter_label;
+}
+
+bool MultiTenantIndexIVFHierarchical::get_cached_temp_index_data(
+        ext_lid_t tid, 
+        std::vector<int_vid_t>*& qualified_vecs, 
+        std::vector<complex_predicate::TempIndexNode>*& temp_nodes) const {
+    if (!use_temp_index_caching) {
+        return false;
+    }
+    
+    // Direct lookup using tenant ID as key
+    auto temp_index_it = cached_temp_indexes.find(tid);
+    auto qualified_vecs_it = cached_qualified_vecs.find(tid);
+    
+    if (temp_index_it != cached_temp_indexes.end() && 
+        qualified_vecs_it != cached_qualified_vecs.end()) {
+        qualified_vecs = const_cast<std::vector<int_vid_t>*>(&qualified_vecs_it->second);
+        temp_nodes = const_cast<std::vector<complex_predicate::TempIndexNode>*>(&temp_index_it->second);
+        return true;
+    }
+    
+    return false;
+}
+
+size_t MultiTenantIndexIVFHierarchical::get_cached_temp_index_memory_usage() const {
+    size_t total_memory = 0;
+    
+    for (const auto& [tenant_id, temp_nodes] : cached_temp_indexes) {
+        // Memory for TempIndexNode structures
+        total_memory += temp_nodes.size() * sizeof(complex_predicate::TempIndexNode);
+        
+        // Memory for children vectors in each TempIndexNode
+        for (const auto& node : temp_nodes) {
+            total_memory += node.children.size() * sizeof(int);
+        }
+    }
+    
+    for (const auto& [tenant_id, qualified_vecs] : cached_qualified_vecs) {
+        // Memory for qualified vector IDs
+        total_memory += qualified_vecs.size() * sizeof(int_vid_t);
+    }
+    
+    return total_memory;
 }
 
 namespace {
@@ -1768,6 +1849,88 @@ void MultiTenantIndexIVFHierarchical::search_with_bitmap_filter(
     }
 }
 
+// Optimized version that takes sorted internal vector IDs directly
+void MultiTenantIndexIVFHierarchical::search_with_bitmap_filter_optimized(
+        idx_t n,
+        const float* x,
+        idx_t k,
+        const int_vid_t* sorted_qualified_vids,
+        size_t sorted_qualified_vids_size,
+        float* distances,
+        idx_t* labels,
+        const SearchParameters* params) const {
+
+    // Initialize profiling data only if profiling is enabled
+    if (enable_profiling) {
+        last_search_profile = SearchProfilingData{};
+        last_search_profile.qualified_labels_count = sorted_qualified_vids_size;
+        // Skip preprocessing and sorting phases (set to 0)
+        last_search_profile.preproc_time_ms = 0.0;
+        last_search_profile.sort_time_ms = 0.0;
+    }
+
+    if (sorted_qualified_vids_size == 0) {
+        heap_heapify<HeapForL2>(k, distances, labels);
+        return;
+    }
+
+    // Convert array to vector for compatibility with existing functions
+    std::vector<int_vid_t> qualified_vecs(sorted_qualified_vids, sorted_qualified_vids + sorted_qualified_vids_size);
+
+    // Verify that the input is actually sorted (debug assertion)
+    FAISS_THROW_IF_NOT_MSG(
+        std::is_sorted(qualified_vecs.begin(), qualified_vecs.end()),
+        "Input sorted_qualified_vids must be sorted in ascending order");
+
+    // PHASE 3: Build temporary index (skip phases 1 and 2)
+    auto build_start = enable_profiling ? std::chrono::high_resolution_clock::now() : std::chrono::high_resolution_clock::time_point{};
+    
+    std::vector<complex_predicate::TempIndexNode> nodes;
+    complex_predicate::build_temp_index_for_filter(this, qualified_vecs, nodes);
+    
+    if (enable_profiling) {
+        auto build_end = std::chrono::high_resolution_clock::now();
+        last_search_profile.build_temp_index_time_ms = std::chrono::duration<double, std::milli>(build_end - build_start).count();
+        last_search_profile.temp_nodes_count = nodes.size();
+    }
+
+    // PHASE 4: Search the temporary index
+    auto search_start = enable_profiling ? std::chrono::high_resolution_clock::now() : std::chrono::high_resolution_clock::time_point{};
+    
+    for (idx_t i = 0; i < n; i++) {
+        complex_predicate::search_temp_index(
+                this,
+                qualified_vecs,
+                nodes,
+                x + i * d,
+                k,
+                distances + i * k,
+                labels + i * k,
+                params);
+    }
+    
+    if (enable_profiling) {
+        auto search_end = std::chrono::high_resolution_clock::now();
+        last_search_profile.search_time_ms = std::chrono::duration<double, std::milli>(search_end - search_start).count();
+    }
+}
+
+// Get mapping from external labels to internal vector IDs for Python interface
+void MultiTenantIndexIVFHierarchical::get_label_to_vid_mapping(
+        const ext_vid_t* labels, 
+        size_t labels_size, 
+        int_vid_t* vids) const {
+    
+    for (size_t i = 0; i < labels_size; i++) {
+        ext_vid_t label = labels[i];
+        if (id_allocator.label_to_id.find(label) != id_allocator.label_to_id.end()) {
+            vids[i] = id_allocator.get_id(label);
+        } else {
+            // Use -1 to indicate label not found
+            vids[i] = -1;
+        }
+    }
+}
 
 
 } // namespace faiss

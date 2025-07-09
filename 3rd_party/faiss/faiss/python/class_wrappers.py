@@ -1425,6 +1425,91 @@ def handle_MultiTenantIndex(the_class):
         )
         return D, I
 
+    def replacement_search_with_bitmap_filter_optimized(
+        self, x, k, sorted_qualified_vids, *, params=None, D=None, I=None
+    ):
+        """Find the k nearest neighbors from a specific set of sorted internal vector IDs (optimized version).
+
+        Parameters
+        ----------
+        x : array_like
+            Query vectors, shape (n, d) where d is appropriate for the index.
+            `dtype` must be float32.
+        k : int
+            Number of nearest neighbors.
+        sorted_qualified_vids : array_like
+            Array of internal vector IDs (sorted in ascending order) that are allowed in the search results, dtype must be int32.
+        params : SearchParameters
+            Search parameters of the current search (overrides the class-level params)
+        D : array_like, optional
+            Distance array to store the result.
+        I : array_like, optional
+            Labels array to store the results.
+
+        Returns
+        -------
+        D : array_like
+            Distances of the nearest neighbors, shape (n, k). When not enough results are found
+            the label is set to +Inf or -Inf.
+        I : array_like
+            Labels of the nearest neighbors, shape (n, k).
+            When not enough results are found, the label is set to -1
+        """
+        n, d = x.shape
+        x = np.ascontiguousarray(x, dtype="float32")
+        assert d == self.d
+        assert k > 0
+
+        sorted_qualified_vids = np.ascontiguousarray(
+            sorted_qualified_vids, dtype=np.uint64
+        )
+        n_vids = sorted_qualified_vids.shape[0]
+
+        if D is None:
+            D = np.empty((n, k), dtype=np.float32)
+        else:
+            assert D.shape == (n, k)
+
+        if I is None:
+            I = np.empty((n, k), dtype=np.int64)
+        else:
+            assert I.shape == (n, k)
+
+        self.search_with_bitmap_filter_optimized_c(
+            n,
+            swig_ptr(x),
+            k,
+            swig_ptr(sorted_qualified_vids),
+            n_vids,
+            swig_ptr(D),
+            swig_ptr(I),
+            params,
+        )
+        return D, I
+
+    def replacement_get_label_to_vid_mapping(self, labels):
+        """Get mapping from external labels to internal vector IDs.
+
+        Parameters
+        ----------
+        labels : array_like
+            Array of external labels, dtype must be uint32.
+
+        Returns
+        -------
+        vids : array_like
+            Array of internal vector IDs corresponding to the labels, dtype int32.
+            -1 indicates label not found.
+        """
+        labels = np.ascontiguousarray(labels, dtype=np.uint32)
+        n_labels = labels.shape[0]
+
+        vids = np.empty(n_labels, dtype=np.uint64)
+
+        self.get_label_to_vid_mapping_c(swig_ptr(labels), n_labels, swig_ptr(vids))
+
+        return vids
+
     # Each method may or may not exist on different subclasses, so handle them separately
     try:
         replace_method(
@@ -1439,6 +1524,26 @@ def handle_MultiTenantIndex(the_class):
             the_class,
             "search_with_bitmap_filter",
             replacement_search_with_bitmap_filter,
+        )
+    except AttributeError:
+        # Only some subclasses have this method
+        pass
+
+    try:
+        replace_method(
+            the_class,
+            "search_with_bitmap_filter_optimized",
+            replacement_search_with_bitmap_filter_optimized,
+        )
+    except AttributeError:
+        # Only some subclasses have this method
+        pass
+
+    try:
+        replace_method(
+            the_class,
+            "get_label_to_vid_mapping",
+            replacement_get_label_to_vid_mapping,
         )
     except AttributeError:
         # Only some subclasses have this method

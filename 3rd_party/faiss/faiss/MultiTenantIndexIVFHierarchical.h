@@ -131,6 +131,17 @@ struct IdMapping {
 using VectorIdAllocator = IdMapping<ext_vid_t, int_vid_t>;
 using TenantIdAllocator = IdAllocator<ext_lid_t, int_lid_t>;
 
+// Forward declaration for complex_predicate namespace
+namespace complex_predicate {
+
+struct TempIndexNode {
+    int start, end;
+    std::vector<int> children;
+    float* centroid; // Non-owning pointer to TreeNode's centroid
+};
+
+} // namespace complex_predicate
+
 struct RunningMean {
     int n;
     double sum;
@@ -332,6 +343,13 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndex {
     /* auxiliary data structures */
     std::unordered_map<std::string, ext_lid_t> filter_to_label;
 
+    /* indexing strategy control */
+    bool use_temp_index_caching;
+
+    /* cached temporary indexes for filters */
+    std::unordered_map<ext_lid_t, std::vector<complex_predicate::TempIndexNode>> cached_temp_indexes;
+    std::unordered_map<ext_lid_t, std::vector<int_vid_t>> cached_qualified_vecs;
+
     /* profiling data structures */
     struct SearchProfilingData {
         double preproc_time_ms = 0.0;
@@ -349,6 +367,9 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndex {
     size_t search_ef;
     size_t beam_size;
 
+    /* optimization mode control */
+    mutable bool use_optimized_search = false;
+
     MultiTenantIndexIVFHierarchical(
             size_t d,
             size_t n_clusters,
@@ -362,7 +383,8 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndex {
             float prune_thres = 1.6,
             float variance_boost = 0.4,
             size_t search_ef = 0,
-            size_t beam_size = 2);
+            size_t beam_size = 2,
+            bool use_temp_index_caching = false);
 
     MultiTenantIndexIVFHierarchical(
             IndexFlat* storage,
@@ -376,7 +398,8 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndex {
             float prune_thres = 1.6,
             float variance_boost = 0.4,
             size_t search_ef = 0,
-            size_t beam_size = 2);
+            size_t beam_size = 2,
+            bool use_temp_index_caching = false);
 
     ~MultiTenantIndexIVFHierarchical() override {
         delete tree_root;
@@ -421,6 +444,18 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndex {
             idx_t k,
             const ext_vid_t* qualified_labels,
             size_t qualified_labels_size,
+            float* distances,
+            idx_t* labels,
+            const SearchParameters* params = nullptr) const;
+
+    // Optimized version that accepts sorted internal vector IDs directly
+    // Skips preprocessing (external->internal ID conversion) and sorting phases
+    void search_with_bitmap_filter_optimized(
+            idx_t n,
+            const float* x,
+            idx_t k,
+            const int_vid_t* sorted_qualified_vids,
+            size_t sorted_qualified_vids_size,
             float* distances,
             idx_t* labels,
             const SearchParameters* params = nullptr) const;
@@ -483,6 +518,15 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndex {
 
     ext_lid_t get_filter_label(const std::string& filter_key) const;
 
+    // Get mapping from external labels to internal vector IDs for Python interface
+    void get_label_to_vid_mapping(const ext_vid_t* labels, size_t labels_size, int_vid_t* vids) const;
+
+    // Check if a tenant ID corresponds to a cached temp index and get its data
+    bool get_cached_temp_index_data(ext_lid_t tid, std::vector<int_vid_t>*& qualified_vecs, std::vector<complex_predicate::TempIndexNode>*& temp_nodes) const;
+
+    // Calculate total memory usage of all cached temporary indexes
+    size_t get_cached_temp_index_memory_usage() const;
+
     void sanity_check() const;
 
     TreeNode* find_assigned_leaf(ext_vid_t label) const;
@@ -501,15 +545,43 @@ struct MultiTenantIndexIVFHierarchical : MultiTenantIndex {
     SearchProfilingData get_last_search_profile() const {
         return last_search_profile;
     }
+
+    // Individual profiling metric accessors (SWIG-friendly)
+    double get_last_preproc_time_ms() const {
+        return last_search_profile.preproc_time_ms;
+    }
+
+    double get_last_sort_time_ms() const {
+        return last_search_profile.sort_time_ms;
+    }
+
+    double get_last_build_temp_index_time_ms() const {
+        return last_search_profile.build_temp_index_time_ms;
+    }
+
+    double get_last_search_time_ms() const {
+        return last_search_profile.search_time_ms;
+    }
+
+    size_t get_last_qualified_labels_count() const {
+        return last_search_profile.qualified_labels_count;
+    }
+
+    size_t get_last_temp_nodes_count() const {
+        return last_search_profile.temp_nodes_count;
+    }
+
+    // Optimization mode control
+    void set_optimized_search_enabled(bool enabled) const {
+        use_optimized_search = enabled;
+    }
+
+    bool get_optimized_search_enabled() const {
+        return use_optimized_search;
+    }
 };
 
 namespace complex_predicate {
-
-struct TempIndexNode {
-    int start, end;
-    std::vector<int> children;
-    float* centroid; // Non-owning pointer to TreeNode's centroid
-};
 
 void build_temp_index_for_filter(
         const MultiTenantIndexIVFHierarchical* index,

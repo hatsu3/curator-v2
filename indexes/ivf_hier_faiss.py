@@ -25,6 +25,7 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         variance_boost: float = 0.2,
         search_ef: int = 0,
         beam_size: int = 1,
+        use_temp_index_caching: bool = False,
     ):
         """Initialize Curator index.
 
@@ -38,6 +39,10 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
             The capacity of the Bloom filter.
         bf_error_rate : float, optional
             The error rate of the Bloom filter.
+        use_temp_index_caching : bool, optional
+            If True, build_index_for_filter will cache temporary index structures
+            instead of using direct tenant-based indexing. This provides a more
+            unified approach similar to search_with_bitmap_filter.
         """
         super().__init__()
 
@@ -53,6 +58,7 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         self.variance_boost = variance_boost
         self.search_ef = search_ef
         self.beam_size = beam_size
+        self.use_temp_index_caching = use_temp_index_caching
 
         self.index = faiss.MultiTenantIndexIVFHierarchical(
             self.d,
@@ -68,6 +74,7 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
             self.variance_boost,
             self.search_ef,
             self.beam_size,
+            self.use_temp_index_caching,
         )
 
         # Map indexed filters to their assigned labels
@@ -75,6 +82,9 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
 
         # Map indexed filters to their precomputed bitmaps
         self.filter_to_bitmap = dict()
+
+        # Map predicate filters to their sorted internal vector IDs for optimized search
+        self.filter_to_sorted_vids = dict()
 
     @property
     def params(self) -> dict[str, Any]:
@@ -142,25 +152,50 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
     def query_with_complex_predicate(
         self, x: np.ndarray, k: int, predicate: str
     ) -> list[int]:
+        # Priority order: tenant-based index > optimized bitmap > regular bitmap
         if predicate in self.filter_to_label:  # index already built
             return self.query(x, k, self.filter_to_label[predicate])
+        elif (
+            self.index.get_optimized_search_enabled()
+            and predicate in self.filter_to_sorted_vids
+        ):  # optimized search available
+            top_dists, top_ids = self.index.search_with_bitmap_filter_optimized(
+                x[None], k, self.filter_to_sorted_vids[predicate]
+            )  # type: ignore
+            return top_ids[0].tolist()
         elif predicate in self.filter_to_bitmap:  # bitmap already built
             return self.search_with_bitmap_filter(
                 x, k, self.filter_to_bitmap[predicate]
             )
         else:
-            raise ValueError(f"No index or bitmap found for predicate {predicate}")
+            raise ValueError(
+                f"No index, optimized bitmap, or regular bitmap found for predicate {predicate}"
+            )
 
     def index_filter(self, predicate: str, train_mds: list[list[int]]) -> None:
         """Build index for a given predicate."""
         qualified_labels = compute_qualified_labels(predicate, train_mds)
         self.index.build_index_for_filter(qualified_labels, predicate)  # type: ignore
+
+        # Both approaches now store the tenant label mapping for tenant-based search
         self.filter_to_label[predicate] = self.index.get_filter_label(predicate)
 
     def build_filter_bitmap(self, predicate: str, train_mds: list[list[int]]) -> None:
         """Build bitmap for a given predicate."""
         qualified_labels = compute_qualified_labels(predicate, train_mds)
         self.filter_to_bitmap[predicate] = qualified_labels
+
+    def build_filter_sorted_vids(
+        self, predicate: str, train_mds: list[list[int]]
+    ) -> None:
+        """Build sorted internal vector IDs for optimized search for a given predicate."""
+        qualified_labels = compute_qualified_labels(predicate, train_mds).astype(np.uint32)
+        # Convert external labels to internal vector IDs
+        internal_vids = self.index.get_label_to_vid_mapping(qualified_labels)
+        # Filter out any -1 values (labels not found) and sort
+        valid_vids = internal_vids[internal_vids != -1]
+        sorted_vids = np.sort(valid_vids)
+        self.filter_to_sorted_vids[predicate] = sorted_vids
 
     def search_with_bitmap_filter(
         self,
@@ -204,14 +239,13 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
             - qualified_labels_count: Number of input qualified labels
             - temp_nodes_count: Number of nodes in the temporary index
         """
-        profile = self.index.get_last_search_profile()  # type: ignore
         return {
-            "preproc_time_ms": profile.preproc_time_ms,
-            "sort_time_ms": profile.sort_time_ms,
-            "build_temp_index_time_ms": profile.build_temp_index_time_ms,
-            "search_time_ms": profile.search_time_ms,
-            "qualified_labels_count": profile.qualified_labels_count,
-            "temp_nodes_count": profile.temp_nodes_count,
+            "preproc_time_ms": self.index.get_last_preproc_time_ms(),  # type: ignore
+            "sort_time_ms": self.index.get_last_sort_time_ms(),  # type: ignore
+            "build_temp_index_time_ms": self.index.get_last_build_temp_index_time_ms(),  # type: ignore
+            "search_time_ms": self.index.get_last_search_time_ms(),  # type: ignore
+            "qualified_labels_count": self.index.get_last_qualified_labels_count(),  # type: ignore
+            "temp_nodes_count": self.index.get_last_temp_nodes_count(),  # type: ignore
         }
 
     def query_unfiltered(self, x: np.ndarray, k: int) -> list[int]:
@@ -231,3 +265,15 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
     def get_search_stats(self) -> dict[str, Any]:
         """Get search statistics. For compatibility, returns last search profile data."""
         return self.get_last_search_profile()
+
+    def get_cached_temp_index_memory_usage(self) -> int:
+        """Get total memory usage of all cached temporary indexes in bytes.
+
+        Only relevant when use_temp_index_caching=True.
+
+        Returns
+        -------
+        int
+            Total memory usage in bytes
+        """
+        return self.index.get_cached_temp_index_memory_usage()  # type: ignore
