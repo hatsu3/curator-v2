@@ -1,6 +1,11 @@
+"""
+Recall vs latency plotting for overall results across different selectivity levels.
+"""
+
 import json
 import pickle as pkl
 from pathlib import Path
+from typing import Dict, List, Optional, Union
 
 import fire
 import matplotlib.pyplot as plt
@@ -10,78 +15,32 @@ import seaborn as sns
 
 from benchmark.profiler import Dataset
 
-baseline_info = [
-    {
-        "name": "Per-Label HNSW",
-        "result_path": {
-            "yfcc100m": None,  # too large
-            "arxiv": "output/overall_results_v2/per_label_hnsw/arxiv-large-10_test0.005/results/ef128_m16_preproc.csv",
-        },
+# Dataset-specific configuration
+# This is necessary because different datasets have different characteristics:
+# - labels_per_group: Setting this too large (e.g., larger than the number of unique labels)
+#   can cause all labels to be grouped together, leading to empty selectivity groups
+# - default_test_size: Common test size used for each dataset
+DATASET_LABELS_PER_GROUP = {
+    "yfcc100m": {
+        "labels_per_group": 100,  # 1000 unique labels
+        "default_test_size": 0.001,
     },
-    {
-        "name": "Per-Label IVF",
-        "result_path": {
-            "yfcc100m": None,  # too large
-            "arxiv": "output/overall_results_v2/per_label_ivf/arxiv-large-10_test0.005/results/nlist40_preproc.csv",
-        },
+    "yfcc100m-10m": {
+        "labels_per_group": 100,  # 1000 unique labels
+        "default_test_size": 0.001,
     },
-    {
-        "name": "Parlay IVF",
-        "result_path": {
-            "yfcc100m": "output/overall_results_v2/parlay_ivf/yfcc100m-10m_test0.001/results/cutoff1000c40r16i10_preproc.csv",
-            "arxiv": "output/overall_results_v2/parlay_ivf/arxiv-large-10_test0.005/results/cutoff10000c1000r16i10_preproc.csv",
-        },
+    "arxiv-large-10": {
+        "labels_per_group": 10,  # 100 unique labels
+        "default_test_size": 0.005,
     },
-    {
-        "name": "Filtered DiskANN",
-        "result_path": {
-            "yfcc100m": "output/overall_results_v2/filtered_diskann/yfcc100m-10m_test0.001/results/R512_L600_a1.2_preproc.csv",
-            "arxiv": "output/overall_results_v2/filtered_diskann/arxiv-large-10_test0.005/results/r256ef256a1.2_preproc.csv",
-        },
-    },
-    {
-        "name": "Shared HNSW",
-        "result_path": {
-            "yfcc100m": "output/overall_results_v2/shared_hnsw/yfcc100m-10m_test0.001/results/ef128_m32_preproc.csv",
-            "arxiv": "output/overall_results_v2/shared_hnsw/arxiv-large-10_test0.005/results/ef128_m16_preproc.csv",
-        },
-    },
-    {
-        "name": "Shared IVF",
-        "result_path": {
-            "yfcc100m": "output/overall_results_v2/shared_ivf/yfcc100m-10m_test0.001/results/nlist32768_preproc.csv",
-            "arxiv": "output/overall_results_v2/shared_ivf/arxiv-large-10_test0.005/results/nlist1600_preproc.csv",
-        },
-    },
-    {
-        "name": "ACORN-1",
-        "result_path": {
-            "yfcc100m": "output/overall_results_v2/acorn/yfcc100m-10m_test0.001/results/m64_g1_b128_preproc.csv",
-            "arxiv": "output/overall_results_v2/acorn/arxiv-large-10_test0.005/results/m64_g1_b128_preproc.csv",
-        },
-    },
-    {
-        "name": r"ACORN-$\gamma$",
-        "result_path": {
-            "yfcc100m": "output/overall_results_v2/acorn/yfcc100m-10m_test0.001/results/m64_g20_b128_preproc.csv",
-            "arxiv": "output/overall_results_v2/acorn/arxiv-large-10_test0.005/results/m32_gamma20_m_beta64_preproc.csv",
-        },
-    },
-    {
-        "name": "Curator",
-        "result_path": {
-            "yfcc100m": "output/overall_results_v2/curator/yfcc100m-10m_test0.001/results/nlist32_sl256_preproc.csv",
-            "arxiv": "output/overall_results_v2/curator/arxiv-large-10_test0.005/results/nlist32_sl256_preproc.csv",
-        },
-    },
-]
+}
 
 
 def group_labels_by_selectivity(
-    labels_per_group: int = 100,
+    labels_per_group: int | None = None,
     percentiles: list[float] = [0.01, 0.25, 0.50, 0.75, 1.00],
-    dataset_key: str = "yfcc100m",
-    test_size: float = 0.01,
+    dataset_key: str = "yfcc100m-10m",
+    test_size: float = 0.001,
     dataset: Dataset | None = None,
 ):
     """Group labels by selectivity
@@ -100,6 +59,17 @@ def group_labels_by_selectivity(
             selectivity (float): selectivity of the group
             labels (list[int]): labels in the group
     """
+    # Use dataset-specific default if not provided
+    if labels_per_group is None:
+        if dataset_key not in DATASET_LABELS_PER_GROUP:
+            raise ValueError(
+                f"Dataset '{dataset_key}' not found in DATASET_LABELS_PER_GROUP. Available datasets: {list(DATASET_LABELS_PER_GROUP.keys())}"
+            )
+        labels_per_group = DATASET_LABELS_PER_GROUP[dataset_key]["labels_per_group"]
+        print(
+            f"Using dataset-specific labels_per_group={labels_per_group} for {dataset_key}"
+        )
+
     if dataset is None:
         dataset = Dataset.from_dataset_key(dataset_key, test_size=test_size)
 
@@ -191,11 +161,13 @@ def preprocess_per_config_result(
 
 def aggregate_per_selectivity_results(
     results_path: Path | str,
-    labels_per_group: int = 100,
+    labels_per_group: int | None = None,
     percentiles: list[float] = [0.01, 0.25, 0.50, 0.75, 1.00],
     dataset_key: str = "yfcc100m-10m",
     test_size: float = 0.001,
     output_path: Path | str | None = None,
+    dataset: Dataset | None = None,
+    label_groups: list[dict] | None = None,
 ):
     """Aggregate profiling results of a specific index across all search configurations
 
@@ -210,6 +182,8 @@ def aggregate_per_selectivity_results(
             results_path.with_name(f"{results_path.stem}_preproc.csv")
         labels_per_group (int): number of labels per group
         percentiles (list[float]): corresponding percentiles of selectivity of each label group
+        dataset (Dataset | None): dataset object. if None, will be loaded by dataset_key and test_size
+        label_groups (list[dict] | None): precomputed label groups. if None, will be computed from dataset
     Returns:
         pd.DataFrame: aggregated dataframe with 4 columns:
             percentile, selectivity, recall, latency
@@ -217,16 +191,32 @@ def aggregate_per_selectivity_results(
     """
     results_path = Path(results_path)
 
+    # Use dataset-specific default if not provided
+    if labels_per_group is None:
+        if dataset_key not in DATASET_LABELS_PER_GROUP:
+            raise ValueError(
+                f"Dataset '{dataset_key}' not found in DATASET_LABELS_PER_GROUP. Available datasets: {list(DATASET_LABELS_PER_GROUP.keys())}"
+            )
+        labels_per_group = DATASET_LABELS_PER_GROUP[dataset_key]["labels_per_group"]
+        print(
+            f"Using dataset-specific labels_per_group={labels_per_group} for {dataset_key}"
+        )
+
     if output_path is None:
         output_path = results_path.with_name(f"{results_path.stem}_preproc.csv")
     else:
         output_path = Path(output_path)
 
-    print(f"Loading dataset {dataset_key} ...")
-    dataset = Dataset.from_dataset_key(dataset_key, test_size=test_size)
-    label_groups = group_labels_by_selectivity(
-        labels_per_group, percentiles, dataset_key, test_size, dataset=dataset
-    )
+    # Load dataset only if not provided
+    if dataset is None:
+        print(f"Loading dataset {dataset_key} ...")
+        dataset = Dataset.from_dataset_key(dataset_key, test_size=test_size)
+
+    # Compute label groups only if not provided
+    if label_groups is None:
+        label_groups = group_labels_by_selectivity(
+            labels_per_group, percentiles, dataset_key, test_size, dataset=dataset
+        )
 
     print(f"Loading results from {results_path} ...")
     # convert results to DataFrame with two list-valued columns: query_latencies, query_recalls
@@ -247,138 +237,398 @@ def aggregate_per_selectivity_results(
 
     print(f"Saving preprocessed results to {output_path} ...")
     preproc_res.to_csv(output_path, index=False)
+    return preproc_res
 
 
-def plot_per_selectivity_results_recall_vs_latency(
-    percentiles: list[float] = [0.01, 0.25, 0.50, 0.75, 1.00],
-    dataset_name: str = "yfcc100m",
-    output_path: str = "output/overall_results/figs/revision_recall_vs_latency_per_sel_yfcc100m.pdf",
+def discover_baseline_results(
+    results_dir: Union[Path, str],
+    dataset_key: str = "yfcc100m-10m",
+    test_size: float = 0.001,
+) -> Dict[str, Optional[str]]:
+    """Discover available baseline results from the output directory structure of run_overall_results.sh
+
+    Args:
+        results_dir: Root directory containing baseline results (e.g., output/overall_results2)
+        dataset_key: Dataset key (e.g., "yfcc100m-10m", "arxiv-large-10")
+        test_size: Test size used (e.g., 0.001, 0.005)
+
+    Returns:
+        Dictionary mapping baseline names to result file paths
+    """
+    results_dir = Path(results_dir)
+    dataset_subdir = f"{dataset_key}_test{test_size}"
+
+    # Map algorithm directory names to display names
+    algorithm_mapping = {
+        "curator": "Curator",
+        "per_label_hnsw": "Per-Label HNSW",
+        "per_label_ivf": "Per-Label IVF",
+        "shared_hnsw": "Shared HNSW",
+        "shared_ivf": "Shared IVF",
+        "parlay_ivf": "Parlay IVF",
+        "filtered_diskann": "Filtered DiskANN",
+        "acorn_1": "ACORN-1",
+        "acorn_gamma": r"ACORN-$\gamma$",
+    }
+
+    baseline_results = {}
+
+    for algo_dir, display_name in algorithm_mapping.items():
+        algo_path = results_dir / algo_dir / dataset_subdir
+        results_file = algo_path / "results.csv"
+
+        # Always use raw results file for processing
+        if results_file.exists():
+            baseline_results[display_name] = str(results_file)
+        else:
+            baseline_results[display_name] = None
+
+    return baseline_results
+
+
+def preprocess_all_baselines(
+    results_dir: Union[Path, str],
+    dataset_key: str,
+    test_size: float,
+    labels_per_group: int | None = None,
+    percentiles: List[float] = [0.01, 0.25, 0.50, 0.75, 1.00],
+    force_reprocess: bool = False,
+) -> Dict[str, str]:
+    """Preprocess all available baseline results for plotting
+
+    Args:
+        results_dir: Root directory containing baseline results
+        dataset_key: Dataset key (e.g., "yfcc100m-10m", "arxiv-large-10")
+        test_size: Test size used (e.g., 0.001, 0.005)
+        labels_per_group: Number of labels per selectivity group
+        percentiles: Selectivity percentiles to analyze
+        force_reprocess: Whether to force reprocessing even if preprocessed files exist
+
+    Returns:
+        Dictionary mapping baseline names to preprocessed result file paths
+    """
+    # Use dataset-specific default if not provided
+    if labels_per_group is None:
+        if dataset_key not in DATASET_LABELS_PER_GROUP:
+            raise ValueError(
+                f"Dataset '{dataset_key}' not found in DATASET_LABELS_PER_GROUP. Available datasets: {list(DATASET_LABELS_PER_GROUP.keys())}"
+            )
+        labels_per_group = DATASET_LABELS_PER_GROUP[dataset_key]["labels_per_group"]
+        print(
+            f"Using dataset-specific labels_per_group={labels_per_group} for {dataset_key}"
+        )
+
+    baseline_results = discover_baseline_results(results_dir, dataset_key, test_size)
+    preprocessed_results = {}
+
+    # Check if any preprocessing is needed
+    needs_preprocessing = []
+    for baseline_name, result_path in baseline_results.items():
+        if result_path is None:
+            print(f"Skipping {baseline_name}: no results found")
+            continue
+
+        result_path = Path(result_path)
+        preproc_path = result_path.with_name(f"{result_path.stem}_preproc.csv")
+
+        # Skip if preprocessed file exists and we're not forcing reprocessing
+        if preproc_path.exists() and not force_reprocess:
+            print(
+                f"Using existing preprocessed results for {baseline_name}: {preproc_path}"
+            )
+            preprocessed_results[baseline_name] = str(preproc_path)
+        else:
+            needs_preprocessing.append((baseline_name, result_path, preproc_path))
+
+    # If any baselines need preprocessing, load dataset once
+    if needs_preprocessing:
+        print(f"Loading dataset {dataset_key} with test_size={test_size} ...")
+        dataset = Dataset.from_dataset_key(dataset_key, test_size=test_size)
+
+        print("Computing label groups by selectivity ...")
+        label_groups = group_labels_by_selectivity(
+            labels_per_group, percentiles, dataset_key, test_size, dataset=dataset
+        )
+
+        # Process each baseline that needs preprocessing
+        for baseline_name, result_path, preproc_path in needs_preprocessing:
+            print(f"Preprocessing {baseline_name} from {result_path}...")
+            try:
+                aggregate_per_selectivity_results(
+                    results_path=result_path,
+                    labels_per_group=labels_per_group,
+                    percentiles=percentiles,
+                    dataset_key=dataset_key,
+                    test_size=test_size,
+                    output_path=preproc_path,
+                    dataset=dataset,
+                    label_groups=label_groups,
+                )
+                preprocessed_results[baseline_name] = str(preproc_path)
+                print(f"Preprocessed {baseline_name} -> {preproc_path}")
+            except Exception as e:
+                print(f"Error preprocessing {baseline_name}: {e}")
+
+    return preprocessed_results
+
+
+def plot_recall_vs_latency(
+    results_dir: Union[Path, str],
+    dataset_name: str,
+    output_path: Optional[str] = None,
+    percentiles: List[float] = [0.01, 0.25, 0.50, 0.75, 1.00],
+    labels_per_group: int | None = None,
+    force_reprocess: bool = False,
+    figsize_per_subplot: tuple = (3, 3),
+    font_size: int = 14,
 ):
     """
-    Plot recall vs latency across different selectivity levels on a specific dataset
+    Plot recall vs latency across different selectivity levels using results from run_overall_results.sh
+
     Args:
-        labels_per_group (int): number of labels per group
-        percentiles (list[float]): corresponding percentiles of selectivity of each label group
-        recompute (bool): whether to re-aggregate preprocessed results. should be set if impl or config changes
+        results_dir: Root directory containing baseline results (e.g., output/overall_results2)
+        dataset_name: Dataset name ("yfcc100m" or "arxiv")
+        output_path: Path to save the plot. If None, auto-generated based on dataset and results_dir
+        percentiles: Selectivity percentiles to plot
+        labels_per_group: Number of labels per selectivity group
+        force_reprocess: Whether to force reprocessing of raw results
+        figsize_per_subplot: Size of each subplot (width, height)
+        font_size: Font size for the plot
     """
 
-    # aggregate profiling results across all selectivity levels for each index
-    all_results = {
-        info["name"]: pd.read_csv(info["result_path"][dataset_name]).assign(
-            index_key=info["name"]
-        )
-        for info in baseline_info
-        if info["result_path"][dataset_name] is not None
+    # Map dataset names to dataset keys and test sizes
+    dataset_config = {
+        "yfcc100m": {"dataset_key": "yfcc100m-10m", "test_size": 0.001},
+        "arxiv": {"dataset_key": "arxiv-large-10", "test_size": 0.005},
     }
 
-    per_pct_results = dict()
+    if dataset_name not in dataset_config:
+        raise ValueError(
+            f"Unknown dataset: {dataset_name}. Must be one of {list(dataset_config.keys())}"
+        )
+
+    dataset_key = dataset_config[dataset_name]["dataset_key"]
+    test_size = dataset_config[dataset_name]["test_size"]
+
+    # Set default output path if not provided
+    if output_path is None:
+        results_dir_name = Path(results_dir).name
+        output_path = f"output/overall_results/figs/recall_vs_latency_{dataset_name}_{results_dir_name}.pdf"
+
+    print(f"=== Plotting Recall vs Latency for {dataset_name} ===")
+    print(f"Results directory: {results_dir}")
+    print(f"Dataset key: {dataset_key}")
+    print(f"Test size: {test_size}")
+    print(f"Output path: {output_path}")
+    print()
+
+    # Preprocess all available baseline results
+    preprocessed_results = preprocess_all_baselines(
+        results_dir=results_dir,
+        dataset_key=dataset_key,
+        test_size=test_size,
+        labels_per_group=labels_per_group,
+        percentiles=percentiles,
+        force_reprocess=force_reprocess,
+    )
+
+    if not preprocessed_results:
+        raise ValueError(f"No baseline results found in {results_dir}")
+
+    print(f"\nFound {len(preprocessed_results)} baselines to plot:")
+    for baseline_name in preprocessed_results.keys():
+        print(f"  - {baseline_name}")
+    print()
+
+    # Load all preprocessed results
+    all_results = {}
+    for baseline_name, preproc_path in preprocessed_results.items():
+        try:
+            df = pd.read_csv(preproc_path)
+            df["index_key"] = baseline_name
+            all_results[baseline_name] = df
+            print(f"Loaded {len(df)} rows from {baseline_name}")
+        except Exception as e:
+            print(f"Error loading {baseline_name}: {e}")
+
+    # Aggregate results by percentile
+    per_pct_results = {}
     for percentile in percentiles:
-        res = pd.concat(
-            [
-                index_res[index_res["percentile"] == percentile]
-                for index_res in all_results.values()
-            ]
-        )
-        res["latency"] *= 1000  # convert to ms
-        per_pct_results[percentile] = res
+        res_list = []
+        for baseline_name, df in all_results.items():
+            pct_data = df[df["percentile"] == percentile]
+            if not pct_data.empty:
+                res_list.append(pct_data)
 
-    pct_to_sel = {
-        res["percentile"].iloc[0]: res["selectivity"].iloc[0]
-        for res in per_pct_results.values()
-    }
+        if res_list:
+            res = pd.concat(res_list, ignore_index=True)
+            res["latency"] *= 1000  # convert to ms
+            per_pct_results[percentile] = res
 
-    plt.rcParams.update({"font.size": 14})
-    fig, axes = plt.subplots(1, len(percentiles), figsize=(3 * len(percentiles), 3))
-    index_keys = [
-        info["name"]
-        for info in baseline_info
-        if info["result_path"][dataset_name] is not None
+    if not per_pct_results:
+        raise ValueError("No data found for any percentile")
+
+    # Get selectivity values for titles
+    pct_to_sel = {}
+    for percentile, res in per_pct_results.items():
+        if not res.empty:
+            pct_to_sel[percentile] = res["selectivity"].iloc[0]
+
+    # Set up the plot
+    plt.rcParams.update({"font.size": font_size})
+    fig_width = figsize_per_subplot[0] * len(percentiles)
+    fig_height = figsize_per_subplot[1]
+    fig, axes = plt.subplots(1, len(percentiles), figsize=(fig_width, fig_height))
+
+    # Handle case where there's only one subplot
+    if len(percentiles) == 1:
+        axes = [axes]
+
+    # Define the desired order of baselines for plotting (matches legend order)
+    desired_order = [
+        "Per-Label HNSW",
+        "Per-Label IVF",
+        "Parlay IVF",
+        "Filtered DiskANN",
+        "Shared HNSW",
+        "Shared IVF",
+        "ACORN-1",
+        r"ACORN-$\gamma$",
+        "Curator",
     ]
 
+    # Use only baselines that are available, in the desired order
+    baseline_names = [name for name in desired_order if name in all_results]
+
+    # Add any additional baselines that weren't in the desired order
+    additional_baselines = []
+    for name in all_results.keys():
+        if name not in baseline_names:
+            additional_baselines.append(name)
+            baseline_names.append(name)
+
+    # Warn about additional baselines
+    if additional_baselines:
+        print(
+            f"WARNING: Found {len(additional_baselines)} additional baseline(s) not in the predefined order:"
+        )
+        for name in additional_baselines:
+            print(f"  - {name}")
+        print(
+            "These will be added to the end of the legend. Consider updating the desired_order list."
+        )
+        print()
+
+    # Define colors and markers for different baselines
+    colors = {
+        "Per-Label HNSW": "tab:blue",
+        "Per-Label IVF": "tab:orange",
+        "Parlay IVF": "tab:green",
+        "Filtered DiskANN": "tab:red",
+        "Shared HNSW": "tab:purple",
+        "Shared IVF": "tab:brown",
+        "ACORN-1": "tab:pink",
+        r"ACORN-$\gamma$": "tab:gray",
+        "Curator": "tab:olive",
+    }
+
+    markers = {
+        "Per-Label HNSW": "o",
+        "Per-Label IVF": "X",
+        "Parlay IVF": "d",
+        "Filtered DiskANN": "P",
+        "Shared HNSW": "h",
+        "Shared IVF": "s",
+        "ACORN-1": "*",
+        r"ACORN-$\gamma$": "p",
+        "Curator": "^",
+    }
+
+    # Plot each percentile
     for i, (ax, percentile) in enumerate(zip(axes, percentiles)):
+        if percentile not in per_pct_results:
+            ax.set_title(f"No data for {int(percentile * 100)}p")
+            continue
+
         per_pct_df = per_pct_results[percentile]
+
+        # Create line plot
         sns.lineplot(
             data=per_pct_df,
             x="latency",
             y="recall",
             hue="index_key",
-            hue_order=index_keys,
+            hue_order=baseline_names,
             style="index_key",
-            style_order=index_keys,
+            style_order=baseline_names,
             ax=ax,
-            markers={
-                "Per-Label HNSW": "o",
-                "Per-Label IVF": "X",
-                "Parlay IVF": "d",
-                "Filtered DiskANN": "P",
-                "Shared HNSW": "h",
-                "Shared IVF": "s",
-                "ACORN-1": "*",
-                r"ACORN-$\gamma$": "p",  # pentagon
-                "Curator": "^",
-            },
-            palette={
-                "Per-Label HNSW": "tab:blue",
-                "Per-Label IVF": "tab:orange",
-                "Parlay IVF": "tab:green",
-                "Filtered DiskANN": "tab:red",
-                "Shared HNSW": "tab:purple",
-                "Shared IVF": "tab:brown",
-                "ACORN-1": "tab:pink",
-                r"ACORN-$\gamma$": "tab:gray",
-                "Curator": "tab:olive",
-            },
+            markers={k: v for k, v in markers.items() if k in baseline_names},
+            palette={k: v for k, v in colors.items() if k in baseline_names},
             dashes=False,
         )
 
         ax.set_xscale("log")
-        ax.set_xlabel("")
+        ax.set_xlabel("Latency (ms)" if i == len(axes) // 2 else "")
         ax.set_ylabel("Recall@10" if i == 0 else "")
 
-        selectivity = pct_to_sel[percentile]
-        percentile = 0.99 if percentile == 1.0 else percentile
-        ax.set_title(f"{int(percentile * 100)}p Sel ({selectivity:.4f})")
+        # Set title with selectivity info
+        if percentile in pct_to_sel:
+            selectivity = pct_to_sel[percentile]
+            display_percentile = 99 if percentile == 1.0 else int(percentile * 100)
+            ax.set_title(f"{display_percentile}p Sel ({selectivity:.4f})")
+        else:
+            ax.set_title(f"{int(percentile * 100)}p")
+
         ax.grid(axis="x", which="major", linestyle="-", alpha=0.6)
         ax.grid(axis="y", which="major", linestyle="-", alpha=0.6)
 
-    if len(index_keys) <= 8:
+    # Set consistent axis limits across all subplots
+    if len(axes) > 1:
+        global_xlim = (
+            min(ax.get_xlim()[0] for ax in axes if ax.get_xlim()[0] > 0),
+            max(ax.get_xlim()[1] for ax in axes),
+        )
+        global_ylim = (
+            min(ax.get_ylim()[0] for ax in axes),
+            max(ax.get_ylim()[1] for ax in axes),
+        )
+
+        for ax in axes:
+            ax.set_xlim(global_xlim)
+            ax.set_ylim(global_ylim)
+
+    # Create legend
+    if len(baseline_names) <= 8:
         legend = fig.legend(
-            axes[0].get_legend().legend_handles,
-            index_keys,
+            axes[0].get_legend().legend_handles if axes[0].get_legend() else [],
+            baseline_names,
             loc="lower center",
             bbox_to_anchor=(0.5, -0.1),
-            ncols=len(index_keys),
+            ncol=len(baseline_names),
             columnspacing=1.0,
         )
     else:
         legend = fig.legend(
-            axes[0].get_legend().legend_handles,
-            index_keys,
+            axes[0].get_legend().legend_handles if axes[0].get_legend() else [],
+            baseline_names,
             loc="lower center",
             bbox_to_anchor=(0.5, -0.2),
-            ncol=(len(index_keys) + 1) // 2,
+            ncol=(len(baseline_names) + 1) // 2,
             columnspacing=1.0,
         )
 
-    global_xlim = (
-        min(ax.get_xlim()[0] for ax in axes.flat),
-        max(ax.get_xlim()[1] for ax in axes.flat),
-    )
-    global_ylim = (
-        min(ax.get_ylim()[0] for ax in axes.flat),
-        max(ax.get_ylim()[1] for ax in axes.flat),
-    )
-
-    for ax in axes.flat:
-        ax.get_legend().remove()
-        ax.set_xlim(global_xlim)
-        ax.set_ylim(global_ylim)
+    # Remove individual legends
+    for ax in axes:
+        if ax.get_legend():
+            ax.get_legend().remove()
 
     fig.tight_layout()
 
+    # Save the figure
     print(f"Saving figure to {output_path} ...")
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, bbox_extra_artists=(legend,), bbox_inches="tight")
+    print(f"Plot saved successfully!")
 
 
 if __name__ == "__main__":

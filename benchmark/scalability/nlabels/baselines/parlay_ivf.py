@@ -7,7 +7,7 @@ import pandas as pd
 
 from benchmark.config import IndexConfig
 from benchmark.profiler import BatchProfiler, Dataset, IndexProfiler
-from benchmark.scalability.dataset import ScalabilityDataset
+from benchmark.scalability.nlabels.data.dataset import ScalabilityDataset
 from indexes.parlay_ivf import ParlayIVF
 
 

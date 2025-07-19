@@ -8,7 +8,7 @@ import pandas as pd
 
 from benchmark.config import IndexConfig
 from benchmark.profiler import BatchProfiler, IndexProfiler
-from benchmark.scalability.dataset import ScalabilityDataset
+from benchmark.scalability.nlabels.data.dataset import ScalabilityDataset
 from indexes.filtered_diskann import FilteredDiskANN
 
 

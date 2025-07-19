@@ -1,27 +1,5 @@
 """
-This script extracts the optimal construction and search parameters for each algorithm on the complex predicate datasets.
-
-Main Functions:
-- extract_optimal_params: Main function to extract optimal parameters for all baselines
-- find_adaptive_recall_threshold: Finds a recall threshold that works for all construction parameter sets
-- find_adaptive_latency_threshold: Finds a latency threshold that works for all construction parameter sets (fallback)
-- find_optimal_construction_params: Finds optimal construction params by minimizing latency at target recall
-- find_optimal_construction_params_by_latency: Finds optimal construction params by maximizing recall at target latency (fallback)
-- interpolate_latency_at_recall: Linear interpolation to estimate latency at target recall
-- interpolate_recall_at_latency: Linear interpolation to estimate recall at target latency
-- plot_recall_latency: Creates recall vs latency plots for manual parameter inspection
-- select_pareto_front: Selects Pareto optimal points from results
-
-Usage:
-python -m benchmark.complex_predicate.extract_optimal_params \
-    extract_optimal_params \
-    --base_output_dir output/complex_predicate2 \
-    --output_path benchmark/complex_predicate/optimal_baseline_params.json.in
-
-python -m benchmark.complex_predicate.extract_optimal_params \
-    plot_recall_latency \
-    --base_output_dir output/complex_predicate2 \
-    --output_dir /tmp
+Extracts optimal construction and search parameters for complex predicate algorithms.
 """
 
 import json

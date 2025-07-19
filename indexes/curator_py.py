@@ -475,7 +475,6 @@ class CuratorIndexPy:
 
         return results, stats
 
-    # TODO: does not work efficiently now
     # NumPy arrays, especially large ones, can be costly to serialize and deserialize.
     # Use shared memory for passing large arrays to processes.
     def parallel_search(

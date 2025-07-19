@@ -15,4 +15,5 @@ data/*
 3rd_party/Unified-Navigating-Graph
 3rd_party/flann
 3rd_party/hnswlib
-graph_curator/
+data
+output
