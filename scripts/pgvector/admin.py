@@ -148,6 +148,7 @@ def create_index(
     efc: Optional[int] = None,
     lists: Optional[int] = None,
     opclass: str = "vector_l2_ops",
+    force: bool = False,
     dry_run: bool = False,
     output_json: Optional[str] = None,
     output_csv: Optional[str] = None,
@@ -218,6 +219,27 @@ def create_index(
     conn = psycopg2.connect(dsn)
     try:
         conn.autocommit = True
+        # For ivf, training requires existing data. If empty and not forced, defer.
+        if index == "ivf":
+            with conn.cursor() as cur:
+                cur.execute("SELECT EXISTS (SELECT 1 FROM items LIMIT 1);")
+                has_rows = bool(cur.fetchone()[0])
+            if not has_rows and not force:
+                msg = (
+                    "[pgvector] Table 'items' is empty; deferring ivfflat index build. "
+                    "Load data first or pass --force to override."
+                )
+                print(msg)
+                result = IndexBuildResult(
+                    status="deferred",
+                    index_type=index,
+                    index_name=idx_name,
+                    dim=dim,
+                    params={"m": m, "efc": efc, "lists": lists, "opclass": opclass},
+                )
+                _emit_json_csv(result, output_json=output_json, output_csv=output_csv)
+                return
+
         _drop_other_vector_indexes(conn)
 
         start = time.monotonic()
