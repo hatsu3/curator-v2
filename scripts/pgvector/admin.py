@@ -19,6 +19,7 @@ import json
 import os
 import sys
 from datetime import datetime
+import time
 
 
 def _warn(msg: str) -> None:
@@ -177,16 +178,70 @@ def create_index(
     for stmt in sql:
         print("  ", stmt)
 
-    status = "dry_run" if dry_run else "ok"
-    if not dry_run:
-        _warn(
-            f"create_index({index}) is a scaffold. Real DB execution and profiling will be added in a later commit."
+    if dry_run:
+        result = IndexBuildResult(
+            status="dry_run",
+            index_type=index,
+            index_name=idx_name,
+            dim=dim,
+            params={"m": m, "efc": efc, "lists": lists, "opclass": opclass},
         )
+        _emit_json_csv(result, output_json=output_json, output_csv=output_csv)
+        return
+
+    # Real execution path
+    try:
+        import psycopg2  # type: ignore
+    except Exception as e:  # pragma: no cover
+        _warn(f"psycopg2 not available: {e}")
+        raise
+
+    def _exec(conn, stmt: str) -> None:
+        with conn.cursor() as cur:
+            cur.execute(stmt)
+
+    def _drop_other_vector_indexes(conn) -> None:
+        q = (
+            "SELECT indexname FROM pg_indexes "
+            "WHERE schemaname = 'public' AND tablename = 'items' "
+            "AND (indexdef ILIKE '%USING hnsw%' OR indexdef ILIKE '%USING ivfflat%')"
+        )
+        with conn.cursor() as cur:
+            cur.execute(q)
+            rows = cur.fetchall()
+        for (name,) in rows:
+            if name != idx_name:
+                _exec(conn, f'DROP INDEX IF EXISTS "{name}";')
+        # Drop target as well to ensure fresh build
+        _exec(conn, f'DROP INDEX IF EXISTS "{idx_name}";')
+
+    conn = psycopg2.connect(dsn)
+    try:
+        conn.autocommit = True
+        _drop_other_vector_indexes(conn)
+
+        start = time.monotonic()
+        for stmt in sql:
+            _exec(conn, stmt)
+        build_time = time.monotonic() - start
+
+        # Measure index size
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_relation_size(%s);", (idx_name,))
+            size_bytes = cur.fetchone()[0]
+    finally:
+        conn.close()
+
     result = IndexBuildResult(
-        status=status,
+        status="ok",
         index_type=index,
         index_name=idx_name,
         dim=dim,
+        build_time_seconds=build_time,
+        index_size_bytes=size_bytes,
         params={"m": m, "efc": efc, "lists": lists, "opclass": opclass},
     )
     _emit_json_csv(result, output_json=output_json, output_csv=output_csv)
+    print(
+        f"[pgvector] Built {index} index {idx_name} in {build_time:.3f}s, size {size_bytes} bytes"
+    )
