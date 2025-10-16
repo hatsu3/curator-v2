@@ -13,7 +13,7 @@ previewing SQL without connecting to the database.
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Iterable
 import csv
 import json
 import os
@@ -114,10 +114,28 @@ def create_schema(
     for stmt in sql:
         print("  ", stmt)
 
-    if not dry_run:
-        _warn(
-            "create_schema is a scaffold. Real DB execution will be added in a later commit."
-        )
+    if dry_run:
+        return
+
+    # Real execution path
+    try:
+        import psycopg2  # type: ignore
+    except Exception as e:  # pragma: no cover
+        _warn(f"psycopg2 not available: {e}")
+        raise
+
+    def _exec_all(dsn_: str, statements: Iterable[str]) -> None:
+        conn = psycopg2.connect(dsn_)
+        try:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                for s in statements:
+                    cur.execute(s)
+        finally:
+            conn.close()
+
+    _exec_all(dsn, sql)
+    print("[pgvector] Schema created or already exists (idempotent).")
 
 
 def create_index(
@@ -172,4 +190,3 @@ def create_index(
         params={"m": m, "efc": efc, "lists": lists, "opclass": opclass},
     )
     _emit_json_csv(result, output_json=output_json, output_csv=output_csv)
-
