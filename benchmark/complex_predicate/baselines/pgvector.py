@@ -1,22 +1,27 @@
-"""pgvector baselines (skeleton) for AND/OR complex predicates on YFCC 1M.
+"""pgvector baselines for AND/OR complex predicates on YFCC 1M.
 
-This initial commit provides:
-- DSN handling with default and explicit flag
-- Session GUC helpers (reuse logic)
-- Strict-order SQL wrapper (for iterative relaxed modes)
+Features:
+- DSN default and explicit flag override
+- Session GUC helpers
+- Strict-order SQL wrapper for iterative relaxed modes
 - Index presence checks (GIN(tags), HNSW, IVFFlat)
-
-Implementation is scaffold-only: supports `--dry_run` to preview SQL and
-validate DB connectivity/index presence without running full benchmarks.
-Subsequent commits will add execution and metrics emission.
+- Executes queries per-template (AND/OR), aggregates recall@k and latency/QPS
 """
 
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import fire
+import json
+import time
+import numpy as np
+from pathlib import Path
+
+from benchmark.profiler import Dataset
+from benchmark.utils import recall
+from benchmark.complex_predicate.utils import generate_random_filters, compute_ground_truth
 
 DEFAULT_DSN = "postgresql://postgres:postgres@localhost:5432/curator_bench"
 
@@ -84,12 +89,42 @@ def ensure_indexes_for_strategy(conn, strategy: str) -> None:
     raise AssertionError(f"Unsupported strategy: {strategy}")
 
 
+def get_embedding_dim_from_db(conn) -> int | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT vector_dims(embedding) FROM items WHERE embedding IS NOT NULL LIMIT 1;"
+        )
+        row = cur.fetchone()
+    return int(row[0]) if row and row[0] is not None else None
+
+
+def parse_polish_to_sql(filter_str: str) -> Tuple[str, List[int]]:
+    """Translate Polish predicate to SQL over tags (two-term only)."""
+    tokens = filter_str.split()
+    if len(tokens) != 3 or tokens[0] not in ("AND", "OR"):
+        raise AssertionError(f"Unsupported filter: {filter_str}")
+    op, a, b = tokens
+    a_i, b_i = int(a), int(b)
+    if op == "AND":
+        return "tags @> ARRAY[%s] AND tags @> ARRAY[%s]", [a_i, b_i]
+    else:
+        return "tags @> ARRAY[%s] OR tags @> ARRAY[%s]", [a_i, b_i]
+
+
 def exp_pgvector_complex(
     *,
     dsn: str | None = None,
     strategy: str = "hnsw",  # prefilter|ivf|hnsw
     iter_mode: str = "relaxed_order",
     templates: List[str] | None = None,
+    # Dataset / GT
+    dataset_key: str = "yfcc100m",
+    test_size: float = 0.01,
+    dataset_cache_path: str | Path | None = None,
+    gt_cache_dir: str | Path = "data/ground_truth/complex_predicate",
+    n_filters_per_template: int = 50,
+    n_queries_per_filter: int = 100,
+    k: int = 10,
     # IVF params
     lists: int | None = None,
     probes: int | None = None,
@@ -97,17 +132,13 @@ def exp_pgvector_complex(
     m: int | None = None,
     ef_construction: int | None = None,
     ef_search: int | None = None,
-    # Dataset/outputs (accepted, not used in skeleton execution)
-    dataset_key: str = "yfcc100m",
-    test_size: float = 0.01,
+    # Output
     output_path: str | None = None,
     # Control
     dry_run: bool = False,
+    allow_gt_compute: bool = True,
 ):
-    """AND/OR baselines (skeleton): verify DSN, indexes, and preview SQL.
-
-    Only two-term templates are in scope: AND/OR.
-    """
+    """AND/OR baselines for complex predicates (two-term): metrics per template."""
     dsn_resolved = resolve_dsn(dsn)
     print(f"[pgvector] Using DSN: {dsn_resolved}")
     if templates is None:
@@ -161,7 +192,115 @@ def exp_pgvector_complex(
         print("[pgvector] Session GUCs applied.")
         ensure_indexes_for_strategy(conn, strategy)
         print(f"[pgvector] Index presence OK for strategy '{strategy}'.")
-        print("[pgvector] Skeleton only: execution will be added in next commits.")
+
+        # Load dataset (respects cache if provided)
+        cache_path = Path(dataset_cache_path) if dataset_cache_path else None
+        ds = Dataset.from_dataset_key(
+            dataset_key, test_size=test_size, cache_path=cache_path, k=k, verbose=True
+        )
+        if dataset_key.startswith("yfcc"):
+            assert ds.dim == 192, f"YFCC requires dim=192; got {ds.dim}"
+        db_dim = get_embedding_dim_from_db(conn)
+        if db_dim is not None:
+            assert int(db_dim) == ds.dim, (
+                f"DB vector dim ({db_dim}) must match dataset dim ({ds.dim})."
+            )
+
+        # Build filters and queries
+        template_to_filters = generate_random_filters(
+            templates, n_filters_per_template, ds.num_labels
+        )
+        rng = np.random.default_rng(42)
+        query_idxs = rng.choice(ds.test_vecs.shape[0], n_queries_per_filter, replace=False)
+        queries = ds.test_vecs[query_idxs]
+
+        # Pre-check GT cache
+        all_filters = [f for fs in template_to_filters.values() for f in fs]
+        gt_cache_dir = Path(gt_cache_dir)
+        import hashlib
+        hasher = hashlib.md5()
+        hasher.update(queries.tobytes())
+        for fstr in sorted(all_filters):
+            hasher.update(fstr.encode())
+        hasher.update(str(k).encode())
+        gt_key = hasher.hexdigest()
+        gt_path = gt_cache_dir / f"{gt_key}.pkl"
+        if not gt_path.exists() and not allow_gt_compute:
+            raise AssertionError(
+                f"Missing GT cache {gt_path}. Re-run with --allow_gt_compute true "
+                f"or pre-generate via benchmark.complex_predicate.dataset.generate_dataset"
+            )
+
+        filter_to_gt, _ = compute_ground_truth(
+            queries, all_filters, ds.train_vecs, ds.train_mds, k=k, cache_dir=str(gt_cache_dir)
+        )
+
+        # Prepare SQL templates
+        core_sql_tpl = (
+            "SELECT id, embedding <-> %s::vector AS distance FROM items WHERE {pred} "
+            "ORDER BY distance LIMIT %s"
+        )
+
+        def vec_to_literal(vec: np.ndarray) -> str:
+            return "[" + ",".join(f"{float(x):.6f}" for x in vec.tolist()) + "]"
+
+        results: Dict[str, Dict[str, float]] = {}
+
+        for template in sorted(template_to_filters.keys()):
+            query_latencies: List[float] = []
+            query_results: List[List[int]] = []
+
+            for fstr in template_to_filters[template]:
+                pred_sql, pred_params = parse_polish_to_sql(fstr)
+                core_sql = core_sql_tpl.format(pred=pred_sql)
+                sql = strict_order_wrapper(core_sql) if iter_mode == "relaxed_order" else core_sql
+                gt_list = filter_to_gt[fstr]
+
+                with conn.cursor() as cur:
+                    for qi, vec in enumerate(queries):
+                        vlit = vec_to_literal(vec)
+                        start = time.perf_counter()
+                        cur.execute(sql, (vlit, *pred_params, int(k)))
+                        rows = cur.fetchall()
+                        elapsed = time.perf_counter() - start
+                        query_latencies.append(elapsed)
+                        ids = [int(r[0]) for r in rows]
+                        query_results.append(ids)
+
+            # Compute metrics per template
+            # Flatten GTs in same order as query_results
+            flat_gts = [gt for f in template_to_filters[template] for gt in filter_to_gt[f]]
+            rec = recall(query_results, flat_gts)
+            lat = np.array(query_latencies, dtype=float)
+            results[template] = {
+                "recall_at_k": float(rec),
+                "query_qps": float(1.0 / lat.mean()) if lat.size else 0.0,
+                "query_lat_avg": float(lat.mean()) if lat.size else 0.0,
+                "query_lat_p50": float(np.percentile(lat, 50)) if lat.size else 0.0,
+                "query_lat_p95": float(np.percentile(lat, 95)) if lat.size else 0.0,
+                "query_lat_p99": float(np.percentile(lat, 99)) if lat.size else 0.0,
+            }
+
+        # Emit JSON
+        assert output_path is not None, "output_path is required"
+        out_path = Path(output_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "dataset_key": dataset_key,
+                    "test_size": float(test_size),
+                    "strategy": strategy,
+                    "iter_mode": iter_mode,
+                    "k": int(k),
+                    "templates": sorted(template_to_filters.keys()),
+                    "results": results,
+                },
+                f,
+                indent=2,
+                sort_keys=True,
+            )
+        print(f"[pgvector] Wrote results JSON to {out_path}")
     finally:
         conn.close()
 
