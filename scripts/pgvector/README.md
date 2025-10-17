@@ -113,8 +113,18 @@ Artifacts
   - output/overall_results2/pgvector_{hnsw|ivf|prefilter}/<dataset_key>_test<test_size>/insert_{durable|non_durable}.{json,csv}
  - A/B artifacts for insert ablations:
    - output/pgvector/insert_ab/<dataset_key>/{hnsw|ivf|gin}/{durable|non_durable}/run.{json,csv}
-  
-  - python -m scripts.pgvector.load_dataset insert_bench \
-      --dsn postgresql://postgres:postgres@localhost:5432/curator_bench \
-      --dataset yfcc100m --dataset_key yfcc100m --dim 192 --test_size 0.01 \
-      --strategy hnsw --m 32 --efc 64 --dry_run true
+
+Label Modeling A/B (INT[] + GIN vs Boolean)
+-------------------------------------------
+- Orchestrator (preview commands and outputs):
+  - eval "$(conda shell.bash hook)" && conda activate ann_bench2
+  - python -m benchmark.pgvector_ab.label_model_ab run \
+      --dsn_int postgresql://postgres:postgres@localhost:5432/curator_int \
+      --dsn_bool postgresql://postgres:postgres@localhost:5432/curator_bool \
+      --dataset_key yfcc100m --test_size 0.01 --k 10 \
+      --lists 200 --probes 16 --m 32 --ef_construction 64 --ef_search 64 \
+      --dry_run true
+- Outputs:
+  - output/pgvector/label_ab/yfcc100m_1m/{int_array|boolean}/{hnsw|ivf}/results.csv
+- Summary (optional, after runs):
+  - python -m benchmark.pgvector_ab.summarize_label_ab summarize --dataset_variant yfcc100m_1m --dry_run true
