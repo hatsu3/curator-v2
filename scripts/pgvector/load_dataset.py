@@ -358,8 +358,110 @@ class LoadDataset:
             print("[pgvector] Dry-run: preview only. No inserts executed.")
             return
 
-        # Real execution will be added in a subsequent commit (HNSW first).
-        _warn("insert benchmark execution will be implemented for HNSW in commit 3")
+        # Real execution: HNSW insertion benchmark
+        if args.strategy.lower() != "hnsw":
+            _warn("insert benchmark real execution currently implemented for strategy=hnsw only")
+            return
+
+        # Ensure schema; keep GIN installed for realism
+        admin.create_schema(
+            _resolve_dsn(args.dsn),
+            dim=args.dim,
+            create_gin=True,
+            unlogged=args.unlogged,
+            dry_run=False,
+        )
+
+        # Load training data
+        train_vecs, _test_vecs, _meta = get_dataset(args.dataset, test_size=args.test_size)
+        train_mds, _test_mds = get_metadata(
+            synthesized=False, dataset_name=args.dataset, test_size=args.test_size
+        )
+        n_rows = train_vecs.shape[0]
+        if args.limit is not None:
+            n_rows = min(n_rows, int(args.limit))
+
+        import psycopg2  # type: ignore
+        dsn_resolved = _resolve_dsn(args.dsn)
+        conn = psycopg2.connect(dsn_resolved)
+        try:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                # Start from empty table
+                cur.execute("TRUNCATE items;")
+                # Apply durability toggle
+                if args.sync_commit_off:
+                    cur.execute("SET synchronous_commit = off;")
+
+            # Build HNSW index on empty table (params required)
+            if args.m is None or args.efc is None:
+                raise RuntimeError("hnsw insertion benchmark requires --m and --efc parameters")
+            admin.create_index(
+                dsn_resolved,
+                index="hnsw",
+                dim=args.dim,
+                m=args.m,
+                efc=args.efc,
+                dry_run=False,
+            )
+
+            # Insert rows one by one; measure per-row latency
+            latencies: list[float] = []
+            total_start = time.perf_counter()
+            with conn.cursor() as cur:
+                for i in range(n_rows):
+                    rid = i + 1
+                    vec = train_vecs[i]
+                    tags = train_mds[i]
+                    emb_txt = "[" + ",".join(str(float(x)) for x in vec) + "]"
+                    t0 = time.perf_counter()
+                    cur.execute(
+                        "INSERT INTO items (id, embedding, tags) VALUES (%s, %s::vector, %s);",
+                        (rid, emb_txt, tags),
+                    )
+                    latencies.append(time.perf_counter() - t0)
+            total_dur = time.perf_counter() - total_start
+
+        finally:
+            conn.close()
+
+        # Aggregate metrics
+        import numpy as np  # type: ignore
+        lat = np.array(latencies, dtype=np.float64)
+        metrics: Dict[str, Any] = {
+            "status": "ok",
+            "strategy": "hnsw",
+            "dataset_key": args.dataset_key,
+            "test_size": args.test_size,
+            "dim": args.dim,
+            "n_rows": int(n_rows),
+            "durability": _durability_label(args.unlogged, args.sync_commit_off),
+            "insert_qps": float(n_rows / max(total_dur, 1e-9)),
+            "insert_lat_avg": float(lat.mean()) if lat.size else None,
+            "insert_lat_std": float(lat.std()) if lat.size else None,
+            "insert_lat_p50": float(np.percentile(lat, 50)) if lat.size else None,
+            "insert_lat_p99": float(np.percentile(lat, 99)) if lat.size else None,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+
+        # Emit artifacts
+        baseline = _baseline_dir_for_strategy(args.strategy)
+        out_dir = _canonical_output_dir(baseline, args.dataset_key, args.test_size)
+        os.makedirs(out_dir, exist_ok=True)
+        label = _durability_label(args.unlogged, args.sync_commit_off)
+        insert_json = os.path.join(out_dir, f"insert_{label}.json")
+        insert_csv = os.path.join(out_dir, f"insert_{label}.csv")
+        with open(insert_json, "w", encoding="utf-8") as f:
+            json.dump(metrics, f, indent=2, sort_keys=True)
+        # CSV append
+        flat = metrics.copy()
+        write_header = not os.path.exists(insert_csv)
+        with open(insert_csv, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(flat.keys()))
+            if write_header:
+                writer.writeheader()
+            writer.writerow(flat)
+        print(f"[pgvector] Insert metrics written to {insert_json} and {insert_csv}")
 
 
 def main() -> None:
