@@ -495,6 +495,16 @@ class LoadDataset:
         # Aggregate metrics
         import numpy as np  # type: ignore
         lat = np.array(latencies, dtype=np.float64)
+        # Query index size after insertion
+        idx_name = "items_emb_hnsw" if s == "hnsw" else ("items_emb_ivf" if s == "ivf" else None)
+        index_size_bytes = None
+        if idx_name is not None:
+            import psycopg2  # type: ignore
+            with psycopg2.connect(_resolve_dsn(args.dsn)) as _c:
+                _c.autocommit = True
+                with _c.cursor() as _cur:
+                    _cur.execute("SELECT pg_relation_size(%s);", (idx_name,))
+                    index_size_bytes = int(_cur.fetchone()[0])
         metrics: Dict[str, Any] = {
             "status": "ok",
             "strategy": s,
@@ -508,6 +518,7 @@ class LoadDataset:
             "insert_lat_std": float(lat.std()) if lat.size else None,
             "insert_lat_p50": float(np.percentile(lat, 50)) if lat.size else None,
             "insert_lat_p99": float(np.percentile(lat, 99)) if lat.size else None,
+            "index_size_bytes": index_size_bytes,
             "timestamp": datetime.utcnow().isoformat(),
         }
 
