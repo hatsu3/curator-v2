@@ -50,3 +50,9 @@ A/B Orchestrator (preview)
 - To preview HNSW `strict_order` vs `relaxed_order` runs and output paths:
   - `python -m benchmark.pgvector_ab.pgvector_hnsw_ordering ab_single --dataset_variant yfcc100m_1m --dataset_key yfcc100m --test_size 0.01 --k 10 --m 32 --ef_construction 64 --ef_search 64 --dry_run true`
 - The orchestrator prints the exact baseline commands to run and target paths under `output/pgvector/hnsw_ordering_ab/yfcc100m_1m/{strict_order|relaxed_order}/`.
+
+Label Modeling A/B
+- Preview label modeling A/B commands and outputs (INT[] vs boolean):
+  - `python -m benchmark.pgvector_ab.label_model_ab run --dsn_int postgresql://.../curator_int --dsn_bool postgresql://.../curator_bool --dataset_key yfcc100m --test_size 0.01 --k 10 --lists 200 --probes 16 --m 32 --ef_construction 64 --ef_search 64 --dry_run true`
+- Optional summary after runs:
+  - `python -m benchmark.pgvector_ab.summarize_label_ab summarize --dataset_variant yfcc100m_1m --dry_run true`
