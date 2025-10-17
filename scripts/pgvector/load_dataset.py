@@ -22,6 +22,7 @@ import time
 import json
 import csv
 from datetime import datetime
+import struct
 
 import fire
 
@@ -229,38 +230,86 @@ class LoadDataset:
                     cur.execute("SET synchronous_commit = off;")
 
             if args.copy_format == "binary":
-                raise RuntimeError(
-                    "binary COPY not implemented yet; rerun with --copy_format csv as per policy"
-                )
+                # Use a staging table with TEXT fields for vector/array textual input
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "CREATE TEMP TABLE IF NOT EXISTS items_stage ("
+                        "id BIGINT, embedding_text TEXT, tags_text TEXT) ON COMMIT DROP;"
+                    )
 
-            # Prepare tab-delimited text to avoid quoting commas in CSV
-            def row_iter() -> Iterable[str]:
-                for i in range(n_rows):
-                    # Assign 1-based IDs to rows in the order provided
-                    rid = i + 1
-                    vec = train_vecs[i]
-                    tags = train_mds[i]
-                    emb_txt = "[" + ",".join(str(float(x)) for x in vec) + "]"
-                    tags_txt = "{" + ",".join(str(int(t)) for t in tags) + "}"
-                    yield f"{rid}\t{emb_txt}\t{tags_txt}\n"
+                def _build_bin_copy(rows: Iterable[tuple[int, str, str]]) -> bytes:
+                    # Build Postgres binary COPY payload
+                    out = io.BytesIO()
+                    # Header
+                    out.write(b"PGCOPY\n\xff\r\n\x00")
+                    out.write(struct.pack("!I", 0))  # flags
+                    out.write(struct.pack("!I", 0))  # header extension length
+                    for rid, emb_txt, tags_txt in rows:
+                        out.write(struct.pack("!h", 3))  # number of fields
+                        # id BIGINT
+                        id_bytes = struct.pack("!q", int(rid))
+                        out.write(struct.pack("!i", len(id_bytes)))
+                        out.write(id_bytes)
+                        # embedding_text TEXT
+                        emb_b = emb_txt.encode("utf-8")
+                        out.write(struct.pack("!i", len(emb_b)))
+                        out.write(emb_b)
+                        # tags_text TEXT
+                        tags_b = tags_txt.encode("utf-8")
+                        out.write(struct.pack("!i", len(tags_b)))
+                        out.write(tags_b)
+                    out.write(struct.pack("!h", -1))  # trailer
+                    return out.getvalue()
 
-            buf = io.StringIO()
-            written = 0
-            with conn.cursor() as cur:
-                for line in row_iter():
-                    buf.write(line)
-                    written += 1
-                    # flush periodically to avoid large memory
-                    if written % 100000 == 0:
-                        buf.seek(0)
+                def rows_iter() -> Iterable[tuple[int, str, str]]:
+                    for i in range(n_rows):
+                        rid = i + 1
+                        vec = train_vecs[i]
+                        tags = train_mds[i]
+                        emb_txt = "[" + ",".join(str(float(x)) for x in vec) + "]"
+                        tags_txt = "{" + ",".join(str(int(t)) for t in tags) + "}"
+                        yield (rid, emb_txt, tags_txt)
+
+                payload = _build_bin_copy(rows_iter())
+                with conn.cursor() as cur:
+                    cur.copy_expert(
+                        "COPY items_stage (id, embedding_text, tags_text) FROM STDIN WITH (FORMAT BINARY)",
+                        io.BytesIO(payload),
+                    )
+                    # Insert into final table, casting text->vector and text->int[]
+                    cur.execute(
+                        "INSERT INTO items (id, embedding, tags) "
+                        "SELECT id, embedding_text::vector, tags_text::int[] FROM items_stage;"
+                    )
+            else:
+                # Prepare tab-delimited text to avoid quoting commas in CSV
+                def row_iter() -> Iterable[str]:
+                    for i in range(n_rows):
+                        # Assign 1-based IDs to rows in the order provided
+                        rid = i + 1
+                        vec = train_vecs[i]
+                        tags = train_mds[i]
+                        emb_txt = "[" + ",".join(str(float(x)) for x in vec) + "]"
+                        tags_txt = "{" + ",".join(str(int(t)) for t in tags) + "}"
+                        yield f"{rid}\t{emb_txt}\t{tags_txt}\n"
+
+                buf = io.StringIO()
+                written = 0
+                with conn.cursor() as cur:
+                    for line in row_iter():
+                        buf.write(line)
+                        written += 1
+                        # flush periodically to avoid large memory
+                        if written % 100000 == 0:
+                            buf.seek(0)
+                            cur.copy_from(buf, "items", columns=("id", "embedding", "tags"), sep="\t")
+                            buf.close()
+                            buf = io.StringIO()
+                    # flush remainder
+                    buf.seek(0)
+                    if written > 0:
                         cur.copy_from(buf, "items", columns=("id", "embedding", "tags"), sep="\t")
-                        buf.close()
-                        buf = io.StringIO()
-                # flush remainder
-                buf.seek(0)
-                if written > 0:
-                    cur.copy_from(buf, "items", columns=("id", "embedding", "tags"), sep="\t")
-            buf.close()
+                buf.close()
 
             # Analyze table for realistic planner stats
             with conn.cursor() as cur:
@@ -426,33 +475,75 @@ class LoadDataset:
                 scf = _validate_copy_format(seed_copy_format)
                 if scf == "binary":
                     raise RuntimeError("binary COPY for seeding not implemented; use --seed_copy_format csv")
-                # Write seed rows in chunks
-                def seed_iter() -> Iterable[str]:
-                    import numpy as _np  # local
-                    _np.random.seed(42)
-                    idxs = _np.random.choice(train_vecs.shape[0], seed_n, replace=False)
-                    for rid in idxs:
-                        vec = train_vecs[rid]
-                        tags = train_mds[rid]
-                        emb_txt = "[" + ",".join(str(float(x)) for x in vec) + "]"
-                        tags_txt = "{" + ",".join(str(int(t)) for t in tags) + "}"
-                        yield f"{rid+1}\t{emb_txt}\t{tags_txt}\n"
-
-                buf = io.StringIO()
-                written = 0
-                with conn.cursor() as cur:
-                    for line in seed_iter():
-                        buf.write(line)
-                        written += 1
-                        if written % 100000 == 0:
-                            buf.seek(0)
+                # Write seed rows via chosen format
+                import numpy as _np  # local
+                _np.random.seed(42)
+                idxs = _np.random.choice(train_vecs.shape[0], seed_n, replace=False)
+                if scf == "csv":
+                    def seed_iter_csv() -> Iterable[str]:
+                        for rid in idxs:
+                            vec = train_vecs[rid]
+                            tags = train_mds[rid]
+                            emb_txt = "[" + ",".join(str(float(x)) for x in vec) + "]"
+                            tags_txt = "{" + ",".join(str(int(t)) for t in tags) + "}"
+                            yield f"{rid+1}\t{emb_txt}\t{tags_txt}\n"
+                    buf = io.StringIO()
+                    written = 0
+                    with conn.cursor() as cur:
+                        for line in seed_iter_csv():
+                            buf.write(line)
+                            written += 1
+                            if written % 100000 == 0:
+                                buf.seek(0)
+                                cur.copy_from(buf, "items", columns=("id", "embedding", "tags"), sep="\t")
+                                buf.close()
+                                buf = io.StringIO()
+                        buf.seek(0)
+                        if written > 0:
                             cur.copy_from(buf, "items", columns=("id", "embedding", "tags"), sep="\t")
-                            buf.close()
-                            buf = io.StringIO()
-                    buf.seek(0)
-                    if written > 0:
-                        cur.copy_from(buf, "items", columns=("id", "embedding", "tags"), sep="\t")
-                buf.close()
+                    buf.close()
+                else:
+                    # binary seeding via staging table
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "CREATE TEMP TABLE IF NOT EXISTS items_stage ("
+                            "id BIGINT, embedding_text TEXT, tags_text TEXT) ON COMMIT DROP;"
+                        )
+                    def rows_iter_seed() -> Iterable[tuple[int, str, str]]:
+                        for rid in idxs:
+                            vec = train_vecs[rid]
+                            tags = train_mds[rid]
+                            emb_txt = "[" + ",".join(str(float(x)) for x in vec) + "]"
+                            tags_txt = "{" + ",".join(str(int(t)) for t in tags) + "}"
+                            yield (int(rid) + 1, emb_txt, tags_txt)
+                    # reuse builder from bulk
+                    def _build_bin_copy(rows: Iterable[tuple[int, str, str]]) -> bytes:
+                        out = io.BytesIO()
+                        out.write(b"PGCOPY\n\xff\r\n\x00")
+                        out.write(struct.pack("!I", 0))
+                        out.write(struct.pack("!I", 0))
+                        for rid2, emb_txt2, tags_txt2 in rows:
+                            out.write(struct.pack("!h", 3))
+                            out.write(struct.pack("!i", 8))
+                            out.write(struct.pack("!q", int(rid2)))
+                            eb = emb_txt2.encode("utf-8")
+                            out.write(struct.pack("!i", len(eb)))
+                            out.write(eb)
+                            tb = tags_txt2.encode("utf-8")
+                            out.write(struct.pack("!i", len(tb)))
+                            out.write(tb)
+                        out.write(struct.pack("!h", -1))
+                        return out.getvalue()
+                    payload = _build_bin_copy(rows_iter_seed())
+                    with conn.cursor() as cur:
+                        cur.copy_expert(
+                            "COPY items_stage (id, embedding_text, tags_text) FROM STDIN WITH (FORMAT BINARY)",
+                            io.BytesIO(payload),
+                        )
+                        cur.execute(
+                            "INSERT INTO items (id, embedding, tags) "
+                            "SELECT id, embedding_text::vector, tags_text::int[] FROM items_stage;"
+                        )
 
                 # Build IVF and record metrics
                 baseline_b = _baseline_dir_for_index("ivf")
