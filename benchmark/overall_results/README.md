@@ -1,35 +1,47 @@
-pgvector Baselines (Skeleton)
-----------------------------
+pgvector Baselines
+------------------
 
 This repository adds pgvector baselines for:
 - Single-label search (this directory)
-- AND/OR complex predicates (see benchmark/complex_predicate/baselines/pgvector.py)
-
-Status: initial skeleton
-- DSN handling: default DSN plus explicit --dsn flag
-- Session GUC utilities
-- Strict-order SQL wrapper (for iterative relaxed modes)
-- Index presence checks (GIN(tags), HNSW, IVFFlat)
+- AND/OR complex predicates (see `benchmark/complex_predicate/baselines/pgvector.py`)
 
 DSN and Environment
-- Default DSN: postgresql://postgres:postgres@localhost:5432/curator_bench
-- Override by flag: --dsn postgresql://user:pass@host:5432/db
-- Or set env var: PG_DSN
+- Default DSN: `postgresql://postgres:postgres@localhost:5432/curator_bench`
+- Override by flag: `--dsn postgresql://user:pass@host:5432/db`
+- Or set env var: `PG_DSN`
 
-Setup (YFCC 1M)
-1) Start pg18 + pgvector:
-   docker run --name pgvector-dev -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d pgvector/pgvector:0.8.1-pg18-trixie
-   docker exec -it pgvector-dev psql -U postgres -c "CREATE DATABASE curator_bench;"
-   docker exec -it pgvector-dev psql -U postgres -d curator_bench -c "CREATE EXTENSION IF NOT EXISTS vector;"
-2) Create schema and indexes as needed:
-   python -m scripts.pgvector.setup_db create_schema --dsn postgresql://postgres:postgres@localhost:5432/curator_bench --dim 192
-   # Build one vector index per strategy (example: HNSW)
-   python -m scripts.pgvector.setup_db create_index --dsn postgresql://postgres:postgres@localhost:5432/curator_bench --index hnsw --m 32 --efc 64 --dim 192
+Database Setup (YFCC 1M)
+1) Start pg18 + pgvector and create DB/extension (if not already running):
+   - `docker run --name pgvector-dev -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d pgvector/pgvector:0.8.1-pg18-trixie`
+   - `docker exec -it pgvector-dev psql -U postgres -c "CREATE DATABASE curator_bench;"`
+   - `docker exec -it pgvector-dev psql -U postgres -d curator_bench -c "CREATE EXTENSION IF NOT EXISTS vector;"`
+2) Create schema and indexes:
+   - `psql -d postgresql://postgres:postgres@localhost:5432/curator_bench -c "DROP TABLE IF EXISTS items; CREATE TABLE items (id BIGINT PRIMARY KEY, tags INT[], embedding vector(192));"`
+   - `psql -d postgresql://postgres:postgres@localhost:5432/curator_bench -c "CREATE INDEX IF NOT EXISTS items_tags_gin ON items USING GIN (tags);"`
+   - `psql -d postgresql://postgres:postgres@localhost:5432/curator_bench -c "CREATE INDEX IF NOT EXISTS items_emb_hnsw ON items USING hnsw (embedding vector_l2_ops) WITH (m = 32, ef_construction = 64);"`
 
-Usage (skeleton / dry-run)
-- Single-label (SQL preview only):
-  python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single --strategy hnsw --ef_search 64 --iter_mode relaxed_order --dataset_key yfcc100m --test_size 0.01 --dry_run true
+Optional Dataset Cache
+- Precompute once for reuse: `python -m benchmark.overall_results.preproc_dataset --dataset_key yfcc100m --test_size 0.01 --output_dir data/cache`
+- Otherwise, the loaders will use raw sources and load ground truth from `data/ground_truth` if available.
+
+Single-Label Baseline (HNSW)
+- Run:
+  - `python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single --strategy hnsw --m 32 --ef_construction 64 --ef_search 64 --iter_mode relaxed_order --dataset_key yfcc100m --test_size 0.01 --k 10 --output_path output/overall_results2/pgvector_hnsw/yfcc100m_test0.01/results.csv [--dataset_cache_path data/cache]`
+- Outputs:
+  - CSV: `output/overall_results2/pgvector_hnsw/yfcc100m_test0.01/results.csv`
+  - JSON: `output/overall_results2/pgvector_hnsw/yfcc100m_test0.01/parameters.json`
+
+Single-Label Baseline (IVFFlat)
+- Requires non-empty table; build IVF index after load.
+- Run:
+  - `python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single --strategy ivf --lists 200 --probes 16 --iter_mode relaxed_order --dataset_key yfcc100m --test_size 0.01 --k 10 --output_path output/overall_results2/pgvector_ivf/yfcc100m_test0.01/results.csv`
+
+Single-Label Baseline (Prefilter exact)
+- Relational-only; no vector index.
+- Run:
+  - `python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single --strategy prefilter --iter_mode strict_order --dataset_key yfcc100m --test_size 0.01 --k 10 --output_path output/overall_results2/pgvector_prefilter/yfcc100m_test0.01/results.csv`
 
 Notes
-- This commit does not execute benchmarks or write results; later commits will add full runs and CSV/JSON outputs under output/overall_results2.
-
+- `GIN(tags)` must exist for all strategies.
+- For HNSW/IVF strategies, the corresponding vector index must exist.
+- YFCC uses 192-D embeddings end-to-end.
