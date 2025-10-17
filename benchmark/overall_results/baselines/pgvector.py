@@ -87,7 +87,17 @@ def _has_vector_index(conn, method: str) -> bool:
         return cur.fetchone() is not None
 
 
-def ensure_indexes_for_strategy(conn, strategy: str) -> None:
+def _has_column(conn, table: str, column: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = %s AND column_name = %s LIMIT 1;",
+            (table, column),
+        )
+        return cur.fetchone() is not None
+
+
+def ensure_indexes_for_strategy(conn, strategy: str, schema_mode: str) -> None:
     """Validate required indexes per strategy.
 
     - prefilter: requires GIN(tags)
@@ -95,11 +105,12 @@ def ensure_indexes_for_strategy(conn, strategy: str) -> None:
     - hnsw: requires an hnsw index on embedding
     Raises AssertionError with actionable message if missing.
     """
-    # GIN(tags) baseline index is expected to exist for all strategies
-    if not _index_exists(conn, "items_tags_gin"):
-        raise AssertionError(
-            "Missing GIN(tags) index 'items_tags_gin'. Run scripts/pgvector.setup_db create_schema."
-        )
+    # Require GIN(tags) only for INT[] path; boolean path skips GIN requirement
+    if schema_mode == "int_array":
+        if not _index_exists(conn, "items_tags_gin"):
+            raise AssertionError(
+                "Missing GIN(tags) index 'items_tags_gin'. Run scripts.pgvector.setup_db create_schema."
+            )
     s = strategy.lower()
     if s == "prefilter":
         return
@@ -156,6 +167,7 @@ def exp_pgvector_single(
     dsn: str | None = None,
     strategy: str = "hnsw",
     iter_mode: str = "relaxed_order",
+    schema: str = "int_array",  # int_array | boolean
     # IVF params
     lists: int | None = None,
     probes: int | None = None,
@@ -194,10 +206,19 @@ def exp_pgvector_single(
         if gucs:
             print("[pgvector] Session GUCs (preview):", gucs)
         # Example SQL preview without DB connection
-        core_sql = (
-            "SELECT id, embedding <-> $1::vector AS distance "
-            "FROM items WHERE tags @> ARRAY[$2] ORDER BY distance LIMIT $3"
-        )
+        if schema == "int_array":
+            core_sql = (
+                "SELECT id, embedding <-> $1::vector AS distance "
+                "FROM items WHERE tags @> ARRAY[$2] ORDER BY distance LIMIT $3"
+            )
+        elif schema == "boolean":
+            # Show a representative boolean column (substitute a label id)
+            core_sql = (
+                "SELECT id, embedding <-> $1::vector AS distance "
+                "FROM items WHERE label_<L> ORDER BY distance LIMIT $2"
+            )
+        else:
+            raise AssertionError("schema must be one of: int_array, boolean")
         sql = strict_order_wrapper(core_sql) if iter_mode == "relaxed_order" else core_sql
         print("[pgvector] Example query SQL (preview):\n", sql)
         print("[pgvector] Dry-run: skipping DB connection and dataset work.")
@@ -213,7 +234,7 @@ def exp_pgvector_single(
     try:
         set_session_gucs(conn, gucs)
         print("[pgvector] Session GUCs applied.")
-        ensure_indexes_for_strategy(conn, strategy)
+        ensure_indexes_for_strategy(conn, strategy, schema)
         print(f"[pgvector] Index presence OK for strategy '{strategy}'.")
         # Load dataset; if cache_path is provided and exists, Dataset will use it.
         # Otherwise, it will use raw sources and load ground truth from data/ground_truth
@@ -239,12 +260,27 @@ def exp_pgvector_single(
                 "Ensure table uses vector(192) for YFCC and data is loaded with 192-D embeddings."
             )
 
-        # Prepare SQL
-        core_sql = (
-            "SELECT id, embedding <-> %s::vector AS distance "
-            "FROM items WHERE tags @> ARRAY[%s] ORDER BY distance LIMIT %s"
-        )
-        sql = strict_order_wrapper(core_sql) if iter_mode == "relaxed_order" else core_sql
+        # Prepare SQL builder per schema
+        def build_sql_for_label(lab: int) -> str:
+            if schema == "int_array":
+                core = (
+                    "SELECT id, embedding <-> %s::vector AS distance "
+                    "FROM items WHERE tags @> ARRAY[%s] ORDER BY distance LIMIT %s"
+                )
+            elif schema == "boolean":
+                col = f"label_{int(lab)}"
+                # Optionally validate column exists before querying
+                if not _has_column(conn, "items", col):
+                    raise AssertionError(
+                        f"Missing boolean label column '{col}'. Create via setup_db.create_schema --schema boolean --label_ids ..."
+                    )
+                core = (
+                    f"SELECT id, embedding <-> %s::vector AS distance "
+                    f"FROM items WHERE {col} ORDER BY distance LIMIT %s"
+                )
+            else:
+                raise AssertionError("schema must be one of: int_array, boolean")
+            return strict_order_wrapper(core) if iter_mode == "relaxed_order" else core
 
         def vec_to_literal(vec: np.ndarray) -> str:
             return "[" + ",".join(f"{float(x):.6f}" for x in vec.tolist()) + "]"
@@ -258,12 +294,16 @@ def exp_pgvector_single(
                     if label not in ds.all_labels:
                         continue
                     vlit = vec_to_literal(vec)
+                    sql = build_sql_for_label(int(label))
                     start = time.perf_counter()
-                    cur.execute(sql, (vlit, int(label), int(k)))
+                    if schema == "int_array":
+                        cur.execute(sql, (vlit, int(label), int(k)))
+                    else:
+                        # boolean mode: only vector and k are parameters
+                        cur.execute(sql, (vlit, int(k)))
                     rows = cur.fetchall()
                     elapsed = time.perf_counter() - start
                     query_latencies.append(elapsed)
-                    # rows may be [(id, distance), ...] or [(id,), ...]
                     ids = [int(r[0]) for r in rows]
                     query_results.append(ids)
 
