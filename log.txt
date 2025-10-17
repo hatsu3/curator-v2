@@ -1,0 +1,40 @@
+[run_ab] Resetting databases curator_int and curator_bool
+ pg_terminate_backend 
+----------------------
+(0 rows)
+
+DROP DATABASE
+DROP DATABASE
+CREATE DATABASE
+CREATE DATABASE
+You are now connected to database "curator_int" as user "postgres".
+CREATE EXTENSION
+You are now connected to database "curator_bool" as user "postgres".
+CREATE EXTENSION
+[run_ab] Bulk load into INT[] DB with GIN build timing
+[pgvector] Using DSN: postgresql://postgres:postgres@localhost:5432/curator_int
+[pgvector] Bulk load: {'dataset': 'yfcc100m', 'dataset_key': 'yfcc100m', 'dim': 192, 'test_size': 0.01, 'copy_format': 'csv', 'create_gin': None, 'unlogged': False, 'sync_commit_off': False, 'build_index': 'gin', 'm': None, 'efc': None, 'lists': None}
+[pgvector] Planned build artifacts:
+   output/overall_results2/pgvector_prefilter/yfcc100m_test0.01/build.json
+   output/overall_results2/pgvector_prefilter/yfcc100m_test0.01/build.csv
+[pgvector] Planned schema SQL:
+   CREATE EXTENSION IF NOT EXISTS vector;
+   CREATE TABLE IF NOT EXISTS items (id BIGINT PRIMARY KEY, tags INT[], embedding vector(192));
+[pgvector] Schema created or already exists (idempotent).
+[pgvector] Planned index SQL for gin:
+   CREATE INDEX IF NOT EXISTS items_tags_gin ON items USING GIN (tags);
+[pgvector] wrote output/overall_results2/pgvector_prefilter/yfcc100m_test0.01/build.json
+[pgvector] appended output/overall_results2/pgvector_prefilter/yfcc100m_test0.01/build.csv
+[pgvector] Built gin index items_tags_gin in 2.500s, size 42008576 bytes
+[run_ab] Bulk load into BOOLEAN DB (no GIN)
+[pgvector] Using DSN: postgresql://postgres:postgres@localhost:5432/curator_bool
+[pgvector] Bulk load: {'dataset': 'yfcc100m', 'dataset_key': 'yfcc100m', 'dim': 192, 'test_size': 0.01, 'copy_format': 'csv', 'create_gin': False, 'unlogged': False, 'sync_commit_off': False, 'build_index': None, 'm': None, 'efc': None, 'lists': None}
+[pgvector] Planned schema SQL:
+   CREATE EXTENSION IF NOT EXISTS vector;
+   CREATE TABLE IF NOT EXISTS items (id BIGINT PRIMARY KEY, tags INT[], embedding vector(192));
+[pgvector] Schema created or already exists (idempotent).
+[run_ab] Add boolean label columns and backfill: 1,2,3,4,5
+[pgvector] Planned schema SQL:
+   CREATE EXTENSION IF NOT EXISTS vector;
+   CREATE TABLE IF NOT EXISTS items (id BIGINT PRIMARY KEY, tags INT[], embedding vector(192));
+[run_ab] Build HNSW indexes

@@ -38,9 +38,13 @@ TOP_LABEL_IDS=${TOP_LABEL_IDS:-1,2,3,4,5}
 
 ########################################
 # Conda env activation
+# Note: temporarily disable nounset for conda activation scripts which
+# may reference unset variables (e.g., ADDR2LINE) under binutils hooks.
 ########################################
+set +u
 eval "$(conda shell.bash hook)"
 conda activate ann_bench2
+set -u
 
 ########################################
 # Start/ensure Postgres container
@@ -142,4 +146,3 @@ echo "[run_ab] Summarize A/B results"
 python -m benchmark.pgvector_ab.summarize_label_ab summarize --dataset_variant yfcc100m_1m --dry_run false
 
 echo "[run_ab] DONE. See outputs under output/pgvector/label_ab/yfcc100m_1m/"
-

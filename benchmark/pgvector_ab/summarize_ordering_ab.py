@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
 
@@ -88,12 +88,19 @@ def _fmt(val: Optional[float], digits: int = 4) -> str:
 
 def _print_table(title: str, strict: Metrics, relaxed: Metrics) -> None:
     print(f"\n[ab][summary] {title}")
-    print("mode           recall@k   p95_latency(s)   qps")
+    print("mode           recall@k   p95_latency(s)   qps      Δrecall   speedup_p95")
+    # deltas and speedups
+    d_recall = None
+    if strict.recall_at_k is not None and relaxed.recall_at_k is not None:
+        d_recall = relaxed.recall_at_k - strict.recall_at_k
+    sp95 = None
+    if strict.p95 is not None and relaxed.p95 is not None and strict.p95 > 0:
+        sp95 = (strict.p95 - relaxed.p95) / strict.p95
     print(
-        f"strict_order   {_fmt(strict.recall_at_k)}     {_fmt(strict.p95)}          {_fmt(strict.qps)}"
+        f"strict_order   {_fmt(strict.recall_at_k)}     {_fmt(strict.p95)}          {_fmt(strict.qps)}      {'-':>7}   {'-':>10}"
     )
     print(
-        f"relaxed_order  {_fmt(relaxed.recall_at_k)}     {_fmt(relaxed.p95)}          {_fmt(relaxed.qps)}"
+        f"relaxed_order  {_fmt(relaxed.recall_at_k)}     {_fmt(relaxed.p95)}          {_fmt(relaxed.qps)}      {_fmt(d_recall)}   {_fmt(sp95)}"
     )
 
 
@@ -103,6 +110,12 @@ class Summary:
         *,
         dataset_variant: str = "yfcc100m_1m",
         base_dir: str | None = None,
+        # Recommendation knobs
+        recall_tolerance: float = 0.001,
+        p95_speedup_min: float = 0.05,
+        # Artifacts
+        write_json: bool = True,
+        json_path: str | None = None,
     ) -> None:
         """Summarize A/B artifacts for a dataset variant."""
         root = Path(base_dir) if base_dir else Path("output/pgvector/hnsw_ordering_ab")
@@ -122,6 +135,90 @@ class Summary:
         relaxed_complex = _complex_metrics(relaxed_dir / "results.json")
         _print_table("Complex predicates (AND/OR)", strict_complex, relaxed_complex)
 
+        def _rec_delta(a: Metrics, b: Metrics) -> Optional[float]:
+            if a.recall_at_k is None or b.recall_at_k is None:
+                return None
+            return abs(b.recall_at_k - a.recall_at_k)
+
+        def _p95_speedup(a: Metrics, b: Metrics) -> Optional[float]:
+            if a.p95 is None or b.p95 is None or a.p95 <= 0:
+                return None
+            return (a.p95 - b.p95) / a.p95
+
+        single_rec_delta = _rec_delta(strict_single, relaxed_single)
+        complex_rec_delta = _rec_delta(strict_complex, relaxed_complex)
+        single_speedup = _p95_speedup(strict_single, relaxed_single)
+        complex_speedup = _p95_speedup(strict_complex, relaxed_complex)
+
+        # Recommendation
+        recommend: str
+        reason: str
+        have_single = (
+            strict_single.recall_at_k is not None and strict_single.p95 is not None
+            and relaxed_single.recall_at_k is not None and relaxed_single.p95 is not None
+        )
+        have_complex = (
+            strict_complex.recall_at_k is not None and strict_complex.p95 is not None
+            and relaxed_complex.recall_at_k is not None and relaxed_complex.p95 is not None
+        )
+        if not (have_single and have_complex):
+            recommend = "insufficient_data"
+            reason = "missing_metrics"
+        else:
+            rec_ok = (
+                single_rec_delta is not None and complex_rec_delta is not None
+                and single_rec_delta <= recall_tolerance
+                and complex_rec_delta <= recall_tolerance
+            )
+            sp_ok = (
+                single_speedup is not None and complex_speedup is not None
+                and min(single_speedup, complex_speedup) >= p95_speedup_min
+            )
+            if rec_ok and sp_ok:
+                recommend = "relaxed_order"
+                reason = "recall_within_tolerance_and_p95_faster"
+            else:
+                recommend = "strict_order"
+                if not rec_ok:
+                    reason = "recall_gap"
+                else:
+                    reason = "no_tail_speedup"
+
+        print(
+            f"\n[ab][summary] recommendation: {recommend} (reason={reason}, "
+            f"recall_tolerance={recall_tolerance}, p95_speedup_min={p95_speedup_min})"
+        )
+
+        if write_json:
+            out_json = Path(json_path) if json_path else dv_dir / "ab_recommendation.json"
+            out_json.parent.mkdir(parents=True, exist_ok=True)
+            payload: Dict[str, object] = {
+                "dataset_variant": dataset_variant,
+                "thresholds": {
+                    "recall_tolerance": float(recall_tolerance),
+                    "p95_speedup_min": float(p95_speedup_min),
+                },
+                "single_label": {
+                    "strict": asdict(strict_single),
+                    "relaxed": asdict(relaxed_single),
+                    "delta_recall": single_rec_delta,
+                    "speedup_p95": single_speedup,
+                },
+                "complex": {
+                    "strict": asdict(strict_complex),
+                    "relaxed": asdict(relaxed_complex),
+                    "delta_recall": complex_rec_delta,
+                    "speedup_p95": complex_speedup,
+                },
+                "decision": {
+                    "recommend": recommend,
+                    "reason": reason,
+                },
+            }
+            with open(out_json, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, sort_keys=True)
+            print(f"[ab][summary] wrote {out_json}")
+
 
 def main() -> None:
     fire.Fire(Summary)
@@ -129,4 +226,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -18,7 +18,7 @@ class SetupDB:
         dsn: str,
         dim: int,
         schema: str = "option_a",
-        label_ids: str | None = None,
+        label_ids: object | None = None,
         dry_run: bool = False,
     ) -> None:
         """Create extension, `items` table, and `GIN(tags)`.
@@ -31,9 +31,15 @@ class SetupDB:
             dry_run: If true, print SQL without connecting to DB.
         """
         lids = None
-        if label_ids:
+        if label_ids is not None:
             try:
-                lids = [int(x.strip()) for x in label_ids.split(",") if x.strip()]
+                if isinstance(label_ids, (list, tuple)):
+                    lids = [int(x) for x in label_ids]
+                elif isinstance(label_ids, str):
+                    lids = [int(x.strip()) for x in label_ids.split(",") if x.strip()]
+                else:
+                    # Fallback: attempt to coerce single value
+                    lids = [int(label_ids)]
             except Exception as e:
                 raise ValueError(f"invalid label_ids: {label_ids}") from e
         admin.create_schema(

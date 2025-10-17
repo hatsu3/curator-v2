@@ -111,8 +111,20 @@ Examples
 Artifacts
 - Insert metrics written under canonical paths:
   - output/overall_results2/pgvector_{hnsw|ivf|prefilter}/<dataset_key>_test<test_size>/insert_{durable|non_durable}.{json,csv}
- - A/B artifacts for insert ablations:
-   - output/pgvector/insert_ab/<dataset_key>/{hnsw|ivf|gin}/{durable|non_durable}/run.{json,csv}
+- A/B artifacts for insert ablations:
+  - output/pgvector/insert_ab/<dataset_key>/{hnsw|ivf|gin}/{durable|non_durable}/run.{json,csv}
+
+Insert A/B Sweeper
+------------------
+
+- Orchestrate HNSW/IVF/prefilter × durable/non-durable and summarize:
+  - eval "$(conda shell.bash hook)" && conda activate ann_bench2 && \
+    python -m benchmark.pgvector_ab.insert_ab run \
+      --dsn postgresql://postgres:postgres@localhost:5432/curator_bench \
+      --dataset yfcc100m --dataset_key yfcc100m --dim 192 --test_size 0.01 \
+      --m 32 --efc 64 --lists 200 --limit 50000 --dry_run true
+
+- Omit --dry_run true to execute runs (requires DB ready). IVF index is built first by the sweeper when --build_ivf true.
 
 Label Modeling A/B (INT[] + GIN vs Boolean)
 -------------------------------------------
