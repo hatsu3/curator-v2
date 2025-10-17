@@ -1,4 +1,4 @@
-"""pgvector baselines (skeleton) for single-label search.
+"""pgvector baselines for single-label search (YFCC-focused).
 
 This initial commit provides:
 - DSN handling with default and explicit flag
@@ -15,9 +15,25 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Dict, Optional
+from pathlib import Path
+from typing import Dict, Optional, List, Any
 
 import fire
+import json
+import time
+import numpy as np
+import pandas as pd
+
+from benchmark.profiler import Dataset
+from benchmark.utils import recall
+"""
+Note on dataset caching and ground truth:
+- This runner assumes a precomputed dataset cache (see
+  benchmark/overall_results/preproc_dataset.py) and WILL NOT recompute
+  ground truth. Pass --dataset_cache_path pointing to the cache dir.
+- If cache is missing, this runner raises an error to avoid accidental
+  heavy recomputation.
+"""
 
 
 # Defaults per project description
@@ -102,6 +118,24 @@ def ensure_indexes_for_strategy(conn, strategy: str) -> None:
     raise AssertionError(f"Unsupported strategy: {strategy}")
 
 
+def get_embedding_dim_from_db(conn) -> Optional[int]:
+    """Return the dimension of vectors stored in items.embedding if any.
+
+    If the table is empty or the dimension can't be determined, returns None.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT vector_dims(embedding) FROM items WHERE embedding IS NOT NULL LIMIT 1;"
+        )
+        row = cur.fetchone()
+        if row and row[0] is not None:
+            try:
+                return int(row[0])
+            except Exception:
+                return None
+    return None
+
+
 @dataclass
 class SingleLabelParams:
     # Common
@@ -129,17 +163,19 @@ def exp_pgvector_single(
     m: int | None = None,
     ef_construction: int | None = None,
     ef_search: int | None = None,
-    # Dataset/outputs (accepted, not used in skeleton execution)
+    # Dataset/outputs
     dataset_key: str = "yfcc100m",
     test_size: float = 0.01,
+    dataset_cache_path: str | Path | None = None,
+    k: int = 10,
     output_path: str | None = None,
     # Control
-    dry_run: bool = True,
+    dry_run: bool = False,
 ):
-    """Single-label baseline (skeleton): verify DSN, indexes, and preview SQL.
+    """Single-label baseline runner.
 
-    This does not execute the benchmark yet. Subsequent commits will add the
-    full runner and emit CSV/JSON artifacts.
+    - dry_run=True: preview SQL and GUCs without DB or dataset
+    - dry_run=False: execute queries over Postgres and emit CSV/JSON
     """
     dsn_resolved = resolve_dsn(dsn)
     print(f"[pgvector] Using DSN: {dsn_resolved}")
@@ -164,7 +200,7 @@ def exp_pgvector_single(
         )
         sql = strict_order_wrapper(core_sql) if iter_mode == "relaxed_order" else core_sql
         print("[pgvector] Example query SQL (preview):\n", sql)
-        print("[pgvector] Dry-run: skipping DB connection and index checks.")
+        print("[pgvector] Dry-run: skipping DB connection and dataset work.")
         return
 
     # Real path: connect, set GUCs, check indexes
@@ -179,7 +215,111 @@ def exp_pgvector_single(
         print("[pgvector] Session GUCs applied.")
         ensure_indexes_for_strategy(conn, strategy)
         print(f"[pgvector] Index presence OK for strategy '{strategy}'.")
-        print("[pgvector] Skeleton only: execution will be added in next commits.")
+        # Require dataset cache path to avoid recomputation
+        if not dataset_cache_path:
+            raise AssertionError(
+                "dataset_cache_path is required. Precompute via: "
+                "python -m benchmark.overall_results.preproc_dataset --dataset_key yfcc100m --test_size 0.01 --output_dir data/cache"
+            )
+        cache_path = Path(dataset_cache_path)
+        assert cache_path.exists(), f"Dataset cache path {cache_path} does not exist"
+        # Quick sanity check for expected cache artifacts
+        assert (cache_path / "train_vecs.npy").exists(), (
+            f"Cache missing train_vecs.npy under {cache_path}. Run preproc_dataset first."
+        )
+        ds = Dataset.from_dataset_key(
+            dataset_key, test_size=test_size, cache_path=cache_path, k=k, verbose=True
+        )
+
+        # Enforce dataset dim for known datasets (e.g., YFCC == 192)
+        if dataset_key.startswith("yfcc"):
+            assert (
+                ds.dim == 192
+            ), f"YFCC dataset must have dim=192, got {ds.dim}. Check your cache and data."
+
+        # Detect DB embedding dimension; enforce equality when available
+        db_dim = get_embedding_dim_from_db(conn)
+        if db_dim is not None:
+            assert (
+                int(db_dim) == ds.dim
+            ), (
+                f"DB embedding dimension ({db_dim}) does not match dataset dim ({ds.dim}). "
+                "Ensure table uses vector(192) for YFCC and data is loaded with 192-D embeddings."
+            )
+
+        # Prepare SQL
+        core_sql = (
+            "SELECT id, embedding <-> %s::vector AS distance "
+            "FROM items WHERE tags @> ARRAY[%s] ORDER BY distance LIMIT %s"
+        )
+        sql = strict_order_wrapper(core_sql) if iter_mode == "relaxed_order" else core_sql
+
+        def vec_to_literal(vec: np.ndarray) -> str:
+            return "[" + ",".join(f"{float(x):.6f}" for x in vec.tolist()) + "]"
+
+        query_results: List[List[int]] = []
+        query_latencies: List[float] = []
+
+        with conn.cursor() as cur:
+            for vec, access_list in zip(ds.test_vecs, ds.test_mds):
+                for label in access_list:
+                    if label not in ds.all_labels:
+                        continue
+                    vlit = vec_to_literal(vec)
+                    start = time.perf_counter()
+                    cur.execute(sql, (vlit, int(label), int(k)))
+                    rows = cur.fetchall()
+                    elapsed = time.perf_counter() - start
+                    query_latencies.append(elapsed)
+                    # rows may be [(id, distance), ...] or [(id,), ...]
+                    ids = [int(r[0]) for r in rows]
+                    query_results.append(ids)
+
+        # Compute recall (use cached ground truth; do not recompute)
+        rec = recall(query_results, ds.ground_truth)
+
+        # Summarize metrics
+        lat = np.array(query_latencies, dtype=float)
+        results_row: Dict[str, Any] = {
+            "strategy": strategy,
+            "iter_mode": iter_mode,
+            "k": int(k),
+            "recall_at_k": float(rec),
+            "query_qps": float(1.0 / lat.mean()),
+            "query_lat_avg": float(lat.mean()),
+            "query_lat_std": float(lat.std()),
+            "query_lat_p50": float(np.percentile(lat, 50)),
+            "query_lat_p95": float(np.percentile(lat, 95)),
+            "query_lat_p99": float(np.percentile(lat, 99)),
+            "dataset_key": dataset_key,
+            "test_size": float(test_size),
+        }
+
+        # Emit outputs
+        assert output_path is not None, "output_path is required for execution"
+        out_path = Path(output_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame([results_row]).to_csv(out_path, index=False)
+        print(f"[pgvector] Wrote results CSV to {out_path}")
+
+        # parameters.json sidecar
+        params_json = {
+            "dsn": dsn_resolved,
+            "strategy": strategy,
+            "iter_mode": iter_mode,
+            "k": int(k),
+            "ivf": {"lists": lists, "probes": probes},
+            "hnsw": {"m": m, "ef_construction": ef_construction, "ef_search": ef_search},
+            "gucs": gucs,
+            "dataset_key": dataset_key,
+            "test_size": float(test_size),
+            "dim": int(ds.dim),
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        params_path = out_path.parent / "parameters.json"
+        with open(params_path, "w", encoding="utf-8") as f:
+            json.dump(params_json, f, indent=2, sort_keys=True)
+        print(f"[pgvector] Wrote parameters to {params_path}")
     finally:
         conn.close()
 

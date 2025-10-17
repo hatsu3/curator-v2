@@ -102,7 +102,7 @@ def exp_pgvector_complex(
     test_size: float = 0.01,
     output_path: str | None = None,
     # Control
-    dry_run: bool = True,
+    dry_run: bool = False,
 ):
     """AND/OR baselines (skeleton): verify DSN, indexes, and preview SQL.
 
