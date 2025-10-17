@@ -215,18 +215,10 @@ def exp_pgvector_single(
         print("[pgvector] Session GUCs applied.")
         ensure_indexes_for_strategy(conn, strategy)
         print(f"[pgvector] Index presence OK for strategy '{strategy}'.")
-        # Require dataset cache path to avoid recomputation
-        if not dataset_cache_path:
-            raise AssertionError(
-                "dataset_cache_path is required. Precompute via: "
-                "python -m benchmark.overall_results.preproc_dataset --dataset_key yfcc100m --test_size 0.01 --output_dir data/cache"
-            )
-        cache_path = Path(dataset_cache_path)
-        assert cache_path.exists(), f"Dataset cache path {cache_path} does not exist"
-        # Quick sanity check for expected cache artifacts
-        assert (cache_path / "train_vecs.npy").exists(), (
-            f"Cache missing train_vecs.npy under {cache_path}. Run preproc_dataset first."
-        )
+        # Load dataset; if cache_path is provided and exists, Dataset will use it.
+        # Otherwise, it will use raw sources and load ground truth from data/ground_truth
+        # if present (compute only if missing).
+        cache_path = Path(dataset_cache_path) if dataset_cache_path else None
         ds = Dataset.from_dataset_key(
             dataset_key, test_size=test_size, cache_path=cache_path, k=k, verbose=True
         )
