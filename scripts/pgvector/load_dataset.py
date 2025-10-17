@@ -304,6 +304,9 @@ class LoadDataset:
         ef_search: int | None = None,
         lists: int | None = None,
         limit: int | None = None,
+        # IVF training seed controls
+        ivf_seed_frac: float = 0.1,
+        seed_copy_format: str = "binary",  # binary | csv (binary not implemented yet)
         dry_run: bool = True,
     ) -> None:
         """Single-thread incremental insert benchmark (skeleton).
@@ -354,13 +357,21 @@ class LoadDataset:
         print("  ", insert_json)
         print("  ", insert_csv)
 
+        # If IVF, also preview build artifacts (training build)
+        if args.strategy.lower() == "ivf":
+            baseline_b = _baseline_dir_for_index("ivf")
+            out_b = _canonical_output_dir(baseline_b, args.dataset_key, args.test_size)
+            print("[pgvector] Planned ivf build artifacts:")
+            print("  ", os.path.join(out_b, "build.json"))
+            print("  ", os.path.join(out_b, "build.csv"))
+
         if args.dry_run:
             print("[pgvector] Dry-run: preview only. No inserts executed.")
             return
 
-        # Real execution: HNSW insertion benchmark
-        if args.strategy.lower() != "hnsw":
-            _warn("insert benchmark real execution currently implemented for strategy=hnsw only")
+        s = args.strategy.lower()
+        if s not in {"hnsw", "ivf"}:
+            _warn("insert benchmark real execution currently implemented for strategy=hnsw or ivf only")
             return
 
         # Ensure schema; keep GIN installed for realism
@@ -393,17 +404,73 @@ class LoadDataset:
                 if args.sync_commit_off:
                     cur.execute("SET synchronous_commit = off;")
 
-            # Build HNSW index on empty table (params required)
-            if args.m is None or args.efc is None:
-                raise RuntimeError("hnsw insertion benchmark requires --m and --efc parameters")
-            admin.create_index(
-                dsn_resolved,
-                index="hnsw",
-                dim=args.dim,
-                m=args.m,
-                efc=args.efc,
-                dry_run=False,
-            )
+            if s == "hnsw":
+                # Build HNSW index on empty table (params required)
+                if args.m is None or args.efc is None:
+                    raise RuntimeError("hnsw insertion benchmark requires --m and --efc parameters")
+                admin.create_index(
+                    dsn_resolved,
+                    index="hnsw",
+                    dim=args.dim,
+                    m=args.m,
+                    efc=args.efc,
+                    dry_run=False,
+                )
+            elif s == "ivf":
+                # Seed a fraction for IVFFlat training, then build, then delete seeds
+                if args.lists is None:
+                    raise RuntimeError("ivf insertion benchmark requires --lists parameter")
+                seed_frac = float(ivf_seed_frac)
+                seed_n = max(1, int(train_vecs.shape[0] * seed_frac))
+                # Copy seed rows via CSV path (binary not implemented yet)
+                scf = _validate_copy_format(seed_copy_format)
+                if scf == "binary":
+                    raise RuntimeError("binary COPY for seeding not implemented; use --seed_copy_format csv")
+                # Write seed rows in chunks
+                def seed_iter() -> Iterable[str]:
+                    import numpy as _np  # local
+                    _np.random.seed(42)
+                    idxs = _np.random.choice(train_vecs.shape[0], seed_n, replace=False)
+                    for rid in idxs:
+                        vec = train_vecs[rid]
+                        tags = train_mds[rid]
+                        emb_txt = "[" + ",".join(str(float(x)) for x in vec) + "]"
+                        tags_txt = "{" + ",".join(str(int(t)) for t in tags) + "}"
+                        yield f"{rid+1}\t{emb_txt}\t{tags_txt}\n"
+
+                buf = io.StringIO()
+                written = 0
+                with conn.cursor() as cur:
+                    for line in seed_iter():
+                        buf.write(line)
+                        written += 1
+                        if written % 100000 == 0:
+                            buf.seek(0)
+                            cur.copy_from(buf, "items", columns=("id", "embedding", "tags"), sep="\t")
+                            buf.close()
+                            buf = io.StringIO()
+                    buf.seek(0)
+                    if written > 0:
+                        cur.copy_from(buf, "items", columns=("id", "embedding", "tags"), sep="\t")
+                buf.close()
+
+                # Build IVF and record metrics
+                baseline_b = _baseline_dir_for_index("ivf")
+                out_b = _canonical_output_dir(baseline_b, args.dataset_key, args.test_size)
+                os.makedirs(out_b, exist_ok=True)
+                admin.create_index(
+                    dsn_resolved,
+                    index="ivf",
+                    dim=args.dim,
+                    lists=args.lists,
+                    dry_run=False,
+                    output_json=os.path.join(out_b, "build.json"),
+                    output_csv=os.path.join(out_b, "build.csv"),
+                )
+                # Delete seeds and vacuum
+                with conn.cursor() as cur:
+                    cur.execute("TRUNCATE items;")
+                    cur.execute("VACUUM ANALYZE items;")
 
             # Insert rows one by one; measure per-row latency
             latencies: list[float] = []
@@ -430,7 +497,7 @@ class LoadDataset:
         lat = np.array(latencies, dtype=np.float64)
         metrics: Dict[str, Any] = {
             "status": "ok",
-            "strategy": "hnsw",
+            "strategy": s,
             "dataset_key": args.dataset_key,
             "test_size": args.test_size,
             "dim": args.dim,
