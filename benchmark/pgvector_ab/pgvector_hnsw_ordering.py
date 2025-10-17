@@ -62,6 +62,7 @@ class HnswOrderingAB:
         m: int = 32,
         ef_construction: int = 64,
         ef_search: int = 64,
+        dataset_cache_path: str | None = None,
         dsn: str | None = None,
         dry_run: bool = True,
     ) -> None:
@@ -91,6 +92,9 @@ class HnswOrderingAB:
             f"--output_path {strict_csv}"
             + (f" --dsn {args.dsn}" if args.dsn else "")
         )
+        if dataset_cache_path:
+            strict_cmd += f" --dataset_cache_path {dataset_cache_path}"
+
         relaxed_cmd = (
             "python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single "
             f"--strategy hnsw --m {args.m} --ef_construction {args.ef_construction} "
@@ -99,6 +103,8 @@ class HnswOrderingAB:
             f"--output_path {relaxed_csv}"
             + (f" --dsn {args.dsn}" if args.dsn else "")
         )
+        if dataset_cache_path:
+            relaxed_cmd += f" --dataset_cache_path {dataset_cache_path}"
 
         print("[ab][single] Planned outputs:")
         print("  ", strict_csv)
@@ -107,9 +113,38 @@ class HnswOrderingAB:
         print("--- strict_order ---\n", strict_cmd)
         print("--- relaxed_order (+ strict post-sort in baseline) ---\n", relaxed_cmd)
         if not args.dry_run:
-            print(
-                "[ab][single] Note: this is a preview-only scaffold in commit 1. "
-                "Execute the printed commands manually."
+            print("[ab][single] Executing strict_order baseline...")
+            from benchmark.overall_results.baselines.pgvector import (
+                exp_pgvector_single,
+            )
+            strict_dir.mkdir(parents=True, exist_ok=True)
+            relaxed_dir.mkdir(parents=True, exist_ok=True)
+            exp_pgvector_single(
+                dsn=dsn,
+                strategy="hnsw",
+                iter_mode="strict_order",
+                m=m,
+                ef_construction=ef_construction,
+                ef_search=ef_search,
+                dataset_key=dataset_key,
+                test_size=test_size,
+                k=k,
+                output_path=str(strict_csv),
+                dataset_cache_path=dataset_cache_path,
+            )
+            print("[ab][single] Executing relaxed_order baseline (post-sort enforced by baseline)...")
+            exp_pgvector_single(
+                dsn=dsn,
+                strategy="hnsw",
+                iter_mode="relaxed_order",
+                m=m,
+                ef_construction=ef_construction,
+                ef_search=ef_search,
+                dataset_key=dataset_key,
+                test_size=test_size,
+                k=k,
+                output_path=str(relaxed_csv),
+                dataset_cache_path=dataset_cache_path,
             )
 
     def ab_complex(
@@ -124,6 +159,7 @@ class HnswOrderingAB:
         ef_search: int = 64,
         n_filters_per_template: int = 50,
         n_queries_per_filter: int = 100,
+        allow_gt_compute: bool = True,
         dsn: str | None = None,
         dry_run: bool = True,
     ) -> None:
@@ -161,11 +197,16 @@ class HnswOrderingAB:
             + f" --iter_mode strict_order --output_path {strict_json}"
             + (f" --dsn {args.dsn}" if args.dsn else "")
         )
+        if not allow_gt_compute:
+            strict_cmd += " --allow_gt_compute false"
+
         relaxed_cmd = (
             base
             + f" --iter_mode relaxed_order --output_path {relaxed_json}"
             + (f" --dsn {args.dsn}" if args.dsn else "")
         )
+        if not allow_gt_compute:
+            relaxed_cmd += " --allow_gt_compute false"
 
         print("[ab][complex] Planned outputs:")
         print("  ", strict_json)
@@ -174,9 +215,42 @@ class HnswOrderingAB:
         print("--- strict_order ---\n", strict_cmd)
         print("--- relaxed_order (+ strict post-sort in baseline) ---\n", relaxed_cmd)
         if not args.dry_run:
-            print(
-                "[ab][complex] Note: this is a preview-only scaffold in commit 1. "
-                "Execute the printed commands manually."
+            print("[ab][complex] Executing strict_order baseline...")
+            from benchmark.complex_predicate.baselines.pgvector import (
+                exp_pgvector_complex,
+            )
+            strict_dir.mkdir(parents=True, exist_ok=True)
+            relaxed_dir.mkdir(parents=True, exist_ok=True)
+            exp_pgvector_complex(
+                dsn=dsn,
+                strategy="hnsw",
+                iter_mode="strict_order",
+                m=m,
+                ef_construction=ef_construction,
+                ef_search=ef_search,
+                dataset_key=dataset_key,
+                test_size=test_size,
+                k=k,
+                n_filters_per_template=n_filters_per_template,
+                n_queries_per_filter=n_queries_per_filter,
+                output_path=str(strict_json),
+                allow_gt_compute=allow_gt_compute,
+            )
+            print("[ab][complex] Executing relaxed_order baseline (post-sort enforced by baseline)...")
+            exp_pgvector_complex(
+                dsn=dsn,
+                strategy="hnsw",
+                iter_mode="relaxed_order",
+                m=m,
+                ef_construction=ef_construction,
+                ef_search=ef_search,
+                dataset_key=dataset_key,
+                test_size=test_size,
+                k=k,
+                n_filters_per_template=n_filters_per_template,
+                n_queries_per_filter=n_queries_per_filter,
+                output_path=str(relaxed_json),
+                allow_gt_compute=allow_gt_compute,
             )
 
 
@@ -186,4 +260,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
