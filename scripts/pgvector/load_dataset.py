@@ -13,13 +13,20 @@ metrics emission. Use this to validate flags, output pathing, and flow.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Iterable, Optional, Dict, Any
 
 import os
 import sys
+import io
+import time
+import json
+import csv
+from datetime import datetime
 
 import fire
 
+from dataset import get_dataset, get_metadata
+from scripts.pgvector import admin
 
 DEFAULT_DSN = "postgresql://postgres:postgres@localhost:5432/curator_bench"
 
@@ -88,6 +95,7 @@ class BulkArgs:
     m: Optional[int]
     efc: Optional[int]
     lists: Optional[int]
+    limit: Optional[int]
     dry_run: bool
 
 
@@ -102,8 +110,10 @@ class InsertArgs:
     unlogged: bool
     sync_commit_off: bool
     m: Optional[int]
+    efc: Optional[int]
     ef_search: Optional[int]
     lists: Optional[int]
+    limit: Optional[int]
     dry_run: bool
 
 
@@ -124,6 +134,7 @@ class LoadDataset:
         m: int | None = None,
         efc: int | None = None,
         lists: int | None = None,
+        limit: int | None = None,
         dry_run: bool = True,
     ) -> None:
         """Bulk load vectors (skeleton): prints planned actions and outputs.
@@ -146,6 +157,7 @@ class LoadDataset:
             m=m,
             efc=efc,
             lists=lists,
+            limit=limit,
             dry_run=dry_run,
         )
 
@@ -181,8 +193,99 @@ class LoadDataset:
             print("[pgvector] Dry-run: preview only. COPY and CREATE INDEX not executed.")
             return
 
-        # Real execution will be implemented in subsequent commits.
-        _warn("skeleton only: real bulk loader execution not yet implemented")
+        # Real execution path: create schema (optionally without GIN), COPY rows, ANALYZE, and build index if requested.
+        # Defer GIN creation to post-load if we are timing GIN build.
+        admin.create_schema(
+            _resolve_dsn(args.dsn),
+            dim=args.dim,
+            create_gin=False if args.build_index == "gin" else True,
+            unlogged=args.unlogged,
+            dry_run=False,
+        )
+
+        # Load train split vectors and metadata
+        train_vecs, _test_vecs, _meta = get_dataset(args.dataset, test_size=args.test_size)
+        train_mds, _test_mds = get_metadata(
+            synthesized=False, dataset_name=args.dataset, test_size=args.test_size
+        )
+        if train_vecs.shape[1] != args.dim:
+            _warn(
+                f"dim mismatch: dataset has {train_vecs.shape[1]}, CLI --dim {args.dim}. Proceeding with dataset dim."
+            )
+
+        n_rows = train_vecs.shape[0]
+        if args.limit is not None:
+            n_rows = min(n_rows, int(args.limit))
+
+        # Session settings
+        import psycopg2  # type: ignore
+
+        dsn_resolved = _resolve_dsn(args.dsn)
+        conn = psycopg2.connect(dsn_resolved)
+        try:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                if args.sync_commit_off:
+                    cur.execute("SET synchronous_commit = off;")
+
+            if args.copy_format == "binary":
+                raise RuntimeError(
+                    "binary COPY not implemented yet; rerun with --copy_format csv as per policy"
+                )
+
+            # Prepare tab-delimited text to avoid quoting commas in CSV
+            def row_iter() -> Iterable[str]:
+                for i in range(n_rows):
+                    # Assign 1-based IDs to rows in the order provided
+                    rid = i + 1
+                    vec = train_vecs[i]
+                    tags = train_mds[i]
+                    emb_txt = "[" + ",".join(str(float(x)) for x in vec) + "]"
+                    tags_txt = "{" + ",".join(str(int(t)) for t in tags) + "}"
+                    yield f"{rid}\t{emb_txt}\t{tags_txt}\n"
+
+            buf = io.StringIO()
+            written = 0
+            with conn.cursor() as cur:
+                for line in row_iter():
+                    buf.write(line)
+                    written += 1
+                    # flush periodically to avoid large memory
+                    if written % 100000 == 0:
+                        buf.seek(0)
+                        cur.copy_from(buf, "items", columns=("id", "embedding", "tags"), sep="\t")
+                        buf.close()
+                        buf = io.StringIO()
+                # flush remainder
+                buf.seek(0)
+                if written > 0:
+                    cur.copy_from(buf, "items", columns=("id", "embedding", "tags"), sep="\t")
+            buf.close()
+
+            # Analyze table for realistic planner stats
+            with conn.cursor() as cur:
+                cur.execute("ANALYZE items;")
+
+        finally:
+            conn.close()
+
+        # Optional post-load index build and metrics
+        if args.build_index:
+            baseline = _baseline_dir_for_index(args.build_index)
+            out_dir = _canonical_output_dir(baseline, args.dataset_key, args.test_size)
+            build_json = os.path.join(out_dir, "build.json")
+            build_csv = os.path.join(out_dir, "build.csv")
+            admin.create_index(
+                _resolve_dsn(args.dsn),
+                index=args.build_index,
+                dim=args.dim,
+                m=args.m,
+                efc=args.efc,
+                lists=args.lists,
+                dry_run=False,
+                output_json=build_json,
+                output_csv=build_csv,
+            )
 
     def insert_bench(
         self,
@@ -197,8 +300,10 @@ class LoadDataset:
         sync_commit_off: bool = False,
         # Optional knobs (not used in skeleton execution)
         m: int | None = None,
+        efc: int | None = None,
         ef_search: int | None = None,
         lists: int | None = None,
+        limit: int | None = None,
         dry_run: bool = True,
     ) -> None:
         """Single-thread incremental insert benchmark (skeleton).
@@ -215,8 +320,10 @@ class LoadDataset:
             unlogged=unlogged,
             sync_commit_off=sync_commit_off,
             m=m,
+            efc=efc,
             ef_search=ef_search,
             lists=lists,
+            limit=limit,
             dry_run=dry_run,
         )
 
@@ -251,8 +358,8 @@ class LoadDataset:
             print("[pgvector] Dry-run: preview only. No inserts executed.")
             return
 
-        # Real execution will be implemented in subsequent commits.
-        _warn("skeleton only: real insert benchmark execution not yet implemented")
+        # Real execution will be added in a subsequent commit (HNSW first).
+        _warn("insert benchmark execution will be implemented for HNSW in commit 3")
 
 
 def main() -> None:
@@ -261,4 +368,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -92,6 +92,8 @@ def create_schema(
     *,
     dim: int,
     schema: str = "option_a",
+    create_gin: bool = True,
+    unlogged: bool = False,
     dry_run: bool = False,
 ) -> None:
     """Create extension, `items` table, and relational index.
@@ -105,11 +107,13 @@ def create_schema(
     """
     if schema != "option_a":
         _warn("only schema=option_a is supported in the scaffold")
+    table_kw = "UNLOGGED " if unlogged else ""
     sql = [
         "CREATE EXTENSION IF NOT EXISTS vector;",
-        f"CREATE TABLE IF NOT EXISTS items (id BIGINT PRIMARY KEY, tags INT[], embedding vector({dim}));",
-        "CREATE INDEX IF NOT EXISTS items_tags_gin ON items USING GIN (tags);",
+        f"CREATE {table_kw}TABLE IF NOT EXISTS items (id BIGINT PRIMARY KEY, tags INT[], embedding vector({dim}));",
     ]
+    if create_gin:
+        sql.append("CREATE INDEX IF NOT EXISTS items_tags_gin ON items USING GIN (tags);")
 
     print("[pgvector] Planned schema SQL:")
     for stmt in sql:
@@ -142,7 +146,7 @@ def create_schema(
 def create_index(
     dsn: str,
     *,
-    index: str,  # "hnsw" or "ivf"
+    index: str,  # "hnsw" or "ivf" or "gin"
     dim: int,
     m: Optional[int] = None,
     efc: Optional[int] = None,
@@ -158,7 +162,10 @@ def create_index(
     In this scaffold, we print SQL and emit a placeholder result when
     `dry_run=True`. Full execution and timings land in later commits.
     """
-    idx_name = deterministic_index_name(index)
+    if index == "gin":
+        idx_name = "items_tags_gin"
+    else:
+        idx_name = deterministic_index_name(index)
     sql: list[str] = []
     if index == "hnsw":
         if m is None or efc is None:
@@ -172,8 +179,12 @@ def create_index(
         sql.append(
             f"CREATE INDEX IF NOT EXISTS {idx_name} ON items USING ivfflat (embedding {opclass}) WITH (lists = {lists});"
         )
+    elif index == "gin":
+        sql.append(
+            "CREATE INDEX IF NOT EXISTS items_tags_gin ON items USING GIN (tags);"
+        )
     else:
-        raise ValueError("index must be 'hnsw' or 'ivf'")
+        raise ValueError("index must be 'hnsw' or 'ivf' or 'gin'")
 
     print(f"[pgvector] Planned index SQL for {index}:")
     for stmt in sql:
@@ -240,7 +251,11 @@ def create_index(
                 _emit_json_csv(result, output_json=output_json, output_csv=output_csv)
                 return
 
-        _drop_other_vector_indexes(conn)
+        if index in {"hnsw", "ivf"}:
+            _drop_other_vector_indexes(conn)
+        else:
+            # For GIN baseline, ensure fresh timing of the GIN index
+            _exec(conn, 'DROP INDEX IF EXISTS "items_tags_gin";')
 
         start = time.monotonic()
         for stmt in sql:

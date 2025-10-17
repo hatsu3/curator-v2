@@ -1,0 +1,2 @@
+status,index_type,index_name,table,build_time_seconds,index_size_bytes,dim,dataset_key,schema_option,timestamp,param_m,param_efc,param_lists,param_opclass
+dry_run,gin,items_tags_gin,items,,,192,,,2025-10-17T13:15:37.091455,,,,vector_l2_ops
