@@ -93,6 +93,7 @@ class BulkArgs:
     dim: int
     test_size: float
     copy_format: str
+    create_gin: Optional[bool]
     unlogged: bool
     sync_commit_off: bool
     build_index: Optional[str]
@@ -132,6 +133,7 @@ class LoadDataset:
         dim: int = 192,
         test_size: float = 0.001,
         copy_format: str = "binary",  # binary | csv
+        create_gin: bool | None = None,
         unlogged: bool = False,
         sync_commit_off: bool = False,
         # Optional post-load build
@@ -157,6 +159,7 @@ class LoadDataset:
             dim=dim,
             test_size=test_size,
             copy_format=_validate_copy_format(copy_format),
+            create_gin=create_gin,
             unlogged=unlogged,
             sync_commit_off=sync_commit_off,
             build_index=build_index,
@@ -178,6 +181,7 @@ class LoadDataset:
                 "dim": args.dim,
                 "test_size": args.test_size,
                 "copy_format": args.copy_format,
+                "create_gin": args.create_gin,
                 "unlogged": args.unlogged,
                 "sync_commit_off": args.sync_commit_off,
                 "build_index": args.build_index,
@@ -201,11 +205,15 @@ class LoadDataset:
             return
 
         # Real execution path: create schema (optionally without GIN), COPY rows, ANALYZE, and build index if requested.
-        # Defer GIN creation to post-load if we are timing GIN build.
+        # If create_gin is not specified, defer GIN creation when timing GIN build.
+        if args.create_gin is None:
+            create_gin_eff = False if args.build_index == "gin" else True
+        else:
+            create_gin_eff = bool(args.create_gin)
         admin.create_schema(
             _resolve_dsn(args.dsn),
             dim=args.dim,
-            create_gin=False if args.build_index == "gin" else True,
+            create_gin=create_gin_eff,
             unlogged=args.unlogged,
             dry_run=False,
         )

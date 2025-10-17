@@ -18,6 +18,7 @@ class SetupDB:
         dsn: str,
         dim: int,
         schema: str = "option_a",
+        label_ids: str | None = None,
         dry_run: bool = False,
     ) -> None:
         """Create extension, `items` table, and `GIN(tags)`.
@@ -25,10 +26,24 @@ class SetupDB:
         Args:
             dsn: Postgres DSN, e.g. `postgresql://user:pass@host:5432/db`.
             dim: Embedding dimension for `vector(dim)`.
-            schema: Schema option; only `option_a` supported in scaffold.
+            schema: Schema option; `option_a` or `boolean`.
+            label_ids: Comma-separated top label IDs for boolean columns, e.g. "1,2,3".
             dry_run: If true, print SQL without connecting to DB.
         """
-        admin.create_schema(dsn, dim=dim, schema=schema, dry_run=dry_run)
+        lids = None
+        if label_ids:
+            try:
+                lids = [int(x.strip()) for x in label_ids.split(",") if x.strip()]
+            except Exception as e:
+                raise ValueError(f"invalid label_ids: {label_ids}") from e
+        admin.create_schema(
+            dsn,
+            dim=dim,
+            schema=schema,
+            dry_run=dry_run,
+            label_ids=lids,
+            create_gin=(schema != "boolean"),
+        )
 
     def create_index(
         self,

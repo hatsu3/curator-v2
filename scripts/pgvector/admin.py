@@ -3,17 +3,18 @@
 This module provides a thin abstraction for:
 - Creating schema objects (extension, table, relational index)
 - Creating/dropping vector indexes (HNSW, IVFFLAT)
+- Adding boolean label columns and backfilling from tags INT[]
+- Measuring relation sizes (table and indexes) for storage comparisons
 - Emitting profiling artifacts (JSON/CSV)
 
-Commit 2 is a scaffold: functions print SQL and stub warnings unless
-subsequent commits implement real DB execution. Use `--dry_run` for
-previewing SQL without connecting to the database.
+Use `--dry_run` for previewing SQL without connecting to the database
+where supported.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, Optional, Iterable
+from typing import Any, Dict, Optional, Iterable, Sequence
 import csv
 import json
 import os
@@ -87,6 +88,67 @@ def _emit_json_csv(
         print(f"[pgvector] appended {output_csv}")
 
 
+def get_relation_size(dsn: str, relname: str) -> int:
+    """Return `pg_relation_size(relname)`.
+
+    Raises on connection or query errors.
+    """
+    try:
+        import psycopg2  # type: ignore
+    except Exception as e:  # pragma: no cover
+        _warn(f"psycopg2 not available: {e}")
+        raise
+    conn = psycopg2.connect(dsn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_relation_size(%s);", (relname,))
+            row = cur.fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+    finally:
+        conn.close()
+
+
+def get_total_relation_size(dsn: str, relname: str) -> int:
+    """Return `pg_total_relation_size(relname)`.
+
+    Useful for table-wide storage comparisons (includes TOAST, indexes).
+    """
+    try:
+        import psycopg2  # type: ignore
+    except Exception as e:  # pragma: no cover
+        _warn(f"psycopg2 not available: {e}")
+        raise
+    conn = psycopg2.connect(dsn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_total_relation_size(%s);", (relname,))
+            row = cur.fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+    finally:
+        conn.close()
+
+
+def _add_boolean_label_columns(conn, label_ids: Sequence[int]) -> None:
+    """Add boolean columns label_<id> if not already present."""
+    with conn.cursor() as cur:
+        for lid in label_ids:
+            col = f"label_{int(lid)}"
+            cur.execute(
+                f"ALTER TABLE items ADD COLUMN IF NOT EXISTS {col} BOOLEAN DEFAULT FALSE;"
+            )
+
+
+def _backfill_boolean_labels_from_tags(conn, label_ids: Sequence[int]) -> None:
+    """Backfill boolean label columns from tags INT[] using ANY()."""
+    with conn.cursor() as cur:
+        for lid in label_ids:
+            col = f"label_{int(lid)}"
+            cur.execute(
+                f"UPDATE items SET {col} = TRUE WHERE {col} = FALSE AND %s = ANY(tags);",
+                (int(lid),),
+            )
+
+
 def create_schema(
     dsn: str,
     *,
@@ -95,6 +157,7 @@ def create_schema(
     create_gin: bool = True,
     unlogged: bool = False,
     dry_run: bool = False,
+    label_ids: Optional[Iterable[int]] = None,
 ) -> None:
     """Create extension, `items` table, and relational index.
 
@@ -102,11 +165,13 @@ def create_schema(
       - items(id BIGINT PRIMARY KEY, tags INT[], embedding vector(D))
       - CREATE INDEX items_tags_gin ON items USING GIN (tags)
 
-    In this scaffold, we print SQL and a stub warning; real execution
-    will be implemented in subsequent commits.
+    Boolean schema variant (schema='boolean'):
+      - Same base table (includes tags INT[]) to enable backfill
+      - Adds boolean columns label_<id> for provided label_ids and backfills
+      - GIN creation is typically skipped for fair A/B storage comparison
     """
-    if schema != "option_a":
-        _warn("only schema=option_a is supported in the scaffold")
+    if schema not in {"option_a", "boolean"}:
+        _warn("unsupported schema; expected one of: option_a, boolean")
     table_kw = "UNLOGGED " if unlogged else ""
     sql = [
         "CREATE EXTENSION IF NOT EXISTS vector;",
@@ -141,6 +206,18 @@ def create_schema(
 
     _exec_all(dsn, sql)
     print("[pgvector] Schema created or already exists (idempotent).")
+
+    # Boolean labels (optional)
+    if schema == "boolean" and label_ids:
+        lids: Sequence[int] = [int(x) for x in label_ids]
+        conn = psycopg2.connect(dsn)
+        try:
+            conn.autocommit = True
+            _add_boolean_label_columns(conn, lids)
+            _backfill_boolean_labels_from_tags(conn, lids)
+        finally:
+            conn.close()
+        print("[pgvector] Boolean label columns added and backfilled from tags.")
 
 
 def create_index(

@@ -17,6 +17,14 @@ Schema Creation
 - Dry-run preview without connecting:
   - python -m scripts.pgvector.setup_db create_schema --dsn postgresql://... --dim 192 --schema option_a --dry_run true
 
+- Boolean label columns (Option B: wide table with label_<id>):
+  - Create base table without GIN and add boolean columns for top labels:
+    - python -m scripts.pgvector.setup_db create_schema \
+        --dsn postgresql://... --dim 192 --schema boolean --label_ids 1,2,3,4,5
+  - Dry-run preview:
+    - python -m scripts.pgvector.setup_db create_schema \
+        --dsn postgresql://... --dim 192 --schema boolean --label_ids 1,2,3 --dry_run true
+
 Index Build & Profiling
 -----------------------
 - HNSW (builds regardless of table state):
@@ -52,6 +60,7 @@ Durability Modes (insert_bench)
 
 Copy Format (bulk)
 - copy_format: binary (default) or csv. No auto-fallback; if binary is unsupported in your environment, rerun with --copy_format csv.
+- create_gin: set to false to suppress creating GIN(tags) during bulk load (useful for boolean schema DB or when timing GIN build separately).
 
 Examples
 - Real bulk (prefilter; build GIN timing):
@@ -59,6 +68,12 @@ Examples
       --dsn postgresql://postgres:postgres@localhost:5432/curator_bench \
       --dataset yfcc100m --dataset_key yfcc100m-10m --dim 192 --test_size 0.001 \
       --copy_format binary --build_index gin
+
+- Real bulk (boolean schema DB; no GIN):
+  - python -m scripts.pgvector.load_dataset bulk \
+      --dsn postgresql://postgres:postgres@localhost:5432/curator_bool \
+      --dataset yfcc100m --dataset_key yfcc100m --dim 192 --test_size 0.01 \
+      --copy_format csv --create_gin false
 
 - Dry-run bulk preview:
   - python -m scripts.pgvector.load_dataset bulk \
