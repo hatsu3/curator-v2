@@ -38,8 +38,8 @@ Notes
 - Future: a loader may trigger ivfflat post-load automatically
 
 
-Dataset Load & Insert Bench (skeleton)
---------------------------------------
+Dataset Load & Insert Bench
+--------------------------
 
 - CLI module: scripts.pgvector.load_dataset
 - Two subcommands:
@@ -49,15 +49,27 @@ Dataset Load & Insert Bench (skeleton)
 Strict Copy Format
 - copy_format: binary (default) or csv. No auto-fallback; if binary is unsupported in your environment, rerun with --copy_format csv.
 
-Examples (dry-run preview)
-- Bulk (prefilter; plan build of GIN):
+Examples
+- Real bulk (prefilter; build GIN timing):
+  - python -m scripts.pgvector.load_dataset bulk \
+      --dsn postgresql://postgres:postgres@localhost:5432/curator_bench \
+      --dataset yfcc100m --dataset_key yfcc100m-10m --dim 192 --test_size 0.001 \
+      --copy_format binary --build_index gin
+
+- Dry-run bulk preview:
   - python -m scripts.pgvector.load_dataset bulk \
       --dsn postgresql://postgres:postgres@localhost:5432/curator_bench \
       --dataset yfcc100m --dataset_key yfcc100m-10m --dim 192 --test_size 0.001 \
       --copy_format binary --build_index gin --dry_run true
 
-- Insert bench (HNSW):
+- Real insert bench (HNSW):
   - python -m scripts.pgvector.load_dataset insert_bench \
       --dsn postgresql://postgres:postgres@localhost:5432/curator_bench \
       --dataset yfcc100m --dataset_key yfcc100m --dim 192 --test_size 0.01 \
-      --strategy hnsw --dry_run true
+      --strategy hnsw --m 32 --efc 64
+
+- Dry-run insert bench preview (HNSW):
+  - python -m scripts.pgvector.load_dataset insert_bench \
+      --dsn postgresql://postgres:postgres@localhost:5432/curator_bench \
+      --dataset yfcc100m --dataset_key yfcc100m --dim 192 --test_size 0.01 \
+      --strategy hnsw --m 32 --efc 64 --dry_run true

@@ -97,6 +97,7 @@ class BulkArgs:
     efc: Optional[int]
     lists: Optional[int]
     limit: Optional[int]
+    truncate: bool
     dry_run: bool
 
 
@@ -136,7 +137,8 @@ class LoadDataset:
         efc: int | None = None,
         lists: int | None = None,
         limit: int | None = None,
-        dry_run: bool = True,
+        truncate: bool = True,
+        dry_run: bool = False,
     ) -> None:
         """Bulk load vectors (skeleton): prints planned actions and outputs.
 
@@ -159,6 +161,7 @@ class LoadDataset:
             efc=efc,
             lists=lists,
             limit=limit,
+            truncate=truncate,
             dry_run=dry_run,
         )
 
@@ -225,16 +228,23 @@ class LoadDataset:
         conn = psycopg2.connect(dsn_resolved)
         try:
             conn.autocommit = True
+            id_offset = 0
             with conn.cursor() as cur:
                 if args.sync_commit_off:
                     cur.execute("SET synchronous_commit = off;")
+                if args.truncate:
+                    cur.execute("TRUNCATE items;")
+                    id_offset = 0
+                else:
+                    cur.execute("SELECT COALESCE(MAX(id), 0) FROM items;")
+                    id_offset = int(cur.fetchone()[0])
 
             if args.copy_format == "binary":
                 # Use a staging table with TEXT fields for vector/array textual input
                 with conn.cursor() as cur:
                     cur.execute(
                         "CREATE TEMP TABLE IF NOT EXISTS items_stage ("
-                        "id BIGINT, embedding_text TEXT, tags_text TEXT) ON COMMIT DROP;"
+                        "id BIGINT, embedding_text TEXT, tags_text TEXT) ON COMMIT PRESERVE ROWS;"
                     )
 
                 def _build_bin_copy(rows: Iterable[tuple[int, str, str]]) -> bytes:
@@ -263,7 +273,7 @@ class LoadDataset:
 
                 def rows_iter() -> Iterable[tuple[int, str, str]]:
                     for i in range(n_rows):
-                        rid = i + 1
+                        rid = id_offset + i + 1
                         vec = train_vecs[i]
                         tags = train_mds[i]
                         emb_txt = "[" + ",".join(str(float(x)) for x in vec) + "]"
@@ -285,8 +295,8 @@ class LoadDataset:
                 # Prepare tab-delimited text to avoid quoting commas in CSV
                 def row_iter() -> Iterable[str]:
                     for i in range(n_rows):
-                        # Assign 1-based IDs to rows in the order provided
-                        rid = i + 1
+                        # Assign IDs with optional offset (append mode)
+                        rid = id_offset + i + 1
                         vec = train_vecs[i]
                         tags = train_mds[i]
                         emb_txt = "[" + ",".join(str(float(x)) for x in vec) + "]"
@@ -356,7 +366,7 @@ class LoadDataset:
         # IVF training seed controls
         ivf_seed_frac: float = 0.1,
         seed_copy_format: str = "binary",  # binary | csv (binary not implemented yet)
-        dry_run: bool = True,
+        dry_run: bool = False,
     ) -> None:
         """Single-thread incremental insert benchmark (skeleton).
 
@@ -507,7 +517,7 @@ class LoadDataset:
                     with conn.cursor() as cur:
                         cur.execute(
                             "CREATE TEMP TABLE IF NOT EXISTS items_stage ("
-                            "id BIGINT, embedding_text TEXT, tags_text TEXT) ON COMMIT DROP;"
+                            "id BIGINT, embedding_text TEXT, tags_text TEXT) ON COMMIT PRESERVE ROWS;"
                         )
                     def rows_iter_seed() -> Iterable[tuple[int, str, str]]:
                         for rid in idxs:
