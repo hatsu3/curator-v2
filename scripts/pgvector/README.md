@@ -35,18 +35,22 @@ Outputs & Conventions
 Notes
 -----
 - For larger datasets, consider session GUCs (e.g., work_mem) before building; a helper will be added if needed
-- Future: a loader may trigger ivfflat post-load automatically
+- For IVF, training requires existing rows; build the index post-load via setup CLI before insert benchmarking
 
 
 Dataset Load & Insert Bench
 --------------------------
 
 - CLI module: scripts.pgvector.load_dataset
-- Two subcommands:
-  - bulk: prepare COPY stream and (optionally) time post-load index build
-  - insert_bench: single-thread incremental inserts with durability toggles
+- Subcommands:
+  - bulk: execute COPY (binary or csv) and optionally time post-load index build
+  - insert_bench: single-thread inserts with durability toggles; for IVF, build index separately first
 
-Strict Copy Format
+Durability Modes (insert_bench)
+- Durable: LOGGED table + synchronous_commit=on (default)
+- Non-durable: UNLOGGED table (preferred) or synchronous_commit=off
+
+Copy Format (bulk)
 - copy_format: binary (default) or csv. No auto-fallback; if binary is unsupported in your environment, rerun with --copy_format csv.
 
 Examples
@@ -62,13 +66,39 @@ Examples
       --dataset yfcc100m --dataset_key yfcc100m-10m --dim 192 --test_size 0.001 \
       --copy_format binary --build_index gin --dry_run true
 
-- Real insert bench (HNSW):
+- Insert bench (HNSW; durable):
   - python -m scripts.pgvector.load_dataset insert_bench \
       --dsn postgresql://postgres:postgres@localhost:5432/curator_bench \
       --dataset yfcc100m --dataset_key yfcc100m --dim 192 --test_size 0.01 \
       --strategy hnsw --m 32 --efc 64
 
-- Dry-run insert bench preview (HNSW):
+- Insert bench (HNSW; non-durable via UNLOGGED):
+  - python -m scripts.pgvector.load_dataset insert_bench \
+      --dsn postgresql://postgres:postgres@localhost:5432/curator_bench \
+      --dataset yfcc100m --dataset_key yfcc100m --dim 192 --test_size 0.01 \
+      --strategy hnsw --m 32 --efc 64 --unlogged true
+
+- Insert bench (IVF; durable; build index first):
+  - python -m scripts.pgvector.setup_db create_index \
+      --dsn postgresql://postgres:postgres@localhost:5432/curator_bench \
+      --index ivf --dim 192 --lists 200
+  - python -m scripts.pgvector.load_dataset insert_bench \
+      --dsn postgresql://postgres:postgres@localhost:5432/curator_bench \
+      --dataset yfcc100m --dataset_key yfcc100m --dim 192 --test_size 0.01 \
+      --strategy ivf --lists 200
+
+- Insert bench (prefilter/GIN; durable):
+  - python -m scripts.pgvector.load_dataset insert_bench \
+      --dsn postgresql://postgres:postgres@localhost:5432/curator_bench \
+      --dataset yfcc100m --dataset_key yfcc100m --dim 192 --test_size 0.01 \
+      --strategy prefilter
+
+Artifacts
+- Insert metrics written under canonical paths:
+  - output/overall_results2/pgvector_{hnsw|ivf|prefilter}/<dataset_key>_test<test_size>/insert_{durable|non_durable}.{json,csv}
+ - A/B artifacts for insert ablations:
+   - output/pgvector/insert_ab/<dataset_key>/{hnsw|ivf|gin}/{durable|non_durable}/run.{json,csv}
+  
   - python -m scripts.pgvector.load_dataset insert_bench \
       --dsn postgresql://postgres:postgres@localhost:5432/curator_bench \
       --dataset yfcc100m --dataset_key yfcc100m --dim 192 --test_size 0.01 \

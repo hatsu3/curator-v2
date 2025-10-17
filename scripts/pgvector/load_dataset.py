@@ -1,13 +1,16 @@
-"""CLI for loading datasets and running insert benchmarks (skeleton).
+"""CLI for loading datasets and running bulk loads and insert benchmarks.
 
-This initial skeleton provides:
-- Fire CLI with two subcommands: `bulk` and `insert_bench`
-- Strict copy format selection: binary (default) or csv
-- Canonical output path resolution for pgvector_* baselines
-- Dry-run previews of planned actions and output artifact locations
+Features:
+- Python Fire CLI with two subcommands: `bulk` and `insert_bench`.
+- Strict copy format selection for bulk: binary (default) or csv.
+- Canonical output path resolution for pgvector baselines.
+- Dry-run previews to validate flags, output pathing, and planned actions.
 
-Future commits will implement actual DB execution, COPY streams, and
-metrics emission. Use this to validate flags, output pathing, and flow.
+Notes:
+- Insert benchmark supports durability toggles (UNLOGGED table or
+  `synchronous_commit=off`) and writes per-row latency metrics.
+- IVF insert path can seed a fraction to allow training; build the IVF
+  index separately via the setup CLI before timed inserts.
 """
 
 from __future__ import annotations
@@ -140,12 +143,12 @@ class LoadDataset:
         truncate: bool = True,
         dry_run: bool = False,
     ) -> None:
-        """Bulk load vectors (skeleton): prints planned actions and outputs.
+        """Bulk load vectors: execute COPY and optional post-load index build.
 
         Notes:
-        - copy_format is strict; default binary; no auto-fallback in skeleton.
+        - copy_format is strict; default binary; no auto-fallback.
         - build_index controls post-load index timing (gin|hnsw|ivf).
-        - No DB actions occur when dry_run=True (default in skeleton).
+        - When `dry_run=True`, prints a preview only without DB actions.
         """
         args = BulkArgs(
             dsn=dsn,
@@ -168,7 +171,7 @@ class LoadDataset:
         dsn_resolved = _resolve_dsn(args.dsn)
         print(f"[pgvector] Using DSN: {dsn_resolved}")
         print(
-            "[pgvector] Bulk load (skeleton):",
+            "[pgvector] Bulk load:",
             {
                 "dataset": args.dataset,
                 "dataset_key": args.dataset_key,
@@ -368,7 +371,7 @@ class LoadDataset:
         seed_copy_format: str = "binary",  # binary | csv (binary not implemented yet)
         dry_run: bool = False,
     ) -> None:
-        """Single-thread incremental insert benchmark (skeleton).
+        """Single-thread incremental insert benchmark.
 
         Strategy controls the baseline bucket for outputs.
         """
@@ -392,7 +395,7 @@ class LoadDataset:
         dsn_resolved = _resolve_dsn(args.dsn)
         print(f"[pgvector] Using DSN: {dsn_resolved}")
         print(
-            "[pgvector] Insert bench (skeleton):",
+            "[pgvector] Insert bench:",
             {
                 "dataset": args.dataset,
                 "dataset_key": args.dataset_key,
@@ -415,6 +418,17 @@ class LoadDataset:
         print("[pgvector] Planned insert artifacts:")
         print("  ", insert_json)
         print("  ", insert_csv)
+
+        # Planned A/B artifacts under output/pgvector/insert_ab
+        idx_tag = ("gin" if args.strategy.lower() == "prefilter" else args.strategy.lower())
+        ab_dir = os.path.join(
+            "output", "pgvector", "insert_ab", args.dataset_key, idx_tag, label
+        )
+        ab_json = os.path.join(ab_dir, "run.json")
+        ab_csv = os.path.join(ab_dir, "run.csv")
+        print("[pgvector] Planned A/B artifacts:")
+        print("  ", ab_json)
+        print("  ", ab_csv)
 
         # If IVF, also preview build artifacts (training build)
         if args.strategy.lower() == "ivf":
@@ -633,7 +647,7 @@ class LoadDataset:
             "timestamp": datetime.utcnow().isoformat(),
         }
 
-        # Emit artifacts
+        # Emit artifacts (canonical + A/B)
         baseline = _baseline_dir_for_strategy(args.strategy)
         out_dir = _canonical_output_dir(baseline, args.dataset_key, args.test_size)
         os.makedirs(out_dir, exist_ok=True)
@@ -651,6 +665,24 @@ class LoadDataset:
                 writer.writeheader()
             writer.writerow(flat)
         print(f"[pgvector] Insert metrics written to {insert_json} and {insert_csv}")
+
+        # Write A/B artifacts
+        idx_tag = ("gin" if args.strategy.lower() == "prefilter" else args.strategy.lower())
+        ab_dir = os.path.join(
+            "output", "pgvector", "insert_ab", args.dataset_key, idx_tag, label
+        )
+        os.makedirs(ab_dir, exist_ok=True)
+        ab_json = os.path.join(ab_dir, "run.json")
+        ab_csv = os.path.join(ab_dir, "run.csv")
+        with open(ab_json, "w", encoding="utf-8") as f:
+            json.dump(metrics, f, indent=2, sort_keys=True)
+        ab_header = not os.path.exists(ab_csv)
+        with open(ab_csv, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(flat.keys()))
+            if ab_header:
+                writer.writeheader()
+            writer.writerow(flat)
+        print(f"[pgvector] A/B insert metrics written to {ab_json} and {ab_csv}")
 
 
 def main() -> None:
