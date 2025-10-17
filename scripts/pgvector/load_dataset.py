@@ -429,8 +429,8 @@ class LoadDataset:
             return
 
         s = args.strategy.lower()
-        if s not in {"hnsw", "ivf"}:
-            _warn("insert benchmark real execution currently implemented for strategy=hnsw or ivf only")
+        if s not in {"hnsw", "ivf", "prefilter"}:
+            _warn("insert benchmark real execution currently implemented for strategy=hnsw|ivf|prefilter only")
             return
 
         # Ensure schema; keep GIN installed for realism
@@ -550,10 +550,18 @@ class LoadDataset:
                             "COPY items_stage (id, embedding_text, tags_text) FROM STDIN WITH (FORMAT BINARY)",
                             io.BytesIO(payload),
                         )
-                        cur.execute(
-                            "INSERT INTO items (id, embedding, tags) "
-                            "SELECT id, embedding_text::vector, tags_text::int[] FROM items_stage;"
-                        )
+                    cur.execute(
+                        "INSERT INTO items (id, embedding, tags) "
+                        "SELECT id, embedding_text::vector, tags_text::int[] FROM items_stage;"
+                    )
+            elif s == "prefilter":
+                # Ensure fresh GIN(tags) index on empty table
+                admin.create_index(
+                    dsn_resolved,
+                    index="gin",
+                    dim=args.dim,
+                    dry_run=False,
+                )
 
                 # Build IVF and record metrics
                 baseline_b = _baseline_dir_for_index("ivf")
@@ -597,7 +605,9 @@ class LoadDataset:
         import numpy as np  # type: ignore
         lat = np.array(latencies, dtype=np.float64)
         # Query index size after insertion
-        idx_name = "items_emb_hnsw" if s == "hnsw" else ("items_emb_ivf" if s == "ivf" else None)
+        idx_name = (
+            "items_emb_hnsw" if s == "hnsw" else ("items_emb_ivf" if s == "ivf" else ("items_tags_gin" if s == "prefilter" else None))
+        )
         index_size_bytes = None
         if idx_name is not None:
             import psycopg2  # type: ignore
