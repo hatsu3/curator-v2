@@ -118,6 +118,19 @@ class Summary:
         json_path: str | None = None,
     ) -> None:
         """Summarize A/B artifacts for a dataset variant."""
+        def _coerce_bool(val, default=False):
+            if isinstance(val, bool):
+                return val
+            if val is None:
+                return default
+            if isinstance(val, str):
+                v = val.strip().lower()
+                if v in {"1", "true", "yes", "y", "on"}:
+                    return True
+                if v in {"0", "false", "no", "n", "off"}:
+                    return False
+            return bool(val)
+        write_json = _coerce_bool(write_json, True)
         root = Path(base_dir) if base_dir else Path("output/pgvector/hnsw_ordering_ab")
         dv_dir = root / dataset_variant
         strict_dir = dv_dir / "strict_order"
