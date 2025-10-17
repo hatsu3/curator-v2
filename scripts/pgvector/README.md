@@ -126,6 +126,14 @@ Insert A/B Sweeper
 
 - Omit --dry_run true to execute runs (requires DB ready). IVF index is built first by the sweeper when --build_ivf true.
 
+See also: benchmark/pgvector_ab/README.md for a complete quickstart, outputs, and troubleshooting tips.
+
+Troubleshooting (A/B)
+---------------------
+- IVF build‑first: if IVF training fails, ensure the `vector` extension is installed and the `items` table exists; rebuild IVF before inserts.
+- Durability toggles: non‑durable mode uses UNLOGGED (preferred). Alternatively, pass `--sync_commit_off true` for LOGGED tables.
+- Paths: use `--dry_run true` to verify planned A/B output paths before running heavy jobs.
+
 Label Modeling A/B (INT[] + GIN vs Boolean)
 -------------------------------------------
 - Orchestrator (preview commands and outputs):
