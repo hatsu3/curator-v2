@@ -2,6 +2,7 @@
 build/
 output/
 logs/
+tmp/
 data/*
 **/__pycache__/
 *.deb
