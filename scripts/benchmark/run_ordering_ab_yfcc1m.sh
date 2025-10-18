@@ -10,7 +10,7 @@ IFS=$'\n\t'
 # - Produces summary with auto recommendation JSON
 
 ########################################
-# Config (override with env vars)
+# Config (override with env vars or CLI flags)
 ########################################
 PG_CONTAINER_NAME=${PG_CONTAINER_NAME:-pgvector-dev}
 PG_IMAGE=${PG_IMAGE:-pgvector/pgvector:0.8.1-pg18-trixie}
@@ -62,13 +62,23 @@ fi
 # NOTE: This is destructive. Ensure no experiments are running.
 ########################################
 echo "[ordering_ab] Resetting database ${DB_NAME}"
-docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -v ON_ERROR_STOP=1 <<SQL
-SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${DB_NAME}';
-DROP DATABASE IF EXISTS ${DB_NAME};
-CREATE DATABASE ${DB_NAME};
-\c ${DB_NAME}
+docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -q -X -v ON_ERROR_STOP=1 <<'SQL'
+\set QUIET on
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :'DB_NAME';
+DROP DATABASE IF EXISTS :"DB_NAME";
+CREATE DATABASE :"DB_NAME";
+\c :"DB_NAME"
 CREATE EXTENSION IF NOT EXISTS vector;
 SQL
+echo "[ordering_ab] Database ${DB_NAME} reset; extension 'vector' ensured"
+
+echo "[ordering_ab] DB defaults (${DB_NAME}):"
+mwm=$(docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -d "${DB_NAME}" -qAtX -c "SHOW maintenance_work_mem;" 2>/dev/null | tr -d '\r' || true)
+pmw=$(docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -d "${DB_NAME}" -qAtX -c "SHOW max_parallel_maintenance_workers;" 2>/dev/null | tr -d '\r' || true)
+mpw=$(docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -d "${DB_NAME}" -qAtX -c "SHOW max_parallel_workers;" 2>/dev/null | tr -d '\r' || true)
+echo "[ordering_ab] DB defaults: maintenance_work_mem=$mwm, max_parallel_maintenance_workers=$pmw, max_parallel_workers=$mpw (build uses PGOPTIONS overrides)"
+echo "[ordering_ab] Container resources (cgroups):"
+docker exec -i "${PG_CONTAINER_NAME}" bash -lc 'set -e; if [ -f /sys/fs/cgroup/memory.max ]; then echo mem.max=$(cat /sys/fs/cgroup/memory.max); else echo mem.limit=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo unknown); fi; if [ -f /sys/fs/cgroup/cpu.max ]; then echo cpu.max=$(cat /sys/fs/cgroup/cpu.max); else echo cpu.cfs_quota_us=$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us 2>/dev/null || echo unknown); fi' || true
 
 ########################################
 # Bulk load dataset and build GIN(tags)
@@ -83,6 +93,12 @@ python -m scripts.pgvector.load_dataset bulk \
 # Build HNSW index (required for A/B)
 ########################################
 echo "[ordering_ab] Build HNSW index"
+# Force single-threaded build (configurable) and optional memory allocation
+PGOPTIONS_SET="-c max_parallel_maintenance_workers=${PARALLEL_MAINT_WORKERS} -c max_parallel_workers=${PARALLEL_MAINT_WORKERS}"
+if [[ -n "${MAINTENANCE_WORK_MEM}" ]]; then
+  PGOPTIONS_SET+=" -c maintenance_work_mem=${MAINTENANCE_WORK_MEM}"
+fi
+export PGOPTIONS="${PGOPTIONS:-} ${PGOPTIONS_SET}"
 python -m scripts.pgvector.setup_db create_index \
   --dsn "${DSN}" --index hnsw --m "${HNSW_M}" --efc "${HNSW_EFC}" --dim "${DIM}"
 
@@ -112,4 +128,19 @@ python -m benchmark.pgvector_ab.summarize_ordering_ab run \
   --dataset_variant "${DV}" --recall_tolerance "${RECALL_TOL}" --p95_speedup_min "${P95_SPEEDUP_MIN}" --write_json true
 
 echo "[ordering_ab] DONE. See outputs under output/pgvector/hnsw_ordering_ab/${DV}/"
+# Index build controls
+PARALLEL_MAINT_WORKERS=${PARALLEL_MAINT_WORKERS:-0}
+MAINTENANCE_WORK_MEM=${MAINTENANCE_WORK_MEM:-64GB}
 
+########################################
+# CLI flags
+########################################
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --parallel-maint-workers)
+      PARALLEL_MAINT_WORKERS="$2"; shift 2;;
+    --maintenance-work-mem)
+      MAINTENANCE_WORK_MEM="$2"; shift 2;;
+    *) echo "[ordering_ab] Unknown argument: $1" >&2; exit 1;;
+  esac
+done

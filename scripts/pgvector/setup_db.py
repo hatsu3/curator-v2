@@ -84,6 +84,20 @@ class SetupDB:
             output_csv=output_csv,
         )
 
+    def create_all_boolean_labels(
+        self,
+        *,
+        dsn: str,
+        dry_run: bool = False,
+    ) -> None:
+        """Create boolean columns for all distinct labels and backfill.
+
+        Args:
+            dsn: Postgres DSN
+            dry_run: If true, prints plan only.
+        """
+        admin.create_all_boolean_labels(dsn, dry_run=dry_run)
+
 
 def main() -> None:
     fire.Fire(SetupDB)

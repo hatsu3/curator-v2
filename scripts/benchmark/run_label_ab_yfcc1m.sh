@@ -10,7 +10,7 @@ IFS=$'\n\t'
 # - Collects storage metrics and writes summary
 
 ########################################
-# Config (override with env vars)
+# Config (override with env vars or CLI flags)
 ########################################
 PG_CONTAINER_NAME=${PG_CONTAINER_NAME:-pgvector-dev}
 PG_IMAGE=${PG_IMAGE:-pgvector/pgvector:0.8.1-pg18-trixie}
@@ -26,15 +26,33 @@ K=${K:-10}
 
 # HNSW params
 HNSW_M=${HNSW_M:-32}
-HNSW_EFC=${HNSW_EFC:-64}
-HNSW_EFS=${HNSW_EFS:-64}
+HNSW_EFC=${HNSW_EFC:-128}
+HNSW_EFS=${HNSW_EFS:-128}
 
 # IVF params
-IVF_LISTS=${IVF_LISTS:-200}
+IVF_LISTS=${IVF_LISTS:-4096}
 IVF_PROBES=${IVF_PROBES:-16}
 
 # Boolean label columns to materialize
 TOP_LABEL_IDS=${TOP_LABEL_IDS:-1,2,3,4,5}
+
+# Index build controls (defaults; can override via flags)
+PARALLEL_MAINT_WORKERS=${PARALLEL_MAINT_WORKERS:-0}
+MAINTENANCE_WORK_MEM=${MAINTENANCE_WORK_MEM:-64GB}
+
+########################################
+# CLI flags (overriding defaults)
+########################################
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --parallel-maint-workers)
+      PARALLEL_MAINT_WORKERS="$2"; shift 2;;
+    --maintenance-work-mem)
+      MAINTENANCE_WORK_MEM="$2"; shift 2;;
+    *)
+      echo "[run_ab] Unknown argument: $1" >&2; exit 1;;
+  esac
+done
 
 ########################################
 # Conda env activation
@@ -63,7 +81,8 @@ fi
 # Reset databases (drop & recreate)
 ########################################
 echo "[run_ab] Resetting databases curator_int and curator_bool"
-docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -v ON_ERROR_STOP=1 <<SQL
+docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -q -X -v ON_ERROR_STOP=1 <<'SQL'
+\set QUIET on
 SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN ('curator_int','curator_bool');
 DROP DATABASE IF EXISTS curator_int;
 DROP DATABASE IF EXISTS curator_bool;
@@ -74,9 +93,33 @@ CREATE EXTENSION IF NOT EXISTS vector;
 \c curator_bool
 CREATE EXTENSION IF NOT EXISTS vector;
 SQL
+echo "[run_ab] Databases curator_int/curator_bool reset; extension 'vector' ensured"
 
 ########################################
-# Bulk load datasets
+# Show DB settings, container resources
+# Override default configurations
+########################################
+for DB in curator_int curator_bool; do
+  mwm=$(docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -d "$DB" -qAtX -c "SHOW maintenance_work_mem;" 2>/dev/null | tr -d '\r' || true)
+  pmw=$(docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -d "$DB" -qAtX -c "SHOW max_parallel_maintenance_workers;" 2>/dev/null | tr -d '\r' || true)
+  mpw=$(docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -d "$DB" -qAtX -c "SHOW max_parallel_workers;" 2>/dev/null | tr -d '\r' || true)
+  echo "[run_ab] DB defaults ($DB): maintenance_work_mem=$mwm, max_parallel_maintenance_workers=$pmw, max_parallel_workers=$mpw (build uses PGOPTIONS overrides)"
+done
+echo "[run_ab] Container resources (cgroups):"
+docker exec -i "${PG_CONTAINER_NAME}" bash -lc 'set -e; if [ -f /sys/fs/cgroup/memory.max ]; then echo mem.max=$(cat /sys/fs/cgroup/memory.max); else echo mem.limit=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo unknown); fi; if [ -f /sys/fs/cgroup/cpu.max ]; then echo cpu.max=$(cat /sys/fs/cgroup/cpu.max); else echo cpu.cfs_quota_us=$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us 2>/dev/null || echo unknown); fi' || true
+
+# Enforce single-threaded build (configurable) and optional memory allocation
+echo "[run_ab] Overriding # parallel workers: max_parallel_maintenance_workers=${PARALLEL_MAINT_WORKERS}, max_parallel_workers=${PARALLEL_MAINT_WORKERS}"
+PGOPTIONS_SET="-c max_parallel_maintenance_workers=${PARALLEL_MAINT_WORKERS} -c max_parallel_workers=${PARALLEL_MAINT_WORKERS}"
+if [[ -n "${MAINTENANCE_WORK_MEM}" ]]; then
+  echo "[run_ab] Overriding maintenance_work_mem: ${MAINTENANCE_WORK_MEM}"
+  PGOPTIONS_SET+=" -c maintenance_work_mem=${MAINTENANCE_WORK_MEM}"
+fi
+export PGOPTIONS="${PGOPTIONS:-} ${PGOPTIONS_SET}"
+
+########################################
+# Bulk load datasets (HNSW supports incremental builds, 
+# but that does not matter for this experiment)
 ########################################
 echo "[run_ab] Bulk load into INT[] DB with GIN build timing"
 python -m scripts.pgvector.load_dataset bulk \
@@ -95,24 +138,19 @@ python -m scripts.pgvector.setup_db create_schema \
   --dsn "${DSN_BOOL}" --dim "${DIM}" --schema boolean --label_ids "${TOP_LABEL_IDS}" --dry_run false
 
 ########################################
-# Build vector indexes
+# Run baselines (HNSW first, then IVF) to avoid index isolation drops
 ########################################
-echo "[run_ab] Build HNSW indexes"
+echo "[run_ab] Build HNSW index (int_array)"
 python -m scripts.pgvector.setup_db create_index --dsn "${DSN_INT}" --index hnsw --m "${HNSW_M}" --efc "${HNSW_EFC}" --dim "${DIM}"
-python -m scripts.pgvector.setup_db create_index --dsn "${DSN_BOOL}" --index hnsw --m "${HNSW_M}" --efc "${HNSW_EFC}" --dim "${DIM}"
 
-echo "[run_ab] Build IVF indexes"
-python -m scripts.pgvector.setup_db create_index --dsn "${DSN_INT}" --index ivf --lists "${IVF_LISTS}" --dim "${DIM}"
-python -m scripts.pgvector.setup_db create_index --dsn "${DSN_BOOL}" --index ivf --lists "${IVF_LISTS}" --dim "${DIM}"
-
-########################################
-# Run baselines (four variants)
-########################################
 echo "[run_ab] Run baselines: int_array + hnsw"
 python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
   --dsn "${DSN_INT}" --strategy hnsw --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}" \
   --iter_mode relaxed_order --schema int_array --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --output_path output/pgvector/label_ab/yfcc100m_1m/int_array/hnsw/results.csv
+
+echo "[run_ab] Build IVF index (int_array)"
+python -m scripts.pgvector.setup_db create_index --dsn "${DSN_INT}" --index ivf --lists "${IVF_LISTS}" --dim "${DIM}"
 
 echo "[run_ab] Run baselines: int_array + ivf"
 python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
@@ -120,11 +158,17 @@ python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
   --iter_mode relaxed_order --schema int_array --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --output_path output/pgvector/label_ab/yfcc100m_1m/int_array/ivf/results.csv
 
+echo "[run_ab] Build HNSW index (boolean)"
+python -m scripts.pgvector.setup_db create_index --dsn "${DSN_BOOL}" --index hnsw --m "${HNSW_M}" --efc "${HNSW_EFC}" --dim "${DIM}"
+
 echo "[run_ab] Run baselines: boolean + hnsw"
 python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
   --dsn "${DSN_BOOL}" --strategy hnsw --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}" \
   --iter_mode relaxed_order --schema boolean --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --output_path output/pgvector/label_ab/yfcc100m_1m/boolean/hnsw/results.csv
+
+echo "[run_ab] Build IVF index (boolean)"
+python -m scripts.pgvector.setup_db create_index --dsn "${DSN_BOOL}" --index ivf --lists "${IVF_LISTS}" --dim "${DIM}"
 
 echo "[run_ab] Run baselines: boolean + ivf"
 python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \

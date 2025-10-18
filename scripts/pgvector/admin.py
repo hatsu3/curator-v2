@@ -149,6 +149,69 @@ def _backfill_boolean_labels_from_tags(conn, label_ids: Sequence[int]) -> None:
             )
 
 
+def create_all_boolean_labels(
+    dsn: str,
+    *,
+    dry_run: bool = False,
+) -> None:
+    """Create boolean columns for all distinct labels in items.tags and backfill.
+
+    This procedure:
+      1) Adds columns `label_<id> boolean DEFAULT false` for every distinct label id in items.tags
+      2) Backfills each column by setting TRUE where the label is present in tags
+
+    Use with care: this may add many columns (up to the Postgres column limit ~1600).
+    """
+    plan_note = (
+        "[pgvector] Plan: add boolean columns for all distinct labels in items.tags, "
+        "then backfill from tags"
+    )
+    print(plan_note)
+    if dry_run:
+        print("[pgvector] Dry-run: no DB changes executed.")
+        return
+
+    try:
+        import psycopg2  # type: ignore
+    except Exception as e:  # pragma: no cover
+        _warn(f"psycopg2 not available: {e}")
+        raise
+
+    ddl_block = (
+        "DO $$ DECLARE r record; BEGIN "
+        "FOR r IN SELECT DISTINCT unnest(tags) AS lid FROM items LOOP "
+        "EXECUTE format('ALTER TABLE items ADD COLUMN IF NOT EXISTS label_%s boolean DEFAULT false', r.lid); "
+        "END LOOP; END $$;"
+    )
+    dml_block = (
+        "SET LOCAL synchronous_commit = off; "
+        "DO $$ DECLARE r record; BEGIN "
+        "FOR r IN SELECT DISTINCT unnest(tags) AS lid FROM items LOOP "
+        "EXECUTE format('UPDATE items SET label_%s = TRUE WHERE %s = ANY(tags)', r.lid, r.lid); "
+        "END LOOP; END $$;"
+    )
+
+    conn = psycopg2.connect(dsn)
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            # Count labels for progress info
+            cur.execute("SELECT count(*) FROM (SELECT DISTINCT unnest(tags) FROM items) t;")
+            nlabels = int(cur.fetchone()[0])
+        print(f"[pgvector] Distinct labels found: {nlabels}")
+        with conn.cursor() as cur:
+            cur.execute(ddl_block)
+        with conn.cursor() as cur:
+            cur.execute("BEGIN;")
+            cur.execute(dml_block)
+            cur.execute("COMMIT;")
+        with conn.cursor() as cur:
+            cur.execute("ANALYZE items;")
+    finally:
+        conn.close()
+    print("[pgvector] Boolean columns created and backfilled for all labels.")
+
+
 def create_schema(
     dsn: str,
     *,

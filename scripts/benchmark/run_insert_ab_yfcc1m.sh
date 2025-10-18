@@ -55,20 +55,40 @@ fi
 # Reset database (drop & recreate)
 ########################################
 echo "[run_insert_ab] Resetting database curator_bench"
-docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -v ON_ERROR_STOP=1 <<SQL
+docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -q -X -v ON_ERROR_STOP=1 <<'SQL'
+\set QUIET on
 SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'curator_bench';
 DROP DATABASE IF EXISTS curator_bench;
 CREATE DATABASE curator_bench;
 \c curator_bench
 CREATE EXTENSION IF NOT EXISTS vector;
 SQL
+echo "[run_insert_ab] Database curator_bench reset; extension 'vector' ensured"
+
+# Show DB defaults (note: build sessions use PGOPTIONS overrides)
+mwm=$(docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -d curator_bench -qAtX -c "SHOW maintenance_work_mem;" 2>/dev/null | tr -d '\r' || true)
+pmw=$(docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -d curator_bench -qAtX -c "SHOW max_parallel_maintenance_workers;" 2>/dev/null | tr -d '\r' || true)
+mpw=$(docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -d curator_bench -qAtX -c "SHOW max_parallel_workers;" 2>/dev/null | tr -d '\r' || true)
+echo "[run_insert_ab] DB defaults (curator_bench): maintenance_work_mem=${mwm}, max_parallel_maintenance_workers=${pmw}, max_parallel_workers=${mpw} (build uses PGOPTIONS overrides)"
+echo "[run_insert_ab] Container resources (cgroups):"
+docker exec -i "${PG_CONTAINER_NAME}" bash -lc 'set -e; if [ -f /sys/fs/cgroup/memory.max ]; then echo mem.max=$(cat /sys/fs/cgroup/memory.max); else echo mem.limit=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo unknown); fi; if [ -f /sys/fs/cgroup/cpu.max ]; then echo cpu.max=$(cat /sys/fs/cgroup/cpu.max); else echo cpu.cfs_quota_us=$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us 2>/dev/null || echo unknown); fi' || true
 
 # Helper: drop 'items' so each run can recreate with LOGGED/UNLOGGED as needed
 drop_items() {
-  docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -v ON_ERROR_STOP=1 -d curator_bench <<SQL
+  docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -q -X -v ON_ERROR_STOP=1 -d curator_bench <<'SQL'
+\set QUIET on
 DROP TABLE IF EXISTS items CASCADE;
 SQL
 }
+
+# Force single-threaded index builds (configurable) and optional memory allocation
+PARALLEL_MAINT_WORKERS=${PARALLEL_MAINT_WORKERS:-0}
+MAINTENANCE_WORK_MEM=${MAINTENANCE_WORK_MEM:-64GB}
+PGOPTIONS_SET="-c max_parallel_maintenance_workers=${PARALLEL_MAINT_WORKERS} -c max_parallel_workers=${PARALLEL_MAINT_WORKERS}"
+if [[ -n "${MAINTENANCE_WORK_MEM}" ]]; then
+  PGOPTIONS_SET+=" -c maintenance_work_mem=${MAINTENANCE_WORK_MEM}"
+fi
+export PGOPTIONS="${PGOPTIONS:-} ${PGOPTIONS_SET}"
 
 ########################################
 # Durable runs (LOGGED + synchronous_commit=on)
@@ -161,4 +181,3 @@ print("[summary] wrote", out_json)
 PY
 
 echo "[run_insert_ab] DONE. See outputs under output/pgvector/insert_ab/${DATASET_KEY}/"
-
