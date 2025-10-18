@@ -297,8 +297,9 @@ def plot_memory_footprint(
         dataset_display_names
     )  # Total width divided by number of datasets
 
-    # Use minimum y value across all bars for cross position
-    cross_y = df["index_size_gb"].min() if not df.empty else 0.01
+    # Place crosses at small positive value above zero
+    max_y = df["index_size_gb"].max() if not df.empty else 1.0
+    cross_y = 0.04 * max_y  # Place crosses at 4% of max value
 
     for i, algorithm in enumerate(filtered_index_keys):
         for j, dataset in enumerate(dataset_display_names):
@@ -312,7 +313,7 @@ def plot_memory_footprint(
                     f"Adding red cross for missing data: {algorithm} on {dataset} at ({x_pos:.2f}, {cross_y:.4f})"
                 )
 
-    ax.set_yscale("log")
+    # ax.set_yscale("log")
     ax.set_xlabel("")
     ylabel = "Index Overhead (GB)" if subtract_vectors else "Memory Footprint (GB)"
     ax.set_ylabel(ylabel)
