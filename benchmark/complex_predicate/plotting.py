@@ -553,11 +553,14 @@ def plot_optimal_results_clean(
         combined_df = pd.concat(template_results, ignore_index=True)
         combined_df["query_lat_avg"] *= 1000  # Convert to ms
 
+        # Convert latency to QPS (queries per second)
+        combined_df["qps"] = 1000 / combined_df["query_lat_avg"]
+
         # Use sns.lineplot with custom markers
         sns.lineplot(
             data=combined_df,
-            x="query_lat_avg",
-            y="recall_at_k",
+            x="recall_at_k",
+            y="qps",
             hue="algorithm",
             hue_order=available_algorithms,
             style="algorithm",
@@ -569,11 +572,12 @@ def plot_optimal_results_clean(
             legend=False,
         )
 
-        ax.set_xlabel("Query Latency (ms)")
-        ax.set_xscale("log")
+        ax.set_xlabel("Recall@10")
+        ax.set_ylabel("QPS")
+        ax.set_yscale("log")
 
-        ax.set_xticks([1, 100])
-        ax.set_xticklabels(["10⁰", "10²"])
+        ax.set_yticks([10, 1000])
+        ax.set_yticklabels(["10¹", "10³"])
 
         # Add selectivity to title
         selectivity = template_selectivities.get(template, None)
@@ -605,6 +609,9 @@ def plot_optimal_results_clean(
     if template_results:
         combined_df = pd.concat(template_results, ignore_index=True)
         combined_df["query_lat_avg"] *= 1000  # Convert to ms
+
+        # Convert latency to QPS (queries per second)
+        combined_df["qps"] = 1000 / combined_df["query_lat_avg"]
 
         # Separate fast and slow algorithms
         fast_data = combined_df[~combined_df["algorithm"].isin(list(slow_algorithms))]
@@ -640,8 +647,8 @@ def plot_optimal_results_clean(
 
             sns.lineplot(
                 data=fast_data_filtered,
-                x="query_lat_avg",
-                y="recall_at_k",
+                x="recall_at_k",
+                y="qps",
                 hue="algorithm",
                 hue_order=fast_algorithms,
                 style="algorithm",
@@ -653,12 +660,13 @@ def plot_optimal_results_clean(
                 legend=False,
             )
 
-            ax_fast.set_xlabel("Query Latency (ms)")
-            ax_fast.set_xscale("log")
+            ax_fast.set_xlabel("Recall@10")
+            ax_fast.set_ylabel("QPS")
+            ax_fast.set_yscale("log")
 
-            ax_fast.set_xticks([0.01, 0.1])
-            ax_fast.set_xticklabels(["10⁻²", "10⁻¹"])
-            ax_fast.tick_params(axis="x", which="minor", labelbottom=False)
+            ax_fast.set_yticks([10000, 100000])
+            ax_fast.set_yticklabels(["10⁴", "10⁵"])
+            ax_fast.tick_params(axis="y", which="minor", left=False)
 
             subplot_titles.append(f"{base_title} - Fast")
         else:
@@ -680,8 +688,8 @@ def plot_optimal_results_clean(
 
             sns.lineplot(
                 data=slow_data,
-                x="query_lat_avg",
-                y="recall_at_k",
+                x="recall_at_k",
+                y="qps",
                 hue="algorithm",
                 hue_order=slow_algorithms_list,
                 style="algorithm",
@@ -693,11 +701,12 @@ def plot_optimal_results_clean(
                 legend=False,
             )
 
-            ax_slow.set_xlabel("Query Latency (ms)")
-            ax_slow.set_xscale("log")
+            ax_slow.set_xlabel("Recall@10")
+            ax_slow.set_ylabel("QPS")
+            ax_slow.set_yscale("log")
 
-            ax_slow.set_xticks([0.1, 10, 1000])
-            ax_slow.set_xticklabels(["10⁻¹", "10¹", "10³"])
+            ax_slow.set_yticks([1, 100, 10000])
+            ax_slow.set_yticklabels(["10⁰", "10²", "10⁴"])
 
             subplot_titles.append(f"{base_title} - Slow")
         else:
@@ -709,7 +718,7 @@ def plot_optimal_results_clean(
     # Set titles and styling
     for i, (ax, title) in enumerate(zip(axes, subplot_titles)):
         ax.set_title(title, fontsize=font_size - 2)
-        ax.set_ylabel("Recall@10" if i == 0 else None)
+        ax.set_ylabel("QPS" if i == 0 else None)
         # Turn off minor ticks only for y-axis, keep x-axis minor ticks
         ax.tick_params(axis="y", which="minor", left=False)
         ax.grid(visible=True, which="major", axis="both", linestyle="-", alpha=0.6)

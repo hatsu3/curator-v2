@@ -552,11 +552,14 @@ def plot_recall_vs_latency(
 
         per_pct_df = per_pct_results[percentile]
 
+        # Convert latency to QPS (queries per second)
+        per_pct_df["qps"] = 1000 / per_pct_df["latency"]
+
         # Create line plot
         sns.lineplot(
             data=per_pct_df,
-            x="latency",
-            y="recall",
+            x="recall",
+            y="qps",
             hue="index_key",
             hue_order=baseline_names,
             style="index_key",
@@ -567,9 +570,9 @@ def plot_recall_vs_latency(
             dashes=False,
         )
 
-        ax.set_xscale("log")
-        ax.set_xlabel("Latency (ms)" if i == len(axes) // 2 else "")
-        ax.set_ylabel("Recall@10" if i == 0 else "")
+        ax.set_yscale("log")
+        ax.set_xlabel("Recall@10" if i == len(axes) // 2 else "")
+        ax.set_ylabel("QPS" if i == 0 else "")
 
         # Set title with selectivity info
         if percentile in pct_to_sel:
