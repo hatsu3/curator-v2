@@ -557,6 +557,7 @@ def plot_optimal_results_clean(
         combined_df["qps"] = 1000 / combined_df["query_lat_avg"]
 
         # Use sns.lineplot with custom markers
+        # Create legend on first subplot to extract later
         sns.lineplot(
             data=combined_df,
             x="recall_at_k",
@@ -569,7 +570,7 @@ def plot_optimal_results_clean(
             markers=marker_map,  # Pass custom marker mapping
             dashes=False,
             palette=custom_palette,
-            legend=False,
+            legend=True,  # Create legend to extract for figure-level legend
         )
 
         ax.set_xlabel("Recall@10")
@@ -723,42 +724,30 @@ def plot_optimal_results_clean(
         ax.tick_params(axis="y", which="minor", left=False)
         ax.grid(visible=True, which="major", axis="both", linestyle="-", alpha=0.6)
 
-    # Create shared legend with short names in two rows
-    if available_algorithms:
-        # Manually create legend from available algorithms with correct markers
-        legend_handles = []
-        legend_labels = []
+    # Create shared legend using Seaborn's default legend handles
+    # This provides better marker styling (white borders, proper edge widths)
+    # matching the style used in Figures 7-8
+    if available_algorithms and axes[0].get_legend():
+        legend_handles = axes[0].get_legend().legend_handles
+        legend_labels = available_algorithms
 
-        for alg in available_algorithms:
-            if alg in custom_palette:
-                from matplotlib.lines import Line2D
+        # Two-row legend, positioned to avoid overlap
+        ncol = min(len(legend_labels), 4)  # Max 4 columns
+        legend = fig.legend(
+            legend_handles,
+            legend_labels,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.20),
+            ncol=ncol,
+            fontsize=font_size - 2,
+            columnspacing=1.0,
+            handletextpad=0.5,
+        )
 
-                legend_handles.append(
-                    Line2D(
-                        [0],
-                        [0],
-                        color=custom_palette[alg],
-                        marker=marker_map.get(alg, "o"),
-                        linestyle="-",
-                        markersize=4,
-                    )
-                )
-                # legend_labels.append(SHORT_NAMES.get(alg, alg))
-                legend_labels.append(alg)
-
-        if legend_handles:
-            # Two-row legend, moved higher to avoid overlap
-            ncol = min(len(legend_handles), 4)  # Max 4 columns
-            legend = fig.legend(
-                legend_handles,
-                legend_labels,
-                loc="upper center",
-                bbox_to_anchor=(0.5, 1.20),  # Moved higher from 1.15 to 1.20
-                ncol=ncol,
-                fontsize=font_size - 2,
-                columnspacing=1.0,
-                handletextpad=0.5,
-            )
+        # Remove individual legends from subplots
+        for ax in axes:
+            if ax.get_legend():
+                ax.get_legend().remove()
 
     fig.tight_layout()
 
