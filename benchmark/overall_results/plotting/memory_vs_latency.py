@@ -684,6 +684,12 @@ def plot_memory_vs_latency_vs_build_time(
                 fontsize=font_size - 4,
                 ha=annotation_params["ha"],
                 va=annotation_params["va"],
+                arrowprops=dict(
+                    arrowstyle="-",
+                    color="gray",
+                    linewidth=0.8,
+                    alpha=0.6,
+                ),
             )
 
         # Set scales and labels
