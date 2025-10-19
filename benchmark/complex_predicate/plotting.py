@@ -458,7 +458,7 @@ def plot_optimal_results_clean(
     templates: List[str] = ["OR", "AND"],
     algorithms: Optional[List[str]] = None,
     output_path: str = "output/complex_predicate_optimal/figs/recall_vs_latency_clean.pdf",
-    subplot_size: tuple = (2.5, 2.5),  # Make subplots more compact
+    subplot_size: tuple = (2, 2),  # Make subplots more compact
     font_size: int = 14,
 ):
     """Plot recall vs latency with clean visualization handling clustering.
@@ -523,11 +523,38 @@ def plot_optimal_results_clean(
     # Define slow algorithms for AND template
     slow_algorithms = {"Shared HNSW", "Shared IVF", "ACORN", "Parlay IVF"}
 
-    # Set up plotting - 3 subplots with independent y-axes
+    # Set up plotting - 3 subplots with custom spacing to group AND subplots
     plt.rcParams.update({"font.size": font_size})
     fig_width = subplot_size[0] * 3
     fig_height = subplot_size[1]
-    fig, axes = plt.subplots(1, 3, figsize=(fig_width, fig_height))
+
+    # Use GridSpec to customize spacing between subplots
+    # Group AND subplots together with reduced spacing
+    from matplotlib.gridspec import GridSpec
+
+    fig = plt.figure(figsize=(fig_width, fig_height))
+    gs = GridSpec(1, 3, figure=fig, wspace=0.3, width_ratios=[1, 1, 1])
+    gs.update(left=0.08, right=0.98, top=0.88, bottom=0.15)
+
+    # Create subplots with custom spacing: normal gap after OR, tight gap between AND subplots
+    axes = [
+        fig.add_subplot(gs[0, 0]),  # OR
+        fig.add_subplot(gs[0, 1]),  # AND Fast
+        fig.add_subplot(gs[0, 2]),  # AND Slow
+    ]
+
+    # Manually adjust positions to group AND subplots
+    pos0 = axes[0].get_position()
+    pos1 = axes[1].get_position()
+    pos2 = axes[2].get_position()
+
+    # Keep OR position, move AND subplots closer together
+    gap_normal = 0.16  # Normal gap between OR and AND-Fast
+    gap_tight = 0.08  # Tight gap between AND-Fast and AND-Slow
+
+    axes[1].set_position([pos0.x1 + gap_normal, pos1.y0, pos1.width, pos1.height])
+    pos1_new = axes[1].get_position()
+    axes[2].set_position([pos1_new.x1 + gap_tight, pos2.y0, pos2.width, pos2.height])
 
     subplot_titles = []
 
@@ -665,9 +692,13 @@ def plot_optimal_results_clean(
             ax_fast.set_ylabel("QPS")
             ax_fast.set_yscale("log")
 
+            # Set only two major ticks, enable minor ticks without labels
             ax_fast.set_yticks([10000, 100000])
             ax_fast.set_yticklabels(["10⁴", "10⁵"])
-            ax_fast.tick_params(axis="y", which="minor", left=False)
+            ax_fast.minorticks_on()
+            ax_fast.tick_params(axis="y", which="minor", left=True, labelleft=False)
+            # Add minor grid lines for both axes
+            ax_fast.grid(visible=True, which="minor", axis="both", linestyle=":", alpha=0.3)
 
             subplot_titles.append(f"{base_title} - Fast")
         else:
@@ -718,10 +749,14 @@ def plot_optimal_results_clean(
 
     # Set titles and styling
     for i, (ax, title) in enumerate(zip(axes, subplot_titles)):
-        ax.set_title(title, fontsize=font_size - 2)
+        # Only set title for OR subplot (i=0)
+        # AND subplots will use spanning title
+        if i == 0:
+            ax.set_title(title, fontsize=font_size - 1)
         ax.set_ylabel("QPS" if i == 0 else None)
-        # Turn off minor ticks only for y-axis, keep x-axis minor ticks
-        ax.tick_params(axis="y", which="minor", left=False)
+        # Turn off minor ticks for y-axis, except for middle subplot (i=1) which has minor ticks enabled
+        if i != 1:
+            ax.tick_params(axis="y", which="minor", left=False)
         ax.grid(visible=True, which="major", axis="both", linestyle="-", alpha=0.6)
 
     # Create shared legend using Seaborn's default legend handles
@@ -737,11 +772,11 @@ def plot_optimal_results_clean(
             legend_handles,
             legend_labels,
             loc="upper center",
-            bbox_to_anchor=(0.5, 1.20),
+            bbox_to_anchor=(0.55, 1.30),
             ncol=ncol,
-            fontsize=font_size - 2,
-            columnspacing=1.0,
-            handletextpad=0.5,
+            fontsize=font_size - 3,  # Reduced from font_size - 2 for tighter layout
+            columnspacing=1.0,  # Reduced from 1.0
+            handletextpad=0.5,  # Reduced from 0.5
         )
 
         # Remove individual legends from subplots
@@ -749,7 +784,33 @@ def plot_optimal_results_clean(
             if ax.get_legend():
                 ax.get_legend().remove()
 
-    fig.tight_layout()
+    # Add spanning title for AND subplots (middle and right)
+    # Align with OR subplot title by using the same vertical position
+    # Get final positions after manual adjustment
+    pos0 = axes[0].get_position()
+    pos1 = axes[1].get_position()
+    pos2 = axes[2].get_position()
+
+    center_x = (pos1.x0 + pos2.x1) / 2
+    # Use same y-position as OR title for horizontal alignment
+    top_y = pos0.y1 + 0.02  # Match OR title position
+
+    # Add shared AND title
+    selectivity = template_selectivities.get("AND", None)
+    if selectivity:
+        shared_title = f"AND (Sel = {selectivity:.1e})"
+    else:
+        shared_title = "AND"
+
+    fig.text(
+        center_x,
+        top_y,
+        shared_title,
+        ha="center",
+        va="bottom",
+        fontsize=font_size - 1,
+        transform=fig.transFigure,
+    )
 
     # Save plot
     print(f"Saving clean plot to {output_path} ...")
@@ -760,8 +821,6 @@ def plot_optimal_results_clean(
         plt.savefig(output_path, bbox_inches="tight")
 
     print("Clean plot saved successfully!")
-
-
 
 
 if __name__ == "__main__":
