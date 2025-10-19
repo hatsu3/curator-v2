@@ -2,7 +2,9 @@
 Memory vs latency plotting for analyzing build time and memory footprint relationships.
 """
 
+import hashlib
 import json
+import pickle
 from pathlib import Path
 from typing import Union
 
@@ -22,6 +24,41 @@ from benchmark.overall_results.plotting.recall_vs_latency import (
     preprocess_all_baselines,
 )
 from benchmark.profiler import Dataset
+
+# Cache directory for process_dataset_data results
+CACHE_DIR = Path("/tmp/curator_plot_cache")
+
+
+def get_cache_key(
+    results_dir: str, dataset_name: str, selectivity_threshold: float, target_recall: float
+) -> str:
+    """Generate cache key based on processing parameters."""
+    key_string = f"{results_dir}_{dataset_name}_{selectivity_threshold}_{target_recall}"
+    return hashlib.md5(key_string.encode()).hexdigest()
+
+
+def get_cache_path(
+    results_dir: str, dataset_name: str, selectivity_threshold: float, target_recall: float
+) -> Path:
+    """Get cache file path for process_dataset_data results."""
+    cache_key = get_cache_key(results_dir, dataset_name, selectivity_threshold, target_recall)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return CACHE_DIR / f"{dataset_name}_{cache_key}.pkl"
+
+
+def load_from_cache(cache_path: Path) -> pd.DataFrame:
+    """Load DataFrame from cache."""
+    print(f"Loading from cache: {cache_path}")
+    with open(cache_path, "rb") as f:
+        return pickle.load(f)
+
+
+def save_to_cache(df: pd.DataFrame, cache_path: Path) -> None:
+    """Save DataFrame to cache."""
+    print(f"Saving to cache: {cache_path}")
+    with open(cache_path, "wb") as f:
+        pickle.dump(df, f)
+
 
 # Dataset-specific configuration (reused from recall_vs_latency.py)
 DATASET_LABELS_PER_GROUP = {
@@ -568,15 +605,28 @@ def plot_memory_vs_latency_vs_build_time(
     # Process data for each dataset
     dataset_dataframes = {}
     for ds_name in datasets_to_process:
-        df = process_dataset_data(
-            results_dir=results_dir,
-            dataset_name=ds_name,
-            selectivity_threshold=selectivity_threshold,
-            target_recall=target_recall,
-            dataset_config=DATASET_CONFIG,
-            algorithm_dir_mapping=ALGORITHM_DIR_MAPPING,
-            short_names=SHORT_NAMES,
+        # Try to load from cache first
+        cache_path = get_cache_path(
+            str(results_dir), ds_name, selectivity_threshold, target_recall
         )
+
+        if cache_path.exists():
+            # Cache exists, load from it
+            df = load_from_cache(cache_path)
+        else:
+            # Cache doesn't exist, process data and save to cache
+            df = process_dataset_data(
+                results_dir=results_dir,
+                dataset_name=ds_name,
+                selectivity_threshold=selectivity_threshold,
+                target_recall=target_recall,
+                dataset_config=DATASET_CONFIG,
+                algorithm_dir_mapping=ALGORITHM_DIR_MAPPING,
+                short_names=SHORT_NAMES,
+            )
+            if not df.empty:
+                save_to_cache(df, cache_path)
+
         if not df.empty:
             dataset_dataframes[ds_name] = df
         print()
