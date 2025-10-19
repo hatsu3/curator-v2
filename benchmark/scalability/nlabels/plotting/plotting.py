@@ -68,6 +68,12 @@ def load_all_results(
     return all_results_df
 
 
+def load_nvec_results(results_dir: str | Path) -> pd.DataFrame:
+    return pd.concat(
+        [pd.read_csv(csv_path) for csv_path in Path(results_dir).glob("*.csv")]
+    )
+
+
 def select_best_config(
     df: pd.DataFrame, recall_threshold: float = 0.88
 ) -> pd.DataFrame:
@@ -290,7 +296,7 @@ def plot_memory_vs_nlabel_at_ax(
     )
     ax.grid(axis="y", which="major", linestyle="-", alpha=0.6)
     ax.set_xlabel("Number of Labels")
-    ax.set_ylabel("Memory Footprint (GB)")
+    ax.set_ylabel("Memory Usage (GB)")
 
 
 def plot_memory_vs_dataset_size_at_ax(
@@ -315,7 +321,7 @@ def plot_memory_vs_dataset_size_at_ax(
         if index_key in ["acorn-1", "acorn-gamma"]:
             continue
 
-        index_df = load_all_results(
+        index_df = load_nvec_results(
             Path(results_dir) / index_key / "yfcc100m-10m_test0.01" / "results"
         )
         index_df = select_best_config(index_df, recall_threshold)
@@ -461,7 +467,7 @@ def plot_memory_vs_nvec_nlabel_combined(
     marker_size: int = 6,
     line_width: float = 1.5,
 ):
-    plt.rcParams.update({"font.size": 14})
+    plt.rcParams.update({"font.size": 16})
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 3))
 
     color_map = {
@@ -521,6 +527,8 @@ def plot_memory_vs_nvec_nlabel_combined(
         bbox_to_anchor=(0.5, 1.2),
         ncols=(len(nlabel_index_keys_readable) + 1) // 2,
         fontsize="small",
+        columnspacing=0.5,
+        handletextpad=0.5,
     )
     ax1.get_legend().remove()
     ax2.get_legend().remove()
