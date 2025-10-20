@@ -45,7 +45,7 @@ class LabelABSummarizer:
         self,
         *,
         dataset_variant: str = "yfcc100m_1m",
-        dry_run: bool = True,
+        dry_run: bool = False,
     ) -> None:
         base = _variant_dir(dataset_variant)
         pairs = [

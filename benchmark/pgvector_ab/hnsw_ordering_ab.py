@@ -64,7 +64,7 @@ class HnswOrderingAB:
         ef_search: int = 64,
         dataset_cache_path: str | None = None,
         dsn: str | None = None,
-        dry_run: bool = True,
+        dry_run: bool = False,
     ) -> None:
         """Preview A/B commands and output paths for single-label runs."""
         args = SingleArgs(
