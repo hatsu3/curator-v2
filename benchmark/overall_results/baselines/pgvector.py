@@ -168,6 +168,8 @@ def exp_pgvector_single(
     strategy: str = "hnsw",
     iter_mode: str = "relaxed_order",
     schema: str = "int_array",  # int_array | boolean
+    # Limit number of label-filtered queries (optional)
+    max_queries: int | None = None,
     # IVF params
     lists: int | None = None,
     probes: int | None = None,
@@ -292,12 +294,15 @@ def exp_pgvector_single(
 
         query_results: List[List[int]] = []
         query_latencies: List[float] = []
+        processed = 0
 
         with conn.cursor() as cur:
             for vec, access_list in zip(ds.test_vecs, ds.test_mds):
                 for label in access_list:
                     if label not in ds.all_labels:
                         continue
+                    if max_queries is not None and processed >= int(max_queries):
+                        break
                     vlit = vec_to_literal(vec)
                     sql = build_sql_for_label(int(label))
                     start = time.perf_counter()
@@ -312,9 +317,12 @@ def exp_pgvector_single(
                     # Map DB ids (1-based) to 0-based train indices for recall comparison
                     ids = [int(r[0]) - 1 for r in rows]
                     query_results.append(ids)
+                    processed += 1
+                if max_queries is not None and processed >= int(max_queries):
+                    break
 
-        # Compute recall (use cached ground truth; do not recompute)
-        rec = recall(query_results, ds.ground_truth)
+        # Compute recall against the prefix of ground truth matching processed queries
+        rec = recall(query_results, ds.ground_truth[: len(query_results)])
 
         # Summarize metrics
         lat = np.array(query_latencies, dtype=float)

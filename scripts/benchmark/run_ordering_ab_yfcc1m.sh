@@ -40,6 +40,9 @@ P95_SPEEDUP_MIN=${P95_SPEEDUP_MIN:-0.05}
 PARALLEL_MAINT_WORKERS=${PARALLEL_MAINT_WORKERS:-0}
 MAINTENANCE_WORK_MEM=${MAINTENANCE_WORK_MEM:-64GB}
 
+# Optional cap on number of queries evaluated in single-label A/B
+MAX_QUERIES=${MAX_QUERIES:-}
+
 ########################################
 # CLI flags
 ########################################
@@ -49,6 +52,8 @@ while [[ $# -gt 0 ]]; do
       PARALLEL_MAINT_WORKERS="$2"; shift 2;;
     --maintenance-work-mem)
       MAINTENANCE_WORK_MEM="$2"; shift 2;;
+    --max-queries)
+      MAX_QUERIES="$2"; shift 2;;
     *) echo "[ordering_ab] Unknown argument: $1" >&2; exit 1;;
   esac
 done
@@ -131,7 +136,8 @@ python -m benchmark.pgvector_ab.hnsw_ordering_ab ab_single \
   --dsn "${DSN}" \
   --dataset_variant "${DV}" --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}" \
-  --dataset_cache_path "${DATASET_CACHE_PATH}"
+  --dataset_cache_path "${DATASET_CACHE_PATH}" \
+  ${MAX_QUERIES:+ --max_queries "${MAX_QUERIES}"}
 
 echo "[ordering_ab] Run complex predicates A/B (AND/OR)"
 python -m benchmark.pgvector_ab.hnsw_ordering_ab ab_complex \

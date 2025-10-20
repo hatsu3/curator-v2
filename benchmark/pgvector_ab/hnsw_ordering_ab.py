@@ -64,6 +64,7 @@ class HnswOrderingAB:
         ef_search: int = 64,
         dataset_cache_path: str | None = None,
         dsn: str | None = None,
+        max_queries: int | None = None,
         dry_run: bool = False,
     ) -> None:
         """Preview A/B commands and output paths for single-label runs."""
@@ -94,6 +95,8 @@ class HnswOrderingAB:
         )
         if dataset_cache_path:
             strict_cmd += f" --dataset_cache_path {dataset_cache_path}"
+        if max_queries is not None:
+            strict_cmd += f" --max_queries {int(max_queries)}"
 
         relaxed_cmd = (
             "python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single "
@@ -105,6 +108,8 @@ class HnswOrderingAB:
         )
         if dataset_cache_path:
             relaxed_cmd += f" --dataset_cache_path {dataset_cache_path}"
+        if max_queries is not None:
+            relaxed_cmd += f" --max_queries {int(max_queries)}"
 
         print("[ab][single] Planned outputs:")
         print("  ", strict_csv)
@@ -131,6 +136,7 @@ class HnswOrderingAB:
                 k=k,
                 output_path=str(strict_csv),
                 dataset_cache_path=dataset_cache_path,
+                max_queries=max_queries,
             )
             print("[ab][single] Executing relaxed_order baseline (post-sort enforced by baseline)...")
             exp_pgvector_single(
@@ -145,6 +151,7 @@ class HnswOrderingAB:
                 k=k,
                 output_path=str(relaxed_csv),
                 dataset_cache_path=dataset_cache_path,
+                max_queries=max_queries,
             )
 
     def ab_complex(
@@ -260,4 +267,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

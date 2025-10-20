@@ -34,6 +34,9 @@ IVF_LISTS=${IVF_LISTS:-4096}
 # Default probes to lists for full coverage (can override)
 IVF_PROBES=${IVF_PROBES:-${IVF_LISTS}}
 
+# Optional cap on number of queries evaluated per baseline
+MAX_QUERIES=${MAX_QUERIES:-}
+
 # Boolean label columns to materialize
 TOP_LABEL_IDS=${TOP_LABEL_IDS:-1,2,3,4,5}
 
@@ -50,6 +53,8 @@ while [[ $# -gt 0 ]]; do
       PARALLEL_MAINT_WORKERS="$2"; shift 2;;
     --maintenance-work-mem)
       MAINTENANCE_WORK_MEM="$2"; shift 2;;
+    --max-queries)
+      MAX_QUERIES="$2"; shift 2;;
     *)
       echo "[run_ab] Unknown argument: $1" >&2; exit 1;;
   esac
@@ -152,6 +157,7 @@ python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
   --iter_mode relaxed_order --schema int_array \
   --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}" \
+  ${MAX_QUERIES:+ --max_queries "${MAX_QUERIES}"} \
   --output_path output/pgvector/label_ab/yfcc100m_1m/int_array/hnsw/results.csv
 
 echo "[run_ab] Build IVF index (int_array)"
@@ -165,6 +171,7 @@ python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
   --iter_mode relaxed_order --schema int_array \
   --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --lists "${IVF_LISTS}" --probes "${IVF_PROBES}" \
+  ${MAX_QUERIES:+ --max_queries "${MAX_QUERIES}"} \
   --output_path output/pgvector/label_ab/yfcc100m_1m/int_array/ivf/results.csv
 
 echo "[run_ab] Build HNSW index (boolean)"
@@ -178,6 +185,7 @@ python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
   --iter_mode relaxed_order --schema boolean \
   --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}" \
+  ${MAX_QUERIES:+ --max_queries "${MAX_QUERIES}"} \
   --output_path output/pgvector/label_ab/yfcc100m_1m/boolean/hnsw/results.csv
 
 echo "[run_ab] Build IVF index (boolean)"
@@ -191,6 +199,7 @@ python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
   --iter_mode relaxed_order --schema boolean \
   --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --lists "${IVF_LISTS}" --probes "${IVF_PROBES}" \
+  ${MAX_QUERIES:+ --max_queries "${MAX_QUERIES}"} \
   --output_path output/pgvector/label_ab/yfcc100m_1m/boolean/ivf/results.csv
 
 ########################################
