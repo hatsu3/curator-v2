@@ -31,7 +31,8 @@ HNSW_EFS=${HNSW_EFS:-128}
 
 # IVF params
 IVF_LISTS=${IVF_LISTS:-4096}
-IVF_PROBES=${IVF_PROBES:-16}
+# Default probes to lists for full coverage (can override)
+IVF_PROBES=${IVF_PROBES:-${IVF_LISTS}}
 
 # Boolean label columns to materialize
 TOP_LABEL_IDS=${TOP_LABEL_IDS:-1,2,3,4,5}
@@ -110,7 +111,7 @@ docker exec -i "${PG_CONTAINER_NAME}" bash -lc 'set -e; if [ -f /sys/fs/cgroup/m
 
 # Enforce single-threaded build (configurable) and optional memory allocation
 echo "[run_ab] Overriding # parallel workers: max_parallel_maintenance_workers=${PARALLEL_MAINT_WORKERS}, max_parallel_workers=${PARALLEL_MAINT_WORKERS}"
-PGOPTIONS_SET="-c max_parallel_maintenance_workers=${PARALLEL_MAINT_WORKERS} -c max_parallel_workers=${PARALLEL_MAINT_WORKERS}"
+PGOPTIONS_SET="-c max_parallel_maintenance_workers=${PARALLEL_MAINT_WORKERS} -c max_parallel_workers=${PARALLEL_MAINT_WORKERS} -c hnsw.max_scan_tuples=1000000000"
 if [[ -n "${MAINTENANCE_WORK_MEM}" ]]; then
   echo "[run_ab] Overriding maintenance_work_mem: ${MAINTENANCE_WORK_MEM}"
   PGOPTIONS_SET+=" -c maintenance_work_mem=${MAINTENANCE_WORK_MEM}"

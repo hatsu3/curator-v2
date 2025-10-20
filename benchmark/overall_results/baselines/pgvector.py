@@ -194,13 +194,18 @@ def exp_pgvector_single(
     # Session GUCs
     gucs: Dict[str, object] = {}
     if strategy == "ivf":
+        # If probes not provided, default to nlist (lists) for full coverage
         if probes is not None:
-            gucs["ivfflat.probes"] = probes
+            gucs["ivfflat.probes"] = int(probes)
+        elif lists is not None:
+            gucs["ivfflat.probes"] = int(lists)
         gucs["ivfflat.iterative_scan"] = iter_mode
     elif strategy == "hnsw":
         if ef_search is not None:
             gucs["hnsw.ef_search"] = ef_search
         gucs["hnsw.iterative_scan"] = iter_mode
+        # Remove tuple scan cap to avoid early cutoffs when debugging recall
+        gucs["hnsw.max_scan_tuples"] = 1000000000
 
     if dry_run:
         if gucs:
@@ -304,7 +309,8 @@ def exp_pgvector_single(
                     rows = cur.fetchall()
                     elapsed = time.perf_counter() - start
                     query_latencies.append(elapsed)
-                    ids = [int(r[0]) for r in rows]
+                    # Map DB ids (1-based) to 0-based train indices for recall comparison
+                    ids = [int(r[0]) - 1 for r in rows]
                     query_results.append(ids)
 
         # Compute recall (use cached ground truth; do not recompute)
