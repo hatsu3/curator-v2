@@ -15,17 +15,16 @@ Notes:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable, Optional, Dict, Any
-
-import os
-import sys
-import io
-import time
-import json
 import csv
-from datetime import datetime
+import io
+import json
+import os
 import struct
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Dict, Iterable, Optional
 
 import fire
 
@@ -83,27 +82,6 @@ def _validate_copy_format(copy_format: str) -> str:
     if cf not in {"binary", "csv"}:
         raise ValueError("copy_format must be one of: binary, csv")
     return cf
-
-
-def _coerce_bool(val: Any, default: bool = False) -> bool:
-    if isinstance(val, bool):
-        return val
-    if val is None:
-        return default
-    if isinstance(val, str):
-        v = val.strip().lower()
-        if v in {"1", "true", "yes", "y", "on"}:
-            return True
-        if v in {"0", "false", "no", "n", "off"}:
-            return False
-    # Fallback: Python truthiness
-    return bool(val)
-
-
-def _coerce_optional_bool(val: Any) -> Optional[bool]:
-    if val is None:
-        return None
-    return _coerce_bool(val)
 
 
 @dataclass
@@ -173,10 +151,6 @@ class LoadDataset:
         - build_index controls post-load index timing (gin|hnsw|ivf).
         - When `dry_run=True`, prints a preview only without DB actions.
         """
-        # Coerce Fire-parsed values into robust booleans
-        dry_run = _coerce_bool(dry_run, False)
-        create_gin = _coerce_optional_bool(create_gin)
-
         args = BulkArgs(
             dsn=dsn,
             dataset=dataset,

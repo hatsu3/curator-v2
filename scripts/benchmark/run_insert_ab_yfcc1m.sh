@@ -25,10 +25,28 @@ LIMIT=${LIMIT:-50000}
 
 # HNSW params
 HNSW_M=${HNSW_M:-32}
-HNSW_EFC=${HNSW_EFC:-64}
+HNSW_EFC=${HNSW_EFC:-128}
 
 # IVF params
-IVF_LISTS=${IVF_LISTS:-200}
+IVF_LISTS=${IVF_LISTS:-4096}
+
+# Index build controls (defaults; can override via flags)
+PARALLEL_MAINT_WORKERS=${PARALLEL_MAINT_WORKERS:-0}
+MAINTENANCE_WORK_MEM=${MAINTENANCE_WORK_MEM:-64GB}
+
+########################################
+# CLI flags (overriding defaults)
+########################################
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --parallel-maint-workers)
+      PARALLEL_MAINT_WORKERS="$2"; shift 2;;
+    --maintenance-work-mem)
+      MAINTENANCE_WORK_MEM="$2"; shift 2;;
+    *)
+      echo "[run_insert_ab] Unknown argument: $1" >&2; exit 1;;
+  esac
+done
 
 ########################################
 # Conda env activation
@@ -65,7 +83,10 @@ CREATE EXTENSION IF NOT EXISTS vector;
 SQL
 echo "[run_insert_ab] Database curator_bench reset; extension 'vector' ensured"
 
-# Show DB defaults (note: build sessions use PGOPTIONS overrides)
+########################################
+# Show DB settings, container resources
+# Override default configurations
+########################################
 mwm=$(docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -d curator_bench -qAtX -c "SHOW maintenance_work_mem;" 2>/dev/null | tr -d '\r' || true)
 pmw=$(docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -d curator_bench -qAtX -c "SHOW max_parallel_maintenance_workers;" 2>/dev/null | tr -d '\r' || true)
 mpw=$(docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -d curator_bench -qAtX -c "SHOW max_parallel_workers;" 2>/dev/null | tr -d '\r' || true)
@@ -73,22 +94,24 @@ echo "[run_insert_ab] DB defaults (curator_bench): maintenance_work_mem=${mwm}, 
 echo "[run_insert_ab] Container resources (cgroups):"
 docker exec -i "${PG_CONTAINER_NAME}" bash -lc 'set -e; if [ -f /sys/fs/cgroup/memory.max ]; then echo mem.max=$(cat /sys/fs/cgroup/memory.max); else echo mem.limit=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo unknown); fi; if [ -f /sys/fs/cgroup/cpu.max ]; then echo cpu.max=$(cat /sys/fs/cgroup/cpu.max); else echo cpu.cfs_quota_us=$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us 2>/dev/null || echo unknown); fi' || true
 
-# Helper: drop 'items' so each run can recreate with LOGGED/UNLOGGED as needed
-drop_items() {
-  docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -q -X -v ON_ERROR_STOP=1 -d curator_bench <<'SQL'
-\set QUIET on
-DROP TABLE IF EXISTS items CASCADE;
-SQL
-}
-
 # Force single-threaded index builds (configurable) and optional memory allocation
-PARALLEL_MAINT_WORKERS=${PARALLEL_MAINT_WORKERS:-0}
-MAINTENANCE_WORK_MEM=${MAINTENANCE_WORK_MEM:-64GB}
+echo "[run_insert_ab] Overriding # parallel workers: max_parallel_maintenance_workers=${PARALLEL_MAINT_WORKERS}, max_parallel_workers=${PARALLEL_MAINT_WORKERS}"
 PGOPTIONS_SET="-c max_parallel_maintenance_workers=${PARALLEL_MAINT_WORKERS} -c max_parallel_workers=${PARALLEL_MAINT_WORKERS}"
 if [[ -n "${MAINTENANCE_WORK_MEM}" ]]; then
+  echo "[run_insert_ab] Overriding maintenance_work_mem: ${MAINTENANCE_WORK_MEM}"
   PGOPTIONS_SET+=" -c maintenance_work_mem=${MAINTENANCE_WORK_MEM}"
 fi
 export PGOPTIONS="${PGOPTIONS:-} ${PGOPTIONS_SET}"
+
+# Helper: drop 'items' so each run can recreate with LOGGED/UNLOGGED as needed
+# Suppress warnings during DROP TABLE (first invocation warns about table not existing)
+drop_items() {
+  docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -q -X -v ON_ERROR_STOP=1 -d curator_bench <<'SQL'
+\set QUIET on
+SET client_min_messages = WARNING;
+DROP TABLE IF EXISTS items CASCADE;
+SQL
+}
 
 ########################################
 # Durable runs (LOGGED + synchronous_commit=on)
@@ -98,21 +121,21 @@ drop_items
 python -m scripts.pgvector.load_dataset insert_bench \
   --dsn "${DSN}" --dataset "${DATASET}" --dataset_key "${DATASET_KEY}" \
   --dim "${DIM}" --test_size "${TEST_SIZE}" --strategy hnsw \
-  --m "${HNSW_M}" --efc "${HNSW_EFC}" --limit "${LIMIT}" --dry_run false
+  --m "${HNSW_M}" --efc "${HNSW_EFC}" --limit "${LIMIT}"
 
 echo "[run_insert_ab] IVF durable (seed then build)"
 drop_items
 python -m scripts.pgvector.load_dataset insert_bench \
   --dsn "${DSN}" --dataset "${DATASET}" --dataset_key "${DATASET_KEY}" \
   --dim "${DIM}" --test_size "${TEST_SIZE}" --strategy ivf \
-  --lists "${IVF_LISTS}" --limit "${LIMIT}" --dry_run false
+  --lists "${IVF_LISTS}" --limit "${LIMIT}"
 
 echo "[run_insert_ab] Prefilter durable (GIN-only)"
 drop_items
 python -m scripts.pgvector.load_dataset insert_bench \
   --dsn "${DSN}" --dataset "${DATASET}" --dataset_key "${DATASET_KEY}" \
   --dim "${DIM}" --test_size "${TEST_SIZE}" --strategy prefilter \
-  --limit "${LIMIT}" --dry_run false
+  --limit "${LIMIT}"
 
 ########################################
 # Non-durable runs (UNLOGGED)
@@ -122,21 +145,21 @@ drop_items
 python -m scripts.pgvector.load_dataset insert_bench \
   --dsn "${DSN}" --dataset "${DATASET}" --dataset_key "${DATASET_KEY}" \
   --dim "${DIM}" --test_size "${TEST_SIZE}" --strategy hnsw \
-  --m "${HNSW_M}" --efc "${HNSW_EFC}" --unlogged true --limit "${LIMIT}" --dry_run false
+  --m "${HNSW_M}" --efc "${HNSW_EFC}" --unlogged true --limit "${LIMIT}" 
 
 echo "[run_insert_ab] IVF non-durable (UNLOGGED; seed then build)"
 drop_items
 python -m scripts.pgvector.load_dataset insert_bench \
   --dsn "${DSN}" --dataset "${DATASET}" --dataset_key "${DATASET_KEY}" \
   --dim "${DIM}" --test_size "${TEST_SIZE}" --strategy ivf \
-  --lists "${IVF_LISTS}" --unlogged true --limit "${LIMIT}" --dry_run false
+  --lists "${IVF_LISTS}" --unlogged true --limit "${LIMIT}"
 
 echo "[run_insert_ab] Prefilter non-durable (UNLOGGED)"
 drop_items
 python -m scripts.pgvector.load_dataset insert_bench \
   --dsn "${DSN}" --dataset "${DATASET}" --dataset_key "${DATASET_KEY}" \
   --dim "${DIM}" --test_size "${TEST_SIZE}" --strategy prefilter \
-  --unlogged true --limit "${LIMIT}" --dry_run false
+  --unlogged true --limit "${LIMIT}"
 
 ########################################
 # Aggregate summary from A/B artifacts

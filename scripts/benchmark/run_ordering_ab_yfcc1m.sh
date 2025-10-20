@@ -26,8 +26,8 @@ K=${K:-10}
 
 # HNSW params
 HNSW_M=${HNSW_M:-32}
-HNSW_EFC=${HNSW_EFC:-64}
-HNSW_EFS=${HNSW_EFS:-64}
+HNSW_EFC=${HNSW_EFC:-128}
+HNSW_EFS=${HNSW_EFS:-128}
 
 # Dataset cache (optional, used by single-label baseline)
 DATASET_CACHE_PATH=${DATASET_CACHE_PATH:-data/cache}
@@ -35,6 +35,23 @@ DATASET_CACHE_PATH=${DATASET_CACHE_PATH:-data/cache}
 # Summary thresholds
 RECALL_TOL=${RECALL_TOL:-0.001}
 P95_SPEEDUP_MIN=${P95_SPEEDUP_MIN:-0.05}
+
+# Index build controls (defaults; can override via flags)
+PARALLEL_MAINT_WORKERS=${PARALLEL_MAINT_WORKERS:-0}
+MAINTENANCE_WORK_MEM=${MAINTENANCE_WORK_MEM:-64GB}
+
+########################################
+# CLI flags
+########################################
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --parallel-maint-workers)
+      PARALLEL_MAINT_WORKERS="$2"; shift 2;;
+    --maintenance-work-mem)
+      MAINTENANCE_WORK_MEM="$2"; shift 2;;
+    *) echo "[ordering_ab] Unknown argument: $1" >&2; exit 1;;
+  esac
+done
 
 ########################################
 # Conda env activation
@@ -80,6 +97,15 @@ echo "[ordering_ab] DB defaults: maintenance_work_mem=$mwm, max_parallel_mainten
 echo "[ordering_ab] Container resources (cgroups):"
 docker exec -i "${PG_CONTAINER_NAME}" bash -lc 'set -e; if [ -f /sys/fs/cgroup/memory.max ]; then echo mem.max=$(cat /sys/fs/cgroup/memory.max); else echo mem.limit=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo unknown); fi; if [ -f /sys/fs/cgroup/cpu.max ]; then echo cpu.max=$(cat /sys/fs/cgroup/cpu.max); else echo cpu.cfs_quota_us=$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us 2>/dev/null || echo unknown); fi' || true
 
+# Force single-threaded build (configurable) and optional memory allocation
+echo "[ordering_ab] Overriding # parallel workers: max_parallel_maintenance_workers=${PARALLEL_MAINT_WORKERS}, max_parallel_workers=${PARALLEL_MAINT_WORKERS}"
+PGOPTIONS_SET="-c max_parallel_maintenance_workers=${PARALLEL_MAINT_WORKERS} -c max_parallel_workers=${PARALLEL_MAINT_WORKERS}"
+if [[ -n "${MAINTENANCE_WORK_MEM}" ]]; then
+  echo "[ordering_ab] Overriding maintenance_work_mem: ${MAINTENANCE_WORK_MEM}"
+  PGOPTIONS_SET+=" -c maintenance_work_mem=${MAINTENANCE_WORK_MEM}"
+fi
+export PGOPTIONS="${PGOPTIONS:-} ${PGOPTIONS_SET}"
+
 ########################################
 # Bulk load dataset and build GIN(tags)
 ########################################
@@ -87,18 +113,12 @@ echo "[ordering_ab] Bulk load and build GIN(tags)"
 python -m scripts.pgvector.load_dataset bulk \
   --dsn "${DSN}" \
   --dataset yfcc100m --dataset_key "${DATASET_KEY}" --dim "${DIM}" --test_size "${TEST_SIZE}" \
-  --copy_format csv --build_index gin --dry_run false
+  --copy_format csv --build_index gin
 
 ########################################
 # Build HNSW index (required for A/B)
 ########################################
 echo "[ordering_ab] Build HNSW index"
-# Force single-threaded build (configurable) and optional memory allocation
-PGOPTIONS_SET="-c max_parallel_maintenance_workers=${PARALLEL_MAINT_WORKERS} -c max_parallel_workers=${PARALLEL_MAINT_WORKERS}"
-if [[ -n "${MAINTENANCE_WORK_MEM}" ]]; then
-  PGOPTIONS_SET+=" -c maintenance_work_mem=${MAINTENANCE_WORK_MEM}"
-fi
-export PGOPTIONS="${PGOPTIONS:-} ${PGOPTIONS_SET}"
 python -m scripts.pgvector.setup_db create_index \
   --dsn "${DSN}" --index hnsw --m "${HNSW_M}" --efc "${HNSW_EFC}" --dim "${DIM}"
 
@@ -111,36 +131,20 @@ python -m benchmark.pgvector_ab.hnsw_ordering_ab ab_single \
   --dsn "${DSN}" \
   --dataset_variant "${DV}" --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}" \
-  --dataset_cache_path "${DATASET_CACHE_PATH}" --dry_run false
+  --dataset_cache_path "${DATASET_CACHE_PATH}"
 
 echo "[ordering_ab] Run complex predicates A/B (AND/OR)"
 python -m benchmark.pgvector_ab.hnsw_ordering_ab ab_complex \
   --dsn "${DSN}" \
   --dataset_variant "${DV}" --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}" \
-  --n_filters_per_template 50 --n_queries_per_filter 100 --dry_run false
+  --n_filters_per_template 50 --n_queries_per_filter 100
 
 ########################################
 # Summarize and recommend
 ########################################
 echo "[ordering_ab] Summarize results and emit recommendation"
 python -m benchmark.pgvector_ab.summarize_ordering_ab run \
-  --dataset_variant "${DV}" --recall_tolerance "${RECALL_TOL}" --p95_speedup_min "${P95_SPEEDUP_MIN}" --write_json true
+  --dataset_variant "${DV}" --recall_tolerance "${RECALL_TOL}" --p95_speedup_min "${P95_SPEEDUP_MIN}" --write_json
 
 echo "[ordering_ab] DONE. See outputs under output/pgvector/hnsw_ordering_ab/${DV}/"
-# Index build controls
-PARALLEL_MAINT_WORKERS=${PARALLEL_MAINT_WORKERS:-0}
-MAINTENANCE_WORK_MEM=${MAINTENANCE_WORK_MEM:-64GB}
-
-########################################
-# CLI flags
-########################################
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --parallel-maint-workers)
-      PARALLEL_MAINT_WORKERS="$2"; shift 2;;
-    --maintenance-work-mem)
-      MAINTENANCE_WORK_MEM="$2"; shift 2;;
-    *) echo "[ordering_ab] Unknown argument: $1" >&2; exit 1;;
-  esac
-done
