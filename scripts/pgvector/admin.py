@@ -13,14 +13,14 @@ where supported.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
-from typing import Any, Dict, Optional, Iterable, Sequence
 import csv
 import json
 import os
 import sys
-from datetime import datetime
 import time
+from dataclasses import asdict, dataclass
+from datetime import datetime
+from typing import Any, Dict, Iterable, Optional, Sequence
 
 
 def _warn(msg: str) -> None:
@@ -65,7 +65,7 @@ def _emit_json_csv(
         os.makedirs(os.path.dirname(output_json), exist_ok=True)
         with open(output_json, "w", encoding="utf-8") as f:
             json.dump(asdict(result), f, indent=2, sort_keys=True)
-        print(f"[pgvector] wrote {output_json}")
+        print(f"[pgvector] Wrote {output_json}")
     if output_csv:
         os.makedirs(os.path.dirname(output_csv), exist_ok=True)
         row = asdict(result)
@@ -85,7 +85,7 @@ def _emit_json_csv(
             if write_header:
                 writer.writeheader()
             writer.writerow(flat_row)
-        print(f"[pgvector] appended {output_csv}")
+        print(f"[pgvector] Appended to {output_csv}")
 
 
 def get_relation_size(dsn: str, relname: str) -> int:
@@ -157,10 +157,12 @@ def create_all_boolean_labels(
     """Create boolean columns for all distinct labels in items.tags and backfill.
 
     This procedure:
-      1) Adds columns `label_<id> boolean DEFAULT false` for every distinct label id in items.tags
-      2) Backfills each column by setting TRUE where the label is present in tags
+      1) Discovers all distinct label IDs from items.tags
+      2) Adds columns `label_<id> boolean DEFAULT false` for each ID
+      3) Backfills each column to TRUE where the label is present in tags
 
-    Use with care: this may add many columns (up to the Postgres column limit ~1600).
+    The implementation deliberately separates label discovery from DDL/DML to
+    avoid ALTER TABLE while the table is being scanned in the same session.
     """
     plan_note = (
         "[pgvector] Plan: add boolean columns for all distinct labels in items.tags, "
@@ -177,34 +179,24 @@ def create_all_boolean_labels(
         _warn(f"psycopg2 not available: {e}")
         raise
 
-    ddl_block = (
-        "DO $$ DECLARE r record; BEGIN "
-        "FOR r IN SELECT DISTINCT unnest(tags) AS lid FROM items LOOP "
-        "EXECUTE format('ALTER TABLE items ADD COLUMN IF NOT EXISTS label_%s boolean DEFAULT false', r.lid); "
-        "END LOOP; END $$;"
-    )
-    dml_block = (
-        "SET LOCAL synchronous_commit = off; "
-        "DO $$ DECLARE r record; BEGIN "
-        "FOR r IN SELECT DISTINCT unnest(tags) AS lid FROM items LOOP "
-        "EXECUTE format('UPDATE items SET label_%s = TRUE WHERE %s = ANY(tags)', r.lid, r.lid); "
-        "END LOOP; END $$;"
-    )
-
     conn = psycopg2.connect(dsn)
     try:
         conn.autocommit = True
+        # Phase 1: discover labels and close the query before any DDL
         with conn.cursor() as cur:
-            # Count labels for progress info
-            cur.execute("SELECT count(*) FROM (SELECT DISTINCT unnest(tags) FROM items) t;")
-            nlabels = int(cur.fetchone()[0])
-        print(f"[pgvector] Distinct labels found: {nlabels}")
-        with conn.cursor() as cur:
-            cur.execute(ddl_block)
-        with conn.cursor() as cur:
-            cur.execute("BEGIN;")
-            cur.execute(dml_block)
-            cur.execute("COMMIT;")
+            cur.execute("SELECT DISTINCT unnest(tags) AS lid FROM items ORDER BY lid;")
+            lids = [int(row[0]) for row in cur.fetchall()]
+        print(f"[pgvector] Distinct labels found: {len(lids)}")
+
+        if not lids:
+            print("[pgvector] No labels found; nothing to do.")
+            return
+
+        # Phase 2: add columns outside of any active scan
+        _add_boolean_label_columns(conn, lids)
+
+        # Phase 3: backfill values, then analyze
+        _backfill_boolean_labels_from_tags(conn, lids)
         with conn.cursor() as cur:
             cur.execute("ANALYZE items;")
     finally:

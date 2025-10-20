@@ -125,55 +125,71 @@ echo "[run_ab] Bulk load into INT[] DB with GIN build timing"
 python -m scripts.pgvector.load_dataset bulk \
   --dsn "${DSN_INT}" \
   --dataset yfcc100m --dataset_key "${DATASET_KEY}" --dim "${DIM}" --test_size "${TEST_SIZE}" \
-  --copy_format csv --build_index gin --dry_run false
+  --copy_format csv --build_index gin
 
 echo "[run_ab] Bulk load into BOOLEAN DB (no GIN)"
 python -m scripts.pgvector.load_dataset bulk \
   --dsn "${DSN_BOOL}" \
   --dataset yfcc100m --dataset_key "${DATASET_KEY}" --dim "${DIM}" --test_size "${TEST_SIZE}" \
-  --copy_format csv --create_gin false --dry_run false
+  --copy_format csv
 
-echo "[run_ab] Add boolean label columns and backfill: ${TOP_LABEL_IDS}"
-python -m scripts.pgvector.setup_db create_schema \
-  --dsn "${DSN_BOOL}" --dim "${DIM}" --schema boolean --label_ids "${TOP_LABEL_IDS}" --dry_run false
+echo "[run_ab] Add boolean label columns and backfill: ALL labels"
+python -m scripts.pgvector.setup_db create_all_boolean_labels \
+  --dsn "${DSN_BOOL}"
 
 ########################################
 # Run baselines (HNSW first, then IVF) to avoid index isolation drops
 ########################################
 echo "[run_ab] Build HNSW index (int_array)"
-python -m scripts.pgvector.setup_db create_index --dsn "${DSN_INT}" --index hnsw --m "${HNSW_M}" --efc "${HNSW_EFC}" --dim "${DIM}"
+python -m scripts.pgvector.setup_db create_index \
+  --dsn "${DSN_INT}" --index hnsw \
+  --m "${HNSW_M}" --efc "${HNSW_EFC}" --dim "${DIM}"
 
 echo "[run_ab] Run baselines: int_array + hnsw"
 python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
-  --dsn "${DSN_INT}" --strategy hnsw --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}" \
-  --iter_mode relaxed_order --schema int_array --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
+  --dsn "${DSN_INT}" --strategy hnsw \
+  --iter_mode relaxed_order --schema int_array \
+  --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
+  --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}" \
   --output_path output/pgvector/label_ab/yfcc100m_1m/int_array/hnsw/results.csv
 
 echo "[run_ab] Build IVF index (int_array)"
-python -m scripts.pgvector.setup_db create_index --dsn "${DSN_INT}" --index ivf --lists "${IVF_LISTS}" --dim "${DIM}"
+python -m scripts.pgvector.setup_db create_index \
+  --dsn "${DSN_INT}" --index ivf \
+  --lists "${IVF_LISTS}" --dim "${DIM}"
 
 echo "[run_ab] Run baselines: int_array + ivf"
 python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
-  --dsn "${DSN_INT}" --strategy ivf --lists "${IVF_LISTS}" --probes "${IVF_PROBES}" \
-  --iter_mode relaxed_order --schema int_array --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
+  --dsn "${DSN_INT}" --strategy ivf \
+  --iter_mode relaxed_order --schema int_array \
+  --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
+  --lists "${IVF_LISTS}" --probes "${IVF_PROBES}" \
   --output_path output/pgvector/label_ab/yfcc100m_1m/int_array/ivf/results.csv
 
 echo "[run_ab] Build HNSW index (boolean)"
-python -m scripts.pgvector.setup_db create_index --dsn "${DSN_BOOL}" --index hnsw --m "${HNSW_M}" --efc "${HNSW_EFC}" --dim "${DIM}"
+python -m scripts.pgvector.setup_db create_index \
+  --dsn "${DSN_BOOL}" --index hnsw \
+  --m "${HNSW_M}" --efc "${HNSW_EFC}" --dim "${DIM}"
 
 echo "[run_ab] Run baselines: boolean + hnsw"
 python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
-  --dsn "${DSN_BOOL}" --strategy hnsw --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}" \
-  --iter_mode relaxed_order --schema boolean --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
+  --dsn "${DSN_BOOL}" --strategy hnsw \
+  --iter_mode relaxed_order --schema boolean \
+  --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
+  --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}" \
   --output_path output/pgvector/label_ab/yfcc100m_1m/boolean/hnsw/results.csv
 
 echo "[run_ab] Build IVF index (boolean)"
-python -m scripts.pgvector.setup_db create_index --dsn "${DSN_BOOL}" --index ivf --lists "${IVF_LISTS}" --dim "${DIM}"
+python -m scripts.pgvector.setup_db create_index \
+  --dsn "${DSN_BOOL}" --index ivf \
+  --lists "${IVF_LISTS}" --dim "${DIM}"
 
 echo "[run_ab] Run baselines: boolean + ivf"
 python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
-  --dsn "${DSN_BOOL}" --strategy ivf --lists "${IVF_LISTS}" --probes "${IVF_PROBES}" \
-  --iter_mode relaxed_order --schema boolean --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
+  --dsn "${DSN_BOOL}" --strategy ivf \
+  --iter_mode relaxed_order --schema boolean \
+  --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
+  --lists "${IVF_LISTS}" --probes "${IVF_PROBES}" \
   --output_path output/pgvector/label_ab/yfcc100m_1m/boolean/ivf/results.csv
 
 ########################################
@@ -183,10 +199,10 @@ echo "[run_ab] Collect storage metrics"
 python -m benchmark.pgvector_ab.label_model_ab run \
   --dsn_int "${DSN_INT}" --dsn_bool "${DSN_BOOL}" \
   --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
-  --lists "${IVF_LISTS}" --probes "${IVF_PROBES}" --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}" \
-  --dry_run false
+  --lists "${IVF_LISTS}" --probes "${IVF_PROBES}" \
+  --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}"
 
 echo "[run_ab] Summarize A/B results"
-python -m benchmark.pgvector_ab.summarize_label_ab summarize --dataset_variant yfcc100m_1m --dry_run false
+python -m benchmark.pgvector_ab.summarize_label_ab summarize --dataset_variant yfcc100m_1m
 
 echo "[run_ab] DONE. See outputs under output/pgvector/label_ab/yfcc100m_1m/"
