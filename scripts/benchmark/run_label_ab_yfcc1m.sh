@@ -152,13 +152,14 @@ python -m scripts.pgvector.setup_db create_index \
   --m "${HNSW_M}" --efc "${HNSW_EFC}" --dim "${DIM}"
 
 echo "[run_ab] Run baselines: int_array + hnsw"
-python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
+cmd=(python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
   --dsn "${DSN_INT}" --strategy hnsw \
   --iter_mode relaxed_order --schema int_array \
   --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}" \
-  ${MAX_QUERIES:+ --max_queries "${MAX_QUERIES}"} \
-  --output_path output/pgvector/label_ab/yfcc100m_1m/int_array/hnsw/results.csv
+  --output_path output/pgvector/label_ab/yfcc100m_1m/int_array/hnsw/results.csv)
+if [[ -n "${MAX_QUERIES}" ]]; then cmd+=(--max_queries "${MAX_QUERIES}"); fi
+"${cmd[@]}"
 
 echo "[run_ab] Build IVF index (int_array)"
 python -m scripts.pgvector.setup_db create_index \
@@ -166,13 +167,14 @@ python -m scripts.pgvector.setup_db create_index \
   --lists "${IVF_LISTS}" --dim "${DIM}"
 
 echo "[run_ab] Run baselines: int_array + ivf"
-python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
+cmd=(python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
   --dsn "${DSN_INT}" --strategy ivf \
   --iter_mode relaxed_order --schema int_array \
   --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --lists "${IVF_LISTS}" --probes "${IVF_PROBES}" \
-  ${MAX_QUERIES:+ --max_queries "${MAX_QUERIES}"} \
-  --output_path output/pgvector/label_ab/yfcc100m_1m/int_array/ivf/results.csv
+  --output_path output/pgvector/label_ab/yfcc100m_1m/int_array/ivf/results.csv)
+if [[ -n "${MAX_QUERIES}" ]]; then cmd+=(--max_queries "${MAX_QUERIES}"); fi
+"${cmd[@]}"
 
 echo "[run_ab] Build HNSW index (boolean)"
 python -m scripts.pgvector.setup_db create_index \
@@ -180,13 +182,14 @@ python -m scripts.pgvector.setup_db create_index \
   --m "${HNSW_M}" --efc "${HNSW_EFC}" --dim "${DIM}"
 
 echo "[run_ab] Run baselines: boolean + hnsw"
-python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
+cmd=(python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
   --dsn "${DSN_BOOL}" --strategy hnsw \
   --iter_mode relaxed_order --schema boolean \
   --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}" \
-  ${MAX_QUERIES:+ --max_queries "${MAX_QUERIES}"} \
-  --output_path output/pgvector/label_ab/yfcc100m_1m/boolean/hnsw/results.csv
+  --output_path output/pgvector/label_ab/yfcc100m_1m/boolean/hnsw/results.csv)
+if [[ -n "${MAX_QUERIES}" ]]; then cmd+=(--max_queries "${MAX_QUERIES}"); fi
+"${cmd[@]}"
 
 echo "[run_ab] Build IVF index (boolean)"
 python -m scripts.pgvector.setup_db create_index \
@@ -194,13 +197,14 @@ python -m scripts.pgvector.setup_db create_index \
   --lists "${IVF_LISTS}" --dim "${DIM}"
 
 echo "[run_ab] Run baselines: boolean + ivf"
-python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
+cmd=(python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
   --dsn "${DSN_BOOL}" --strategy ivf \
   --iter_mode relaxed_order --schema boolean \
   --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --lists "${IVF_LISTS}" --probes "${IVF_PROBES}" \
-  ${MAX_QUERIES:+ --max_queries "${MAX_QUERIES}"} \
-  --output_path output/pgvector/label_ab/yfcc100m_1m/boolean/ivf/results.csv
+  --output_path output/pgvector/label_ab/yfcc100m_1m/boolean/ivf/results.csv)
+if [[ -n "${MAX_QUERIES}" ]]; then cmd+=(--max_queries "${MAX_QUERIES}"); fi
+"${cmd[@]}"
 
 ########################################
 # Storage metrics and summary

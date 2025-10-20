@@ -132,12 +132,13 @@ python -m scripts.pgvector.setup_db create_index \
 ########################################
 DV=yfcc100m_1m
 echo "[ordering_ab] Run single-label A/B (strict vs relaxed)"
-python -m benchmark.pgvector_ab.hnsw_ordering_ab ab_single \
+cmd=(python -m benchmark.pgvector_ab.hnsw_ordering_ab ab_single \
   --dsn "${DSN}" \
   --dataset_variant "${DV}" --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}" \
-  --dataset_cache_path "${DATASET_CACHE_PATH}" \
-  ${MAX_QUERIES:+ --max_queries "${MAX_QUERIES}"}
+  --dataset_cache_path "${DATASET_CACHE_PATH}")
+if [[ -n "${MAX_QUERIES}" ]]; then cmd+=(--max_queries "${MAX_QUERIES}"); fi
+"${cmd[@]}"
 
 echo "[ordering_ab] Run complex predicates A/B (AND/OR)"
 python -m benchmark.pgvector_ab.hnsw_ordering_ab ab_complex \
