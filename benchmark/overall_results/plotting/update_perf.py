@@ -14,7 +14,7 @@ import seaborn as sns
 # NOTE: Both delete_lat_avg and revoke_access_lat_avg are loaded from previous results
 # because vector deletion is currently disabled in the unified_curator branch
 CURATOR_DELETION_PATHS = {
-    "YFCC100M": "output/overall_results/curator/yfcc100m-10m_test0.001/results/nlist32_sl256.csv",
+    "YFCC-10M": "output/overall_results/curator/yfcc100m-10m_test0.001/results/nlist32_sl256.csv",
     "arXiv": "output/overall_results/curator/arxiv-large-10_test0.005/results/nlist32_sl256.csv",
 }
 
@@ -22,7 +22,7 @@ CURATOR_DELETION_PATHS = {
 # NOTE: Shared IVF results are missing for YFCC100M in the new results, so we use old results
 # This should be updated when new results are available
 SHARED_IVF_FALLBACK_PATHS = {
-    "YFCC100M": "output/overall_results/shared_ivf/yfcc100m-10m_test0.001/results/nlist32768_nprobe32.csv",
+    "YFCC-10M": "output/overall_results/shared_ivf/yfcc100m-10m_test0.001/results/nlist32768_nprobe32.csv",
 }
 
 
@@ -52,7 +52,7 @@ def load_algorithm_update_performance(
     # Special handling for Shared IVF on YFCC100M - use old results if new ones are missing
     if (
         algorithm == "shared_ivf"
-        and dataset_display_name == "YFCC100M"
+        and dataset_display_name == "YFCC-10M"
         and dataset_display_name in SHARED_IVF_FALLBACK_PATHS
     ):
         fallback_path = SHARED_IVF_FALLBACK_PATHS[dataset_display_name]
@@ -156,7 +156,7 @@ def load_update_performance_results(
         "yfcc100m": {
             "dataset_key": "yfcc100m-10m",
             "test_size": 0.001,
-            "display_name": "YFCC100M",
+            "display_name": "YFCC-10M",
         },
         "arxiv": {
             "dataset_key": "arxiv-large-10",
@@ -325,7 +325,7 @@ def plot_update_results(
     )
 
     # Convert dataset names to display names
-    dataset_display_mapping = {"yfcc100m": "YFCC100M", "arxiv": "arXiv"}
+    dataset_display_mapping = {"yfcc100m": "YFCC-10M", "arxiv": "arXiv"}
     dataset_display_names = [dataset_display_mapping[d] for d in datasets]
 
     # Define the desired ordering of baselines (same as original script)

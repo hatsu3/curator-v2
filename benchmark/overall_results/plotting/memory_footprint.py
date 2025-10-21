@@ -84,7 +84,7 @@ def load_memory_footprint_results(
         "yfcc100m": {
             "dataset_key": "yfcc100m-10m",
             "test_size": 0.001,
-            "display_name": "YFCC100M",
+            "display_name": "YFCC-10M",
         },
         "arxiv": {
             "dataset_key": "arxiv-large-10",
@@ -192,12 +192,12 @@ def plot_memory_footprint(
     )
 
     # Convert dataset names to display names
-    dataset_display_mapping = {"yfcc100m": "YFCC100M", "arxiv": "arXiv"}
+    dataset_display_mapping = {"yfcc100m": "YFCC-10M", "arxiv": "arXiv"}
     dataset_display_names = [dataset_display_mapping[d] for d in datasets]
 
     # Dataset specifications for vector size calculation
     dataset_specs = {
-        "YFCC100M": {
+        "YFCC-10M": {
             "num_vectors": 10_000_000 * (1 - 0.001),  # 10M vectors
             "dimensions": 192,  # dimensions
             "bytes_per_float": 4,  # float32

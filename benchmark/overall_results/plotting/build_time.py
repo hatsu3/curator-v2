@@ -172,7 +172,7 @@ def load_build_time_results(
         "yfcc100m": {
             "dataset_key": "yfcc100m-10m",
             "test_size": 0.001,
-            "display_name": "YFCC100M",
+            "display_name": "YFCC-10M",
             "info": {
                 "num_vecs": int(10_000_000 * (1 - 0.001)),  # 9,990,000
                 "num_mds": 55293233,
@@ -287,7 +287,7 @@ def plot_construction_time(
     )
 
     # Convert dataset names to display names
-    dataset_display_mapping = {"yfcc100m": "YFCC100M", "arxiv": "arXiv"}
+    dataset_display_mapping = {"yfcc100m": "YFCC-10M", "arxiv": "arXiv"}
     dataset_display_names = [dataset_display_mapping[d] for d in datasets]
 
     # Define the desired ordering of baselines (same as original script)
