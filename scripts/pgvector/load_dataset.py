@@ -27,6 +27,8 @@ from datetime import datetime
 from typing import Any, Dict, Iterable, Optional
 
 import fire
+import numpy as np
+import psycopg2
 
 from dataset import get_dataset, get_metadata
 from scripts.pgvector import admin
@@ -128,9 +130,9 @@ class LoadDataset:
         *,
         dsn: str | None = None,
         dataset: str = "yfcc100m",  # yfcc100m | arxiv
-        dataset_key: str = "yfcc100m-10m",
+        dataset_key: str = "yfcc100m",
         dim: int = 192,
-        test_size: float = 0.001,
+        test_size: float = 0.01,
         copy_format: str = "binary",  # binary | csv
         create_gin: bool | None = None,
         unlogged: bool = False,
@@ -200,7 +202,9 @@ class LoadDataset:
             print("  ", build_csv)
 
         if args.dry_run:
-            print("[pgvector] Dry-run: preview only. COPY and CREATE INDEX not executed.")
+            print(
+                "[pgvector] Dry-run: preview only. COPY and CREATE INDEX not executed."
+            )
             return
 
         # Real execution path: create schema (optionally without GIN), COPY rows, ANALYZE, and build index if requested.
@@ -218,7 +222,9 @@ class LoadDataset:
         )
 
         # Load train split vectors and metadata
-        train_vecs, _test_vecs, _meta = get_dataset(args.dataset, test_size=args.test_size)
+        train_vecs, _test_vecs, _meta = get_dataset(
+            args.dataset, test_size=args.test_size
+        )
         train_mds, _test_mds = get_metadata(
             synthesized=False, dataset_name=args.dataset, test_size=args.test_size
         )
@@ -232,8 +238,6 @@ class LoadDataset:
             n_rows = min(n_rows, int(args.limit))
 
         # Session settings
-        import psycopg2  # type: ignore
-
         dsn_resolved = _resolve_dsn(args.dsn)
         conn = psycopg2.connect(dsn_resolved)
         try:
@@ -322,13 +326,20 @@ class LoadDataset:
                         # flush periodically to avoid large memory
                         if written % 100000 == 0:
                             buf.seek(0)
-                            cur.copy_from(buf, "items", columns=("id", "embedding", "tags"), sep="\t")
+                            cur.copy_from(
+                                buf,
+                                "items",
+                                columns=("id", "embedding", "tags"),
+                                sep="\t",
+                            )
                             buf.close()
                             buf = io.StringIO()
                     # flush remainder
                     buf.seek(0)
                     if written > 0:
-                        cur.copy_from(buf, "items", columns=("id", "embedding", "tags"), sep="\t")
+                        cur.copy_from(
+                            buf, "items", columns=("id", "embedding", "tags"), sep="\t"
+                        )
                 buf.close()
 
             # Analyze table for realistic planner stats
@@ -361,21 +372,21 @@ class LoadDataset:
         *,
         dsn: str | None = None,
         dataset: str = "yfcc100m",
-        dataset_key: str = "yfcc100m-10m",
+        dataset_key: str = "yfcc100m",
         dim: int = 192,
-        test_size: float = 0.001,
+        test_size: float = 0.01,
         strategy: str = "hnsw",  # prefilter | hnsw | ivf
         unlogged: bool = False,
         sync_commit_off: bool = False,
-        # Optional knobs (not used in skeleton execution)
+        # Optional knobs
         m: int | None = None,
         efc: int | None = None,
         ef_search: int | None = None,
         lists: int | None = None,
         limit: int | None = None,
         # IVF training seed controls
-        ivf_seed_frac: float = 0.1,
-        seed_copy_format: str = "binary",  # binary | csv (binary not implemented yet)
+        ivf_seed_frac: float = 0.1,  # fraction of vectors to train IVF
+        seed_copy_format: str = "binary",  # csv | binary
         dry_run: bool = False,
     ) -> None:
         """Single-thread incremental insert benchmark.
@@ -427,7 +438,9 @@ class LoadDataset:
         print("  ", insert_csv)
 
         # Planned A/B artifacts under output/pgvector/insert_ab
-        idx_tag = ("gin" if args.strategy.lower() == "prefilter" else args.strategy.lower())
+        idx_tag = (
+            "gin" if args.strategy.lower() == "prefilter" else args.strategy.lower()
+        )
         ab_dir = os.path.join(
             "output", "pgvector", "insert_ab", args.dataset_key, idx_tag, label
         )
@@ -451,7 +464,9 @@ class LoadDataset:
 
         s = args.strategy.lower()
         if s not in {"hnsw", "ivf", "prefilter"}:
-            _warn("insert benchmark real execution currently implemented for strategy=hnsw|ivf|prefilter only")
+            _warn(
+                "insert benchmark real execution currently implemented for strategy=hnsw|ivf|prefilter only"
+            )
             return
 
         # Ensure schema; keep GIN installed for realism
@@ -464,7 +479,9 @@ class LoadDataset:
         )
 
         # Load training data
-        train_vecs, _test_vecs, _meta = get_dataset(args.dataset, test_size=args.test_size)
+        train_vecs, _test_vecs, _meta = get_dataset(
+            args.dataset, test_size=args.test_size
+        )
         train_mds, _test_mds = get_metadata(
             synthesized=False, dataset_name=args.dataset, test_size=args.test_size
         )
@@ -472,22 +489,21 @@ class LoadDataset:
         if args.limit is not None:
             n_rows = min(n_rows, int(args.limit))
 
-        import psycopg2  # type: ignore
         dsn_resolved = _resolve_dsn(args.dsn)
         conn = psycopg2.connect(dsn_resolved)
         try:
             conn.autocommit = True
             with conn.cursor() as cur:
-                # Start from empty table
-                cur.execute("TRUNCATE items;")
-                # Apply durability toggle
-                if args.sync_commit_off:
+                cur.execute("TRUNCATE items;")  # start from empty table
+                if args.sync_commit_off:  # disable durability
                     cur.execute("SET synchronous_commit = off;")
 
             if s == "hnsw":
-                # Build HNSW index on empty table (params required)
+                # Build HNSW index on empty table
                 if args.m is None or args.efc is None:
-                    raise RuntimeError("hnsw insertion benchmark requires --m and --efc parameters")
+                    raise RuntimeError(
+                        "hnsw insertion benchmark requires --m and --efc parameters"
+                    )
                 admin.create_index(
                     dsn_resolved,
                     index="hnsw",
@@ -499,18 +515,19 @@ class LoadDataset:
             elif s == "ivf":
                 # Seed a fraction for IVFFlat training, then build, then delete seeds
                 if args.lists is None:
-                    raise RuntimeError("ivf insertion benchmark requires --lists parameter")
+                    raise RuntimeError(
+                        "ivf insertion benchmark requires --lists parameter"
+                    )
+                scf = _validate_copy_format(seed_copy_format)
+
+                # Write seed rows via chosen format
+                np.random.seed(42)
                 seed_frac = float(ivf_seed_frac)
                 seed_n = max(1, int(train_vecs.shape[0] * seed_frac))
-                # Copy seed rows via CSV path (binary not implemented yet)
-                scf = _validate_copy_format(seed_copy_format)
-                if scf == "binary":
-                    raise RuntimeError("binary COPY for seeding not implemented; use --seed_copy_format csv")
-                # Write seed rows via chosen format
-                import numpy as _np  # local
-                _np.random.seed(42)
-                idxs = _np.random.choice(train_vecs.shape[0], seed_n, replace=False)
+                idxs = np.random.choice(train_vecs.shape[0], seed_n, replace=False)
+
                 if scf == "csv":
+                    # csv seeding with buffer
                     def seed_iter_csv() -> Iterable[str]:
                         for rid in idxs:
                             vec = train_vecs[rid]
@@ -518,6 +535,7 @@ class LoadDataset:
                             emb_txt = "[" + ",".join(str(float(x)) for x in vec) + "]"
                             tags_txt = "{" + ",".join(str(int(t)) for t in tags) + "}"
                             yield f"{rid+1}\t{emb_txt}\t{tags_txt}\n"
+
                     buf = io.StringIO()
                     written = 0
                     with conn.cursor() as cur:
@@ -526,12 +544,22 @@ class LoadDataset:
                             written += 1
                             if written % 100000 == 0:
                                 buf.seek(0)
-                                cur.copy_from(buf, "items", columns=("id", "embedding", "tags"), sep="\t")
+                                cur.copy_from(
+                                    buf,
+                                    "items",
+                                    columns=("id", "embedding", "tags"),
+                                    sep="\t",
+                                )
                                 buf.close()
                                 buf = io.StringIO()
                         buf.seek(0)
                         if written > 0:
-                            cur.copy_from(buf, "items", columns=("id", "embedding", "tags"), sep="\t")
+                            cur.copy_from(
+                                buf,
+                                "items",
+                                columns=("id", "embedding", "tags"),
+                                sep="\t",
+                            )
                     buf.close()
                 else:
                     # binary seeding via staging table
@@ -540,6 +568,7 @@ class LoadDataset:
                             "CREATE TEMP TABLE IF NOT EXISTS items_stage ("
                             "id BIGINT, embedding_text TEXT, tags_text TEXT) ON COMMIT PRESERVE ROWS;"
                         )
+
                     def rows_iter_seed() -> Iterable[tuple[int, str, str]]:
                         for rid in idxs:
                             vec = train_vecs[rid]
@@ -547,6 +576,7 @@ class LoadDataset:
                             emb_txt = "[" + ",".join(str(float(x)) for x in vec) + "]"
                             tags_txt = "{" + ",".join(str(int(t)) for t in tags) + "}"
                             yield (int(rid) + 1, emb_txt, tags_txt)
+
                     # reuse builder from bulk
                     def _build_bin_copy(rows: Iterable[tuple[int, str, str]]) -> bytes:
                         out = io.BytesIO()
@@ -565,28 +595,24 @@ class LoadDataset:
                             out.write(tb)
                         out.write(struct.pack("!h", -1))
                         return out.getvalue()
+
                     payload = _build_bin_copy(rows_iter_seed())
+
                     with conn.cursor() as cur:
                         cur.copy_expert(
                             "COPY items_stage (id, embedding_text, tags_text) FROM STDIN WITH (FORMAT BINARY)",
                             io.BytesIO(payload),
                         )
-                    cur.execute(
-                        "INSERT INTO items (id, embedding, tags) "
-                        "SELECT id, embedding_text::vector, tags_text::int[] FROM items_stage;"
-                    )
-            elif s == "prefilter":
-                # Ensure fresh GIN(tags) index on empty table
-                admin.create_index(
-                    dsn_resolved,
-                    index="gin",
-                    dim=args.dim,
-                    dry_run=False,
-                )
+                        cur.execute(
+                            "INSERT INTO items (id, embedding, tags) "
+                            "SELECT id, embedding_text::vector, tags_text::int[] FROM items_stage;"
+                        )
 
                 # Build IVF and record metrics
                 baseline_b = _baseline_dir_for_index("ivf")
-                out_b = _canonical_output_dir(baseline_b, args.dataset_key, args.test_size)
+                out_b = _canonical_output_dir(
+                    baseline_b, args.dataset_key, args.test_size
+                )
                 os.makedirs(out_b, exist_ok=True)
                 admin.create_index(
                     dsn_resolved,
@@ -601,6 +627,14 @@ class LoadDataset:
                 with conn.cursor() as cur:
                     cur.execute("TRUNCATE items;")
                     cur.execute("VACUUM ANALYZE items;")
+            elif s == "prefilter":
+                # Ensure fresh GIN(tags) index on empty table
+                admin.create_index(
+                    dsn_resolved,
+                    index="gin",
+                    dim=args.dim,
+                    dry_run=False,
+                )
 
             # Insert rows one by one; measure per-row latency
             latencies: list[float] = []
@@ -623,20 +657,26 @@ class LoadDataset:
             conn.close()
 
         # Aggregate metrics
-        import numpy as np  # type: ignore
         lat = np.array(latencies, dtype=np.float64)
+
         # Query index size after insertion
         idx_name = (
-            "items_emb_hnsw" if s == "hnsw" else ("items_emb_ivf" if s == "ivf" else ("items_tags_gin" if s == "prefilter" else None))
+            "items_emb_hnsw"
+            if s == "hnsw"
+            else (
+                "items_emb_ivf"
+                if s == "ivf"
+                else ("items_tags_gin" if s == "prefilter" else None)
+            )
         )
         index_size_bytes = None
         if idx_name is not None:
-            import psycopg2  # type: ignore
             with psycopg2.connect(_resolve_dsn(args.dsn)) as _c:
                 _c.autocommit = True
                 with _c.cursor() as _cur:
                     _cur.execute("SELECT pg_relation_size(%s);", (idx_name,))
                     index_size_bytes = int(_cur.fetchone()[0])
+
         metrics: Dict[str, Any] = {
             "status": "ok",
             "strategy": s,
@@ -655,15 +695,19 @@ class LoadDataset:
         }
 
         # Emit artifacts (canonical + A/B)
+        # Determine output directory and file names
         baseline = _baseline_dir_for_strategy(args.strategy)
         out_dir = _canonical_output_dir(baseline, args.dataset_key, args.test_size)
         os.makedirs(out_dir, exist_ok=True)
         label = _durability_label(args.unlogged, args.sync_commit_off)
         insert_json = os.path.join(out_dir, f"insert_{label}.json")
         insert_csv = os.path.join(out_dir, f"insert_{label}.csv")
+
+        # Write JSON
         with open(insert_json, "w", encoding="utf-8") as f:
             json.dump(metrics, f, indent=2, sort_keys=True)
-        # CSV append
+
+        # Write CSV
         flat = metrics.copy()
         write_header = not os.path.exists(insert_csv)
         with open(insert_csv, "a", newline="", encoding="utf-8") as f:
@@ -671,30 +715,34 @@ class LoadDataset:
             if write_header:
                 writer.writeheader()
             writer.writerow(flat)
+
         print(f"[pgvector] Insert metrics written to {insert_json} and {insert_csv}")
 
         # Write A/B artifacts
-        idx_tag = ("gin" if args.strategy.lower() == "prefilter" else args.strategy.lower())
+        idx_tag = (
+            "gin" if args.strategy.lower() == "prefilter" else args.strategy.lower()
+        )
         ab_dir = os.path.join(
             "output", "pgvector", "insert_ab", args.dataset_key, idx_tag, label
         )
         os.makedirs(ab_dir, exist_ok=True)
         ab_json = os.path.join(ab_dir, "run.json")
         ab_csv = os.path.join(ab_dir, "run.csv")
+
+        # Write JSON
         with open(ab_json, "w", encoding="utf-8") as f:
             json.dump(metrics, f, indent=2, sort_keys=True)
+
+        # Write CSV
         ab_header = not os.path.exists(ab_csv)
         with open(ab_csv, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=list(flat.keys()))
             if ab_header:
                 writer.writeheader()
             writer.writerow(flat)
+
         print(f"[pgvector] A/B insert metrics written to {ab_json} and {ab_csv}")
 
 
-def main() -> None:
-    fire.Fire(LoadDataset)
-
-
 if __name__ == "__main__":
-    main()
+    fire.Fire(LoadDataset)

@@ -4,7 +4,7 @@ IFS=$'\n\t'
 
 # End-to-end YFCC 1M pgvector insert A/B (durable vs non-durable)
 # - Resets database to avoid interference
-# - Runs six insert benchmarks: {hnsw, ivf, prefilter} × {durable, non_durable}
+# - Runs six insert benchmarks: {hnsw, ivf} × {durable, non_durable}
 # - Writes per-run A/B artifacts under output/pgvector/insert_ab/
 # - Aggregates summary.{json,csv}
 
@@ -130,13 +130,6 @@ python -m scripts.pgvector.load_dataset insert_bench \
   --dim "${DIM}" --test_size "${TEST_SIZE}" --strategy ivf \
   --lists "${IVF_LISTS}" --limit "${LIMIT}"
 
-echo "[run_insert_ab] Prefilter durable (GIN-only)"
-drop_items
-python -m scripts.pgvector.load_dataset insert_bench \
-  --dsn "${DSN}" --dataset "${DATASET}" --dataset_key "${DATASET_KEY}" \
-  --dim "${DIM}" --test_size "${TEST_SIZE}" --strategy prefilter \
-  --limit "${LIMIT}"
-
 ########################################
 # Non-durable runs (UNLOGGED)
 ########################################
@@ -145,21 +138,14 @@ drop_items
 python -m scripts.pgvector.load_dataset insert_bench \
   --dsn "${DSN}" --dataset "${DATASET}" --dataset_key "${DATASET_KEY}" \
   --dim "${DIM}" --test_size "${TEST_SIZE}" --strategy hnsw \
-  --m "${HNSW_M}" --efc "${HNSW_EFC}" --unlogged true --limit "${LIMIT}" 
+  --m "${HNSW_M}" --efc "${HNSW_EFC}" --unlogged --limit "${LIMIT}" 
 
 echo "[run_insert_ab] IVF non-durable (UNLOGGED; seed then build)"
 drop_items
 python -m scripts.pgvector.load_dataset insert_bench \
   --dsn "${DSN}" --dataset "${DATASET}" --dataset_key "${DATASET_KEY}" \
   --dim "${DIM}" --test_size "${TEST_SIZE}" --strategy ivf \
-  --lists "${IVF_LISTS}" --unlogged true --limit "${LIMIT}"
-
-echo "[run_insert_ab] Prefilter non-durable (UNLOGGED)"
-drop_items
-python -m scripts.pgvector.load_dataset insert_bench \
-  --dsn "${DSN}" --dataset "${DATASET}" --dataset_key "${DATASET_KEY}" \
-  --dim "${DIM}" --test_size "${TEST_SIZE}" --strategy prefilter \
-  --unlogged true --limit "${LIMIT}"
+  --lists "${IVF_LISTS}" --unlogged --limit "${LIMIT}"
 
 ########################################
 # Aggregate summary from A/B artifacts
@@ -174,7 +160,6 @@ base = Path("output/pgvector/insert_ab")/dataset_key
 runs = [
     ("hnsw","durable"),("hnsw","non_durable"),
     ("ivf","durable"),("ivf","non_durable"),
-    ("gin","durable"),("gin","non_durable"),
 ]
 rows = []
 for idx, dur in runs:
