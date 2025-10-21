@@ -17,25 +17,27 @@ from benchmark.complex_predicate.dataset import ComplexPredicateDataset
 # Global algorithm mappings for consistency with overall plotting
 ALGORITHM_MAPPING = {
     "curator": "Curator",
-    "curator_with_index": "Curator (Indexed)",
+    "curator_with_index": "Curator (Idx)",
     "shared_hnsw": "Shared HNSW",
     "per_predicate_hnsw": "Per-Pred HNSW",
     "shared_ivf": "Shared IVF",
     "per_predicate_ivf": "Per-Pred IVF",
     "parlay_ivf": "Parlay IVF",
     "acorn": "ACORN",
+    "pre_filtering": "Pre-Filter",
 }
 
 # Global algorithm order for consistent plotting
 ALGORITHM_ORDER = [
     "Curator",
-    "Curator (Indexed)",
+    "Curator (Idx)",
     "Shared HNSW",
     "Per-Pred HNSW",
     "Shared IVF",
     "Per-Pred IVF",
     "Parlay IVF",
     "ACORN",
+    "Pre-Filter",
 ]
 
 
@@ -216,6 +218,66 @@ def compute_template_selectivities(
         raise e
 
 
+def _load_prefilter_model(
+    prefilter_model_dir: str | Path, dataset_key: str, test_size: float
+):
+    prefilter_model_dir = Path(prefilter_model_dir)
+    exact_dir = prefilter_model_dir / f"{dataset_key}_test{test_size}"
+    exact_path = exact_dir / "linreg.json"
+    if exact_path.exists():
+        data = json.load(open(exact_path))
+        return float(data["a"]), float(data["b"])
+    for p in prefilter_model_dir.rglob("linreg.json"):
+        try:
+            data = json.load(open(p))
+            return float(data["a"]), float(data["b"])
+        except Exception:
+            continue
+    return None
+
+
+def _compute_prefilter_points(
+    output_dir: str | Path,
+    prefilter_model_dir: str | Path = "output/overall_results2/pre_filtering",
+):
+    output_dir = Path(output_dir)
+    cfg_path = output_dir / "experiment_config.json"
+    if not cfg_path.exists():
+        return pd.DataFrame()
+    cfg = json.load(open(cfg_path))
+    params = cfg.get("common_parameters", {})
+    dataset_key = params.get("dataset_key")
+    test_size = float(params.get("test_size", 0.01))
+
+    pf = _load_prefilter_model(prefilter_model_dir, dataset_key, test_size)
+    if pf is None:
+        return pd.DataFrame()
+    a, b = pf
+
+    ds = ComplexPredicateDataset.from_dataset_key(**params)
+    n_train = len(ds.train_vecs)
+
+    rows = []
+    for template, filters in ds.template_to_filters.items():
+        sels = [ds.filter_to_selectivity[f] for f in filters]
+        if not sels:
+            continue
+        sel_avg = float(sum(sels) / len(sels))
+        n_avg = sel_avg * n_train
+        lat_ms = max(a * n_avg + max(b, 0.0), 0.0) * 1e3
+        print(f"Template: {template}, Selectivity: {sel_avg}, Latency: {lat_ms} ms")
+        rows.append(
+            {
+                "template": template.split()[0],
+                "recall_at_k": 1.0,
+                "query_lat_avg": lat_ms / 1e3,
+                "algorithm": "Pre-Filter",
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
 def plot_optimal_results(
     output_dir: str | Path = "output/complex_predicate_optimal",
     templates: List[str] = ["OR", "AND"],
@@ -270,7 +332,7 @@ def plot_optimal_results(
     colors = sns.color_palette("tab10", n_colors=5)
     custom_palette = {
         "Curator": colors[0],
-        "Curator (Indexed)": colors[0],
+        "Curator (Idx)": colors[0],
         "Shared HNSW": colors[1],
         "Per-Pred HNSW": colors[1],
         "Shared IVF": colors[2],
@@ -489,6 +551,11 @@ def plot_optimal_results_clean(
         algorithms=algorithms,
     )
 
+    # Inject Pre-Filter single points computed from linear model
+    pf_df = _compute_prefilter_points(output_dir)
+    if not pf_df.empty:
+        all_results[ALGORITHM_MAPPING["pre_filtering"]] = pf_df
+
     if not all_results:
         raise ValueError("No baseline results found")
 
@@ -499,25 +566,27 @@ def plot_optimal_results_clean(
     colors = sns.color_palette("tab10", n_colors=5)
     custom_palette = {
         "Curator": colors[0],
-        "Curator (Indexed)": colors[0],
+        "Curator (Idx)": colors[0],
         "Shared HNSW": colors[1],
         "Per-Pred HNSW": colors[1],
         "Shared IVF": colors[2],
         "Per-Pred IVF": colors[2],
         "Parlay IVF": colors[3],
         "ACORN": colors[4],
+        "Pre-Filter": "tab:red",
     }
 
     # Define markers for each algorithm to ensure consistency
     marker_map = {
         "Curator": "^",
-        "Curator (Indexed)": "v",
+        "Curator (Idx)": "v",
         "Shared HNSW": "h",
         "Per-Pred HNSW": "o",
         "Shared IVF": "s",
-        "Per-Pred IVF": "X",
+        "Per-Pred IVF": "*",
         "Parlay IVF": "d",
         "ACORN": "p",
+        "Pre-Filter": "X",
     }
 
     # Define slow algorithms for AND template
@@ -698,7 +767,9 @@ def plot_optimal_results_clean(
             ax_fast.minorticks_on()
             ax_fast.tick_params(axis="y", which="minor", left=True, labelleft=False)
             # Add minor grid lines for both axes
-            ax_fast.grid(visible=True, which="minor", axis="both", linestyle=":", alpha=0.3)
+            ax_fast.grid(
+                visible=True, which="minor", axis="both", linestyle=":", alpha=0.3
+            )
 
             subplot_titles.append(f"{base_title} - Fast")
         else:
@@ -767,16 +838,16 @@ def plot_optimal_results_clean(
         legend_labels = available_algorithms
 
         # Two-row legend, positioned to avoid overlap
-        ncol = min(len(legend_labels), 4)  # Max 4 columns
+        ncol = min(len(legend_labels), 5)  # Max 5 columns
         legend = fig.legend(
             legend_handles,
             legend_labels,
             loc="upper center",
             bbox_to_anchor=(0.55, 1.30),
             ncol=ncol,
-            fontsize=font_size - 3,  # Reduced from font_size - 2 for tighter layout
-            columnspacing=1.0,  # Reduced from 1.0
-            handletextpad=0.5,  # Reduced from 0.5
+            fontsize=font_size - 3,
+            columnspacing=0.8,  # Reduced from 1.0
+            handletextpad=0.5,
         )
 
         # Remove individual legends from subplots

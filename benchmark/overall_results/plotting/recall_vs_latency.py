@@ -5,7 +5,7 @@ Recall vs latency plotting for overall results across different selectivity leve
 import json
 import pickle as pkl
 from pathlib import Path
-from typing import Dict, List, Optional, Union, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import fire
 import matplotlib.pyplot as plt
@@ -93,13 +93,13 @@ def _compute_prefilter_for_groups(
             continue
         sel_avg = float(np.mean(sels))
         n_avg = sel_avg * n_train
-        lat_s = a * n_avg + b
+        lat_s = a * n_avg + max(b, 0.0)
         rows.append(
             {
                 "percentile": g["percentile"],
                 "selectivity": g["selectivity"],
                 "recall": 1.0,
-                "latency": max(lat_s, 0.0),
+                "latency": lat_s,
                 "index_key": "Pre-Filtering",
             }
         )
@@ -558,7 +558,10 @@ def plot_recall_vs_latency(
             for percentile in percentiles:
                 if percentile in per_pct_results:
                     per_pct_results[percentile] = pd.concat(
-                        [per_pct_results[percentile], pf_df[pf_df["percentile"] == percentile]],
+                        [
+                            per_pct_results[percentile],
+                            pf_df[pf_df["percentile"] == percentile],
+                        ],
                         ignore_index=True,
                     )
             print("Added Pre-Filtering estimates from linear model")
@@ -647,7 +650,7 @@ def plot_recall_vs_latency(
 
     markers = {
         "Per-Label HNSW": "o",
-        "Per-Label IVF": "X",
+        "Per-Label IVF": "D",
         "Parlay IVF": "d",
         "Filtered DiskANN": "P",
         "Shared HNSW": "h",
