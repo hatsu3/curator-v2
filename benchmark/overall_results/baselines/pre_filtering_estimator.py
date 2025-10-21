@@ -1,5 +1,5 @@
-import os
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,7 +9,6 @@ import fire
 import numpy as np
 import pandas as pd
 
-from benchmark.profiler import Dataset as BenchDataset
 from benchmark.utils import get_dataset_config, load_dataset
 from indexes.pre_filtering import PreFilteringIndex
 
@@ -42,43 +41,6 @@ def _load_real_dataset(dataset_key: str, test_size: float) -> LoadedDataset:
             label_counts[label] = label_counts.get(label, 0) + 1
     n_train = len(train_vecs)
     label_selectivities = {lbl: cnt / n_train for lbl, cnt in label_counts.items()}
-
-    return LoadedDataset(
-        train_vecs=train_vecs,
-        test_vecs=test_vecs,
-        train_mds=train_mds,
-        test_mds=test_mds,
-        label_selectivities=label_selectivities,
-    )
-
-
-def _load_synth_dataset(
-    n_train: int = 2000,
-    n_test: int = 200,
-    dim: int = 32,
-    n_labels: int = 50,
-    min_sel: float = 0.002,
-    max_sel: float = 0.05,
-    seed: int = 42,
-) -> LoadedDataset:
-    rng = np.random.default_rng(seed)
-    train_vecs = rng.standard_normal((n_train, dim), dtype=np.float32)
-    test_vecs = rng.standard_normal((n_test, dim), dtype=np.float32)
-
-    # Draw per-label selectivities uniformly in [min_sel, max_sel]
-    label_selectivities = {i: float(rng.uniform(min_sel, max_sel)) for i in range(n_labels)}
-
-    def sample_mds(n: int) -> List[List[int]]:
-        mds = []
-        for _ in range(n):
-            labels = [
-                lbl for lbl, sel in label_selectivities.items() if rng.random() < sel
-            ]
-            mds.append(labels)
-        return mds
-
-    train_mds = sample_mds(n_train)
-    test_mds = sample_mds(n_test)
 
     return LoadedDataset(
         train_vecs=train_vecs,
@@ -168,8 +130,8 @@ def _predict_all_latencies(
 
 
 def run(
-    dataset_key: str = "yfcc100m-10m",
-    test_size: float = 0.001,
+    dataset_key: str = "yfcc100m",
+    test_size: float = 0.01,
     k: int = 10,
     n_calib_labels: int = 8,
     max_queries_per_label: int = 64,
@@ -197,7 +159,7 @@ def run(
     max_queries_per_label : int
         Maximum number of query occurrences per calibration label to average over.
         Bound this to reduce calibration time while smoothing noise in per-occurrence
-        timing; values between 32–128 are typically sufficient.
+        timing; values between 32-128 are typically sufficient.
     output_root : str
         Root directory where results will be written, following the structure
         "<output_root>/<dataset_key>_test<test_size>/results.csv". For safe testing,
@@ -266,6 +228,44 @@ def run(
         }
     )
     df.to_csv(out_path, index=False)
+
+    # Produce calibration plot PDF: latency vs cardinality and vs selectivity with fitted line
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        n_train_total = len(ds.train_vecs)
+        # Scatter points
+        xN = np.array([p[0] for p in calib_points], dtype=float)
+        y_ms = np.array([p[1] for p in calib_points], dtype=float) * 1e3
+        xSel = xN / float(n_train_total)
+
+        # Fitted lines
+        xN_line = np.linspace(max(1.0, xN.min()), max(1.0, xN.max()), 100)
+        y_line_ms = (a * xN_line + b) * 1e3
+        xSel_line = xN_line / float(n_train_total)
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.0, 3.0))
+        ax1.scatter(xN, y_ms, s=18, c="tab:red", label="measured")
+        ax1.plot(xN_line, y_line_ms, c="tab:blue", label="fit")
+        ax1.set_xlabel("Qualified Count (N)")
+        ax1.set_ylabel("Latency (ms)")
+        ax1.grid(True, alpha=0.4)
+        ax1.legend(frameon=False)
+
+        ax2.scatter(xSel, y_ms, s=18, c="tab:red", label="measured")
+        ax2.plot(xSel_line, y_line_ms, c="tab:blue", label="fit")
+        ax2.set_xlabel("Selectivity")
+        ax2.set_ylabel("Latency (ms)")
+        ax2.grid(True, alpha=0.4)
+
+        fig.tight_layout()
+        plot_path = out_dir / "calibration_fit.pdf"
+        fig.savefig(plot_path, bbox_inches="tight")
+        print(f"[pre_filtering_estimator] Wrote calibration plot to {plot_path}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[pre_filtering_estimator] Calibration plot failed: {e}")
 
 
 if __name__ == "__main__":
