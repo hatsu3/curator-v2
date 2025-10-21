@@ -5,7 +5,7 @@ Recall vs latency plotting for overall results across different selectivity leve
 import json
 import pickle as pkl
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Tuple
 
 import fire
 import matplotlib.pyplot as plt
@@ -34,6 +34,77 @@ DATASET_LABELS_PER_GROUP = {
         "default_test_size": 0.005,
     },
 }
+
+
+def _load_prefilter_model(
+    prefilter_model_dir: Union[str, Path], dataset_key: str, test_size: float
+) -> Optional[Tuple[float, float]]:
+    """Load (a, b) from linreg.json for Pre-Filtering.
+
+    Tries `<prefilter_model_dir>/<dataset_key>_test<test_size>/linreg.json`.
+    If not found, falls back to the first `linreg.json` under `prefilter_model_dir`.
+    Returns (a, b) or None.
+    """
+    prefilter_model_dir = Path(prefilter_model_dir)
+    exact_dir = prefilter_model_dir / f"{dataset_key}_test{test_size}"
+    exact_path = exact_dir / "linreg.json"
+    if exact_path.exists():
+        data = json.load(open(exact_path))
+        return float(data["a"]), float(data["b"])
+
+    for p in prefilter_model_dir.rglob("linreg.json"):
+        try:
+            data = json.load(open(p))
+            return float(data["a"]), float(data["b"])
+        except Exception:
+            continue
+    return None
+
+
+def _compute_prefilter_for_groups(
+    dataset_key: str,
+    test_size: float,
+    percentiles: List[float],
+    labels_per_group: Optional[int],
+    a: float,
+    b: float,
+) -> pd.DataFrame:
+    """Compute Pre-Filtering latency for each selectivity group using linreg.
+
+    latency = a * N_avg + b, recall = 1.0, where N_avg is mean qualified count
+    over labels in the group.
+    """
+    dataset = Dataset.from_dataset_key(dataset_key, test_size=test_size)
+    label_groups = group_labels_by_selectivity(
+        labels_per_group=labels_per_group,
+        percentiles=percentiles,
+        dataset_key=dataset_key,
+        test_size=test_size,
+        dataset=dataset,
+    )
+
+    n_train = len(dataset.train_vecs)
+    label2sel = dataset.label_selectivities
+
+    rows = []
+    for g in label_groups:
+        sels = [label2sel[lbl] for lbl in g["labels"] if lbl in label2sel]
+        if not sels:
+            continue
+        sel_avg = float(np.mean(sels))
+        n_avg = sel_avg * n_train
+        lat_s = a * n_avg + b
+        rows.append(
+            {
+                "percentile": g["percentile"],
+                "selectivity": g["selectivity"],
+                "recall": 1.0,
+                "latency": max(lat_s, 0.0),
+                "index_key": "Pre-Filtering",
+            }
+        )
+
+    return pd.DataFrame(rows)
 
 
 def group_labels_by_selectivity(
@@ -381,6 +452,7 @@ def plot_recall_vs_latency(
     force_reprocess: bool = False,
     figsize_per_subplot: tuple = (3, 3),
     font_size: int = 14,
+    prefilter_model_dir: Union[str, Path] = "output/overall_results2/pre_filtering",
 ):
     """
     Plot recall vs latency across different selectivity levels using results from run_overall_results.sh
@@ -468,6 +540,31 @@ def plot_recall_vs_latency(
     if not per_pct_results:
         raise ValueError("No data found for any percentile")
 
+    # Inject Pre-Filtering baseline estimated by linear regression model
+    pf_params = _load_prefilter_model(prefilter_model_dir, dataset_key, test_size)
+    if pf_params is not None:
+        a, b = pf_params
+        pf_df = _compute_prefilter_for_groups(
+            dataset_key=dataset_key,
+            test_size=test_size,
+            percentiles=percentiles,
+            labels_per_group=labels_per_group,
+            a=a,
+            b=b,
+        )
+        if not pf_df.empty:
+            pf_df = pf_df.copy()
+            pf_df["latency"] *= 1000.0  # convert to ms to match others
+            for percentile in percentiles:
+                if percentile in per_pct_results:
+                    per_pct_results[percentile] = pd.concat(
+                        [per_pct_results[percentile], pf_df[pf_df["percentile"] == percentile]],
+                        ignore_index=True,
+                    )
+            print("Added Pre-Filtering estimates from linear model")
+    else:
+        print("Warning: Pre-Filtering model not found; skipping Pre-Filtering baseline")
+
     # Get selectivity values for titles
     pct_to_sel = {}
     for percentile, res in per_pct_results.items():
@@ -507,6 +604,21 @@ def plot_recall_vs_latency(
             additional_baselines.append(name)
             baseline_names.append(name)
 
+    # Ensure Pre-Filtering is included if present
+    present_prefilter = any(
+        ("index_key" in df.columns) and (df["index_key"] == "Pre-Filtering").any()
+        for df in per_pct_results.values()
+    )
+    if present_prefilter:
+        # Remove any existing occurrence first
+        baseline_names = [n for n in baseline_names if n != "Pre-Filtering"]
+        # Insert Pre-Filtering right before Curator if present; otherwise, append
+        if "Curator" in baseline_names:
+            idx = baseline_names.index("Curator")
+            baseline_names.insert(idx, "Pre-Filtering")
+        else:
+            baseline_names.append("Pre-Filtering")
+
     # Warn about additional baselines
     if additional_baselines:
         print(
@@ -530,6 +642,7 @@ def plot_recall_vs_latency(
         "ACORN-1": "tab:pink",
         r"ACORN-$\gamma$": "tab:gray",
         "Curator": "tab:olive",
+        "Pre-Filtering": "tab:red",
     }
 
     markers = {
@@ -542,6 +655,7 @@ def plot_recall_vs_latency(
         "ACORN-1": "*",
         r"ACORN-$\gamma$": "p",
         "Curator": "^",
+        "Pre-Filtering": "X",
     }
 
     # Plot each percentile

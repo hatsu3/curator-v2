@@ -229,6 +229,15 @@ def run(
     )
     df.to_csv(out_path, index=False)
 
+    # Save fitted linear model parameters
+    model_json = {
+        "a": a,
+        "b": b,
+        "dataset_key": dataset_key,
+        "test_size": test_size,
+    }
+    (out_dir / "linreg.json").write_text(json.dumps(model_json, indent=2))
+
     # Produce calibration plot PDF: latency vs cardinality and vs selectivity with fitted line
     try:
         import matplotlib
