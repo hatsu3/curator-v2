@@ -1,24 +1,21 @@
 """Summarize pgvector HNSW ordering A/B outputs (strict vs relaxed).
 
 Reads artifacts produced by the A/B orchestrator under:
-  output/pgvector/hnsw_ordering_ab/<dataset_variant>/{strict_order|relaxed_order}/
+  output/pgvector/hnsw_ordering_ab/<dataset_key>_test<test_size>/{strict_order|relaxed_order}/
 
 For single-label (CSV):
   - Extracts recall_at_k, query_lat_p95, query_qps
 
-For complex predicates (JSON with per-template results):
-  - Aggregates recall_at_k and query_lat_p95 by taking the mean across templates
-
-No recommendation is made; this is a read-only summarizer to aid manual choice.
+This tool prints side-by-side metrics only. No recommendation logic.
 """
 
 from __future__ import annotations
 
 import csv
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 import fire
 
@@ -52,34 +49,6 @@ def _single_metrics(csv_path: Path) -> Metrics:
     )
 
 
-def _complex_metrics(json_path: Path) -> Metrics:
-    if not json_path.exists():
-        return Metrics()
-    with open(json_path, "r", encoding="utf-8") as f:
-        obj = json.load(f)
-    results = obj.get("results", {})
-    rec_vals = []
-    p95_vals = []
-    for _, m in results.items():
-        try:
-            rec_vals.append(float(m.get("recall_at_k")))
-        except Exception:
-            pass
-        try:
-            p95_vals.append(float(m.get("query_lat_p95")))
-        except Exception:
-            pass
-
-    def _mean(vals):
-        return sum(vals) / len(vals) if vals else None
-
-    return Metrics(
-        recall_at_k=_mean(rec_vals),
-        p95=_mean(p95_vals),
-        qps=None,
-    )
-
-
 def _fmt(val: Optional[float], digits: int = 4) -> str:
     if val is None:
         return "-"
@@ -108,121 +77,26 @@ class Summary:
     def run(
         self,
         *,
-        dataset_variant: str = "yfcc100m_1m",
+        dataset_key: str = "yfcc100m",
+        test_size: float = 0.01,
         base_dir: str | None = None,
-        # Recommendation knobs
-        recall_tolerance: float = 0.001,
-        p95_speedup_min: float = 0.05,
-        # Artifacts
-        write_json: bool = True,
-        json_path: str | None = None,
     ) -> None:
-        """Summarize A/B artifacts for a dataset variant."""
+        """Summarize A/B artifacts for a dataset variant (no recommendation)."""
         root = Path(base_dir) if base_dir else Path("output/pgvector/hnsw_ordering_ab")
-        dv_dir = root / dataset_variant
+        dv_dir = root / f"{dataset_key}_test{test_size}"
         strict_dir = dv_dir / "strict_order"
         relaxed_dir = dv_dir / "relaxed_order"
 
-        print(f"[ab][summary] dataset_variant={dataset_variant}")
+        print(f"[ab][summary] dataset_key={dataset_key}, test_size={test_size}")
         print(f"[ab][summary] base_dir={dv_dir}")
+
         # Single-label CSVs
         strict_single = _single_metrics(strict_dir / "results.csv")
         relaxed_single = _single_metrics(relaxed_dir / "results.csv")
         _print_table("Single-label (overall results)", strict_single, relaxed_single)
 
-        # Complex JSONs
-        strict_complex = _complex_metrics(strict_dir / "results.json")
-        relaxed_complex = _complex_metrics(relaxed_dir / "results.json")
-        _print_table("Complex predicates (AND/OR)", strict_complex, relaxed_complex)
-
-        def _rec_delta(a: Metrics, b: Metrics) -> Optional[float]:
-            if a.recall_at_k is None or b.recall_at_k is None:
-                return None
-            return abs(b.recall_at_k - a.recall_at_k)
-
-        def _p95_speedup(a: Metrics, b: Metrics) -> Optional[float]:
-            if a.p95 is None or b.p95 is None or a.p95 <= 0:
-                return None
-            return (a.p95 - b.p95) / a.p95
-
-        single_rec_delta = _rec_delta(strict_single, relaxed_single)
-        complex_rec_delta = _rec_delta(strict_complex, relaxed_complex)
-        single_speedup = _p95_speedup(strict_single, relaxed_single)
-        complex_speedup = _p95_speedup(strict_complex, relaxed_complex)
-
-        # Recommendation
-        recommend: str
-        reason: str
-        have_single = (
-            strict_single.recall_at_k is not None and strict_single.p95 is not None
-            and relaxed_single.recall_at_k is not None and relaxed_single.p95 is not None
-        )
-        have_complex = (
-            strict_complex.recall_at_k is not None and strict_complex.p95 is not None
-            and relaxed_complex.recall_at_k is not None and relaxed_complex.p95 is not None
-        )
-        if not (have_single and have_complex):
-            recommend = "insufficient_data"
-            reason = "missing_metrics"
-        else:
-            rec_ok = (
-                single_rec_delta is not None and complex_rec_delta is not None
-                and single_rec_delta <= recall_tolerance
-                and complex_rec_delta <= recall_tolerance
-            )
-            sp_ok = (
-                single_speedup is not None and complex_speedup is not None
-                and min(single_speedup, complex_speedup) >= p95_speedup_min
-            )
-            if rec_ok and sp_ok:
-                recommend = "relaxed_order"
-                reason = "recall_within_tolerance_and_p95_faster"
-            else:
-                recommend = "strict_order"
-                if not rec_ok:
-                    reason = "recall_gap"
-                else:
-                    reason = "no_tail_speedup"
-
-        print(
-            f"\n[ab][summary] recommendation: {recommend} (reason={reason}, "
-            f"recall_tolerance={recall_tolerance}, p95_speedup_min={p95_speedup_min})"
-        )
-
-        if write_json:
-            out_json = Path(json_path) if json_path else dv_dir / "ab_recommendation.json"
-            out_json.parent.mkdir(parents=True, exist_ok=True)
-            payload: Dict[str, object] = {
-                "dataset_variant": dataset_variant,
-                "thresholds": {
-                    "recall_tolerance": float(recall_tolerance),
-                    "p95_speedup_min": float(p95_speedup_min),
-                },
-                "single_label": {
-                    "strict": asdict(strict_single),
-                    "relaxed": asdict(relaxed_single),
-                    "delta_recall": single_rec_delta,
-                    "speedup_p95": single_speedup,
-                },
-                "complex": {
-                    "strict": asdict(strict_complex),
-                    "relaxed": asdict(relaxed_complex),
-                    "delta_recall": complex_rec_delta,
-                    "speedup_p95": complex_speedup,
-                },
-                "decision": {
-                    "recommend": recommend,
-                    "reason": reason,
-                },
-            }
-            with open(out_json, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2, sort_keys=True)
-            print(f"[ab][summary] wrote {out_json}")
-
-
-def main() -> None:
-    fire.Fire(Summary)
+        # No recommendation emitted.
 
 
 if __name__ == "__main__":
-    main()
+    fire.Fire(Summary)

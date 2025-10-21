@@ -6,8 +6,8 @@ IFS=$'\n\t'
 # - Resets database to avoid interference (drop & recreate)
 # - Loads dataset into a dedicated DB
 # - Builds required indexes (GIN, HNSW)
-# - Runs single-label and complex predicate A/B via orchestrator
-# - Produces summary with auto recommendation JSON
+# - Runs single-label A/B via orchestrator
+# - Produces summary
 
 ########################################
 # Config (override with env vars or CLI flags)
@@ -31,10 +31,6 @@ HNSW_EFS=${HNSW_EFS:-128}
 
 # Dataset cache (optional, used by single-label baseline)
 DATASET_CACHE_PATH=${DATASET_CACHE_PATH:-data/cache}
-
-# Summary thresholds
-RECALL_TOL=${RECALL_TOL:-0.001}
-P95_SPEEDUP_MIN=${P95_SPEEDUP_MIN:-0.05}
 
 # Index build controls (defaults; can override via flags)
 PARALLEL_MAINT_WORKERS=${PARALLEL_MAINT_WORKERS:-0}
@@ -84,7 +80,7 @@ fi
 # NOTE: This is destructive. Ensure no experiments are running.
 ########################################
 echo "[ordering_ab] Resetting database ${DB_NAME}"
-docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -q -X -v ON_ERROR_STOP=1 <<'SQL'
+docker exec -i "${PG_CONTAINER_NAME}" psql -U postgres -q -X -v ON_ERROR_STOP=1 -v DB_NAME="${DB_NAME}" <<'SQL'
 \set QUIET on
 SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :'DB_NAME';
 DROP DATABASE IF EXISTS :"DB_NAME";
@@ -130,28 +126,20 @@ python -m scripts.pgvector.setup_db create_index \
 ########################################
 # Run A/B orchestrator
 ########################################
-DV=yfcc100m_1m
 echo "[ordering_ab] Run single-label A/B (strict vs relaxed)"
 cmd=(python -m benchmark.pgvector_ab.hnsw_ordering_ab ab_single \
   --dsn "${DSN}" \
-  --dataset_variant "${DV}" --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
+  --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}" \
   --dataset_cache_path "${DATASET_CACHE_PATH}")
 if [[ -n "${MAX_QUERIES}" ]]; then cmd+=(--max_queries "${MAX_QUERIES}"); fi
 "${cmd[@]}"
 
-echo "[ordering_ab] Run complex predicates A/B (AND/OR)"
-python -m benchmark.pgvector_ab.hnsw_ordering_ab ab_complex \
-  --dsn "${DSN}" \
-  --dataset_variant "${DV}" --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
-  --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}" \
-  --n_filters_per_template 50 --n_queries_per_filter 100
-
 ########################################
-# Summarize and recommend
+# Summarize
 ########################################
-echo "[ordering_ab] Summarize results and emit recommendation"
+echo "[ordering_ab] Summarize results"
 python -m benchmark.pgvector_ab.summarize_ordering_ab run \
-  --dataset_variant "${DV}" --recall_tolerance "${RECALL_TOL}" --p95_speedup_min "${P95_SPEEDUP_MIN}" --write_json
+  --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}"
 
-echo "[ordering_ab] DONE. See outputs under output/pgvector/hnsw_ordering_ab/${DV}/"
+echo "[ordering_ab] DONE. See outputs under output/pgvector/hnsw_ordering_ab/${DATASET_KEY}_test${TEST_SIZE}/"
