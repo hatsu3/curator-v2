@@ -590,7 +590,7 @@ def plot_optimal_results_clean(
     }
 
     # Define slow algorithms for AND template
-    slow_algorithms = {"Shared HNSW", "Shared IVF", "ACORN", "Parlay IVF"}
+    slow_algorithms = {"Shared HNSW", "Shared IVF", "ACORN", "Parlay IVF", "Pre-Filter"}
 
     # Set up plotting - 3 subplots with custom spacing to group AND subplots
     plt.rcParams.update({"font.size": font_size})
