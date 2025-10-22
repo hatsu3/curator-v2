@@ -13,19 +13,20 @@ Subsequent commits will add actual query logic and metrics emission.
 
 from __future__ import annotations
 
+import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, List, Any
+from typing import Any, Dict, List, Optional
 
 import fire
-import json
-import time
 import numpy as np
 import pandas as pd
 
 from benchmark.profiler import Dataset
 from benchmark.utils import recall
+
 """
 Note on dataset caching and ground truth:
 - This runner assumes a precomputed dataset cache (see
@@ -226,7 +227,9 @@ def exp_pgvector_single(
             )
         else:
             raise AssertionError("schema must be one of: int_array, boolean")
-        sql = strict_order_wrapper(core_sql) if iter_mode == "relaxed_order" else core_sql
+        sql = (
+            strict_order_wrapper(core_sql) if iter_mode == "relaxed_order" else core_sql
+        )
         print("[pgvector] Example query SQL (preview):\n", sql)
         print("[pgvector] Dry-run: skipping DB connection and dataset work.")
         return
@@ -260,9 +263,7 @@ def exp_pgvector_single(
         # Detect DB embedding dimension; enforce equality when available
         db_dim = get_embedding_dim_from_db(conn)
         if db_dim is not None:
-            assert (
-                int(db_dim) == ds.dim
-            ), (
+            assert int(db_dim) == ds.dim, (
                 f"DB embedding dimension ({db_dim}) does not match dataset dim ({ds.dim}). "
                 "Ensure table uses vector(192) for YFCC and data is loaded with 192-D embeddings."
             )
@@ -367,6 +368,19 @@ def exp_pgvector_single(
 
         # Summarize metrics
         lat = np.array(query_latencies, dtype=float)
+
+        # Per-query recall list for plotting pipelines
+        def _recall_at_k_single(pred: List[int], gt: List[int], kk: int) -> float:
+            if not pred or not gt:
+                return 0.0
+            kk = int(kk)
+            return float(len(set(pred) & set(gt[:kk]))) / max(kk, 1)
+
+        gt_lists = ds.ground_truth[: len(query_results)]
+        per_query_recalls = [
+            _recall_at_k_single(pred, gt, int(k))
+            for pred, gt in zip(query_results, gt_lists)
+        ]
         results_row: Dict[str, Any] = {
             "strategy": strategy,
             "iter_mode": iter_mode,
@@ -380,9 +394,16 @@ def exp_pgvector_single(
             "query_lat_p99": float(np.percentile(lat, 99)) if lat.size else 0.0,
             "dataset_key": dataset_key,
             "test_size": float(test_size),
-            "index_size_bytes": int(index_size_bytes) if index_size_bytes is not None else None,
-            "table_size_bytes": int(table_size_bytes) if table_size_bytes is not None else None,
+            "index_size_bytes": (
+                int(index_size_bytes) if index_size_bytes is not None else None
+            ),
+            "table_size_bytes": (
+                int(table_size_bytes) if table_size_bytes is not None else None
+            ),
             "vector_bytes": int(vector_bytes),
+            # list-valued columns for plotting preprocessors
+            "query_latencies": json.dumps([float(x) for x in query_latencies]),
+            "query_recalls": json.dumps([float(x) for x in per_query_recalls]),
         }
 
         # Emit outputs
@@ -399,7 +420,11 @@ def exp_pgvector_single(
             "iter_mode": iter_mode,
             "k": int(k),
             "ivf": {"lists": lists, "probes": probes},
-            "hnsw": {"m": m, "ef_construction": ef_construction, "ef_search": ef_search},
+            "hnsw": {
+                "m": m,
+                "ef_construction": ef_construction,
+                "ef_search": ef_search,
+            },
             "gucs": gucs,
             "dataset_key": dataset_key,
             "test_size": float(test_size),

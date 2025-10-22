@@ -419,6 +419,8 @@ ALGORITHM_DIR_MAPPING = {
     "Filtered DiskANN": "filtered_diskann",
     "ACORN-1": "acorn_1",
     r"ACORN-$\gamma$": "acorn_gamma",
+    "Pg-HNSW": "pgvector_hnsw",
+    "Pg-IVF": "pgvector_ivf",
 }
 
 # Short names for annotations
@@ -432,6 +434,8 @@ SHORT_NAMES = {
     "Filtered DiskANN": "Disk",
     "ACORN-1": "A-1",
     r"ACORN-$\gamma$": "A-γ",
+    "Pg-HNSW": "PG-H",
+    "Pg-IVF": "PG-I",
 }
 
 # Consistent color mapping for baselines across all plots
@@ -445,6 +449,8 @@ BASELINE_COLORS = {
     "Filtered DiskANN": "#e377c2",  # Pink
     "ACORN-1": "#7f7f7f",  # Gray
     r"ACORN-$\gamma$": "#bcbd22",  # Olive
+    "Pg-HNSW": "#17becf",  # Teal
+    "Pg-IVF": "#aec7e8",  # Light blue
 }
 
 
@@ -1111,6 +1117,8 @@ def plot_memory_vs_latency_per_selectivity(
         "Filtered DiskANN",
         "Shared HNSW",
         "Shared IVF",
+        "Pg-HNSW",
+        "Pg-IVF",
         "ACORN-1",
         r"ACORN-$\gamma$",
         "Curator",

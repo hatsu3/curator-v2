@@ -340,6 +340,8 @@ def discover_baseline_results(
         "filtered_diskann": "Filtered DiskANN",
         "acorn_1": "ACORN-1",
         "acorn_gamma": r"ACORN-$\gamma$",
+        "pgvector_hnsw": "Pg-HNSW",
+        "pgvector_ivf": "Pg-IVF",
     }
 
     baseline_results = {}
@@ -592,6 +594,8 @@ def plot_recall_vs_latency(
         "Filtered DiskANN",
         "Shared HNSW",
         "Shared IVF",
+        "Pg-HNSW",
+        "Pg-IVF",
         "ACORN-1",
         r"ACORN-$\gamma$",
         "Curator",
@@ -642,6 +646,8 @@ def plot_recall_vs_latency(
         "Filtered DiskANN": "tab:red",
         "Shared HNSW": "tab:purple",
         "Shared IVF": "tab:brown",
+        "Pg-HNSW": "tab:pink",
+        "Pg-IVF": "tab:brown",
         "ACORN-1": "tab:pink",
         r"ACORN-$\gamma$": "tab:gray",
         "Curator": "tab:olive",
@@ -655,6 +661,8 @@ def plot_recall_vs_latency(
         "Filtered DiskANN": "P",
         "Shared HNSW": "h",
         "Shared IVF": "s",
+        "Pg-HNSW": "<",
+        "Pg-IVF": ">",
         "ACORN-1": "*",
         r"ACORN-$\gamma$": "p",
         "Curator": "^",

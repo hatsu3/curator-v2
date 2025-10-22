@@ -30,9 +30,51 @@ def load_algorithm_build_time(
     Returns:
         Build time in seconds, or None if not found
     """
-    results_path = (
-        Path(output_dir) / algorithm / f"{dataset_key}_test{test_size}" / "results.csv"
-    )
+    base_dir = Path(output_dir) / algorithm / f"{dataset_key}_test{test_size}"
+    results_path = base_dir / "results.csv"
+
+    # Special handling for pgvector baselines: read build/insert artifacts
+    if algorithm in {"pgvector_hnsw", "pgvector_ivf"}:
+        if algorithm == "pgvector_hnsw":
+            insert_path = base_dir / "insert_non_durable.csv"
+            if not insert_path.exists():
+                print(f"Warning: pgvector HNSW insert file not found: {insert_path}")
+                return None
+            try:
+                df = pd.read_csv(insert_path)
+                if len(df) == 0:
+                    print(f"Warning: Empty pgvector HNSW insert file: {insert_path}")
+                    return None
+                row = df.iloc[0]
+                n_rows = int(row.get("n_rows", 0))
+                insert_qps = float(row.get("insert_qps", 0.0))
+                if n_rows <= 0 or insert_qps <= 0:
+                    print("  Warning: invalid n_rows or insert_qps in pgvector HNSW insert file")
+                    return None
+                build_time = n_rows / insert_qps
+                print(f"  pgvector HNSW build_time = n_rows/insert_qps = {n_rows}/{insert_qps:.3f} = {build_time:.2f}s")
+                return float(build_time)
+            except Exception as e:
+                print(f"Error reading pgvector HNSW insert file: {e}")
+                return None
+        else:  # pgvector_ivf
+            build_path = base_dir / "build.csv"
+            if not build_path.exists():
+                print(f"Warning: pgvector IVF build file not found: {build_path}")
+                return None
+            try:
+                df = pd.read_csv(build_path)
+                if len(df) == 0:
+                    print(f"Warning: Empty pgvector IVF build file: {build_path}")
+                    return None
+                row = df.iloc[0]
+                if "build_time_seconds" in df.columns and not pd.isna(row["build_time_seconds"]):
+                    return float(row["build_time_seconds"])
+                print("Warning: build_time_seconds missing in pgvector IVF build.csv")
+                return None
+            except Exception as e:
+                print(f"Error reading pgvector IVF build file: {e}")
+                return None
 
     if not results_path.exists():
         print(f"Warning: Results file not found: {results_path}")
@@ -200,6 +242,8 @@ def load_build_time_results(
         "Filtered DiskANN": "filtered_diskann",
         "ACORN-1": "acorn_1",
         "ACORN-gamma": "acorn_gamma",
+        "pgvector HNSW": "pgvector_hnsw",
+        "pgvector IVF": "pgvector_ivf",
     }
 
     # Map to display names for plotting

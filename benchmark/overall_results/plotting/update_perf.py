@@ -45,9 +45,8 @@ def load_algorithm_update_performance(
     Returns:
         Dictionary with update performance metrics, or None if not found
     """
-    results_path = (
-        Path(output_dir) / algorithm / f"{dataset_key}_test{test_size}" / "results.csv"
-    )
+    base_dir = Path(output_dir) / algorithm / f"{dataset_key}_test{test_size}"
+    results_path = base_dir / "results.csv"
 
     # Special handling for Shared IVF on YFCC100M - use old results if new ones are missing
     if (
@@ -60,6 +59,31 @@ def load_algorithm_update_performance(
             f"Using fallback results for Shared IVF on {dataset_display_name}: {fallback_path}"
         )
         results_path = Path(fallback_path)
+
+    # Special handling for pgvector baselines: read insert_non_durable.csv
+    if algorithm in {"pgvector_hnsw", "pgvector_ivf"}:
+        insert_path = base_dir / "insert_non_durable.csv"
+        if not insert_path.exists():
+            print(f"Warning: pgvector insert file not found: {insert_path}")
+            return None
+        try:
+            df = pd.read_csv(insert_path)
+            if len(df) == 0:
+                print(f"Warning: Empty pgvector insert file: {insert_path}")
+                return None
+            row = df.iloc[0]
+            result = {
+                "insert_lat_avg": float(row["insert_lat_avg"]) * 1000 if not pd.isna(row.get("insert_lat_avg")) else None,
+                "insert_lat_p99": float(row["insert_lat_p99"]) * 1000 if not pd.isna(row.get("insert_lat_p99")) else None,
+                "access_grant_lat_avg": None,
+                "delete_lat_avg": None,
+                "revoke_access_lat_avg": None,
+            }
+            print("✓ Loaded pgvector update performance from insert_non_durable.csv")
+            return result
+        except Exception as e:
+            print(f"Error reading pgvector insert file: {e}")
+            return None
 
     if not results_path.exists():
         print(f"Warning: Results file not found: {results_path}")
@@ -176,6 +200,8 @@ def load_update_performance_results(
         "Filtered DiskANN": "filtered_diskann",
         "ACORN-1": "acorn_1",
         "ACORN-gamma": "acorn_gamma",
+        "pgvector HNSW": "pgvector_hnsw",
+        "pgvector IVF": "pgvector_ivf",
     }
 
     # Map to display names for plotting
@@ -189,6 +215,8 @@ def load_update_performance_results(
         "Filtered DiskANN": "DiskANN",
         "ACORN-1": "ACORN-1",
         "ACORN-gamma": r"ACORN-$\gamma$",
+        "pgvector HNSW": "Pg-HNSW",
+        "pgvector IVF": "Pg-IVF",
     }
 
     results = []
@@ -336,6 +364,8 @@ def plot_update_results(
         "DiskANN",
         r"ACORN-$\gamma$",
         "ACORN-1",
+        "Pg-HNSW",
+        "Pg-IVF",
         "S-HNSW",
         "S-IVF",
         "Curator",

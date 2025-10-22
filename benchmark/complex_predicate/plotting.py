@@ -14,7 +14,7 @@ import seaborn as sns
 
 from benchmark.complex_predicate.dataset import ComplexPredicateDataset
 
-# Global algorithm mappings for consistency with overall plotting
+# Mapping from output dir name to display name
 ALGORITHM_MAPPING = {
     "curator": "Curator",
     "curator_with_index": "Curator (Idx)",
@@ -25,6 +25,8 @@ ALGORITHM_MAPPING = {
     "parlay_ivf": "Parlay IVF",
     "acorn": "ACORN",
     "pre_filtering": "Pre-Filter",
+    "pgvector_hnsw": "Pg-HNSW",
+    "pgvector_ivf": "Pg-IVF",
 }
 
 # Global algorithm order for consistent plotting
@@ -35,6 +37,8 @@ ALGORITHM_ORDER = [
     "Per-Pred HNSW",
     "Shared IVF",
     "Per-Pred IVF",
+    "Pg-HNSW",
+    "Pg-IVF",
     "Parlay IVF",
     "ACORN",
     "Pre-Filter",
@@ -163,6 +167,8 @@ SHORT_NAMES = {
     "Per-Pred IVF": "P-IVF",
     "Parlay IVF": "Parlay",
     "ACORN": r"ACORN-$\gamma$",
+    "Pg-HNSW": "Pg-HNSW",
+    "Pg-IVF": "Pg-IVF",
 }
 
 
@@ -329,7 +335,7 @@ def plot_optimal_results(
     available_algorithms = [alg for alg in ALGORITHM_ORDER if alg in all_results]
 
     # Custom color palette
-    colors = sns.color_palette("tab10", n_colors=5)
+    colors = sns.color_palette("tab10", n_colors=6)
     custom_palette = {
         "Curator": colors[0],
         "Curator (Idx)": colors[0],
@@ -339,6 +345,8 @@ def plot_optimal_results(
         "Per-Pred IVF": colors[2],
         "Parlay IVF": colors[3],
         "ACORN": colors[4],
+        "Pg-HNSW": colors[5],
+        "Pg-IVF": colors[5]
     }
 
     # Plot each template
@@ -563,7 +571,7 @@ def plot_optimal_results_clean(
     available_algorithms = [alg for alg in ALGORITHM_ORDER if alg in all_results]
 
     # Custom color palette
-    colors = sns.color_palette("tab10", n_colors=5)
+    colors = sns.color_palette("tab10", n_colors=6)
     custom_palette = {
         "Curator": colors[0],
         "Curator (Idx)": colors[0],
@@ -573,6 +581,8 @@ def plot_optimal_results_clean(
         "Per-Pred IVF": colors[2],
         "Parlay IVF": colors[3],
         "ACORN": colors[4],
+        "Pg-HNSW": colors[5],
+        "Pg-IVF": colors[5],
         "Pre-Filter": "tab:red",
     }
 
@@ -586,11 +596,13 @@ def plot_optimal_results_clean(
         "Per-Pred IVF": "*",
         "Parlay IVF": "d",
         "ACORN": "p",
+        "Pg-HNSW": "<",
+        "Pg-IVF": ">",
         "Pre-Filter": "X",
     }
 
     # Define slow algorithms for AND template
-    slow_algorithms = {"Shared HNSW", "Shared IVF", "ACORN", "Parlay IVF", "Pre-Filter"}
+    slow_algorithms = {"Shared HNSW", "Shared IVF", "ACORN", "Parlay IVF", "Pre-Filter", "Pg-HNSW", "Pg-IVF"}
 
     # Set up plotting - 3 subplots with custom spacing to group AND subplots
     plt.rcParams.update({"font.size": font_size})

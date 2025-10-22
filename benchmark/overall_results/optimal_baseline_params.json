@@ -150,6 +150,44 @@
       }
     }
   },
+  "pgvector HNSW": {
+    "yfcc100m": {
+      "construction_params": {
+        "construction_ef": 128,
+        "m": 32
+      },
+      "search_param_combinations": {
+        "search_ef": [8, 16, 32, 64, 128]
+      }
+    },
+    "arxiv": {
+      "construction_params": {
+        "construction_ef": 128,
+        "m": 16
+      },
+      "search_param_combinations": {
+        "search_ef": [8, 16, 32, 64, 128]
+      }
+    }
+  },
+  "pgvector IVF": {
+    "yfcc100m": {
+      "construction_params": {
+        "nlist": 32768
+      },
+      "search_param_combinations": {
+        "nprobe": [32, 64, 128, 256, 512]
+      }
+    },
+    "arxiv": {
+      "construction_params": {
+        "nlist": 1024
+      },
+      "search_param_combinations": {
+        "nprobe": [8, 16, 32, 64, 128]
+      }
+    }
+  },
   "Curator": {
     "yfcc100m": {
       "construction_params": {

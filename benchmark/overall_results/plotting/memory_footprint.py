@@ -28,9 +28,49 @@ def load_algorithm_memory_usage(
     Returns:
         Memory usage in KB, or None if not found
     """
-    results_path = (
-        Path(output_dir) / algorithm / f"{dataset_key}_test{test_size}" / "results.csv"
-    )
+    base_dir = Path(output_dir) / algorithm / f"{dataset_key}_test{test_size}"
+    results_path = base_dir / "results.csv"
+
+    # Special handling for pgvector baselines: memory comes from build/insert artifacts
+    if algorithm in {"pgvector_hnsw", "pgvector_ivf"}:
+        if algorithm == "pgvector_hnsw":
+            insert_path = base_dir / "insert_non_durable.csv"
+            if not insert_path.exists():
+                print(f"Warning: pgvector HNSW insert file not found: {insert_path}")
+                return None
+            try:
+                df = pd.read_csv(insert_path)
+                if len(df) == 0:
+                    print(f"Warning: Empty pgvector HNSW insert file: {insert_path}")
+                    return None
+                row = df.iloc[0]
+                bytes_val = row.get("index_size_bytes")
+                if pd.isna(bytes_val):
+                    print("Warning: index_size_bytes missing in pgvector HNSW insert file")
+                    return None
+                return float(bytes_val) / 1024.0
+            except Exception as e:
+                print(f"Error reading pgvector HNSW insert file: {e}")
+                return None
+        else:  # pgvector_ivf
+            build_path = base_dir / "build.csv"
+            if not build_path.exists():
+                print(f"Warning: pgvector IVF build file not found: {build_path}")
+                return None
+            try:
+                df = pd.read_csv(build_path)
+                if len(df) == 0:
+                    print(f"Warning: Empty pgvector IVF build file: {build_path}")
+                    return None
+                row = df.iloc[0]
+                bytes_val = row.get("index_size_bytes")
+                if pd.isna(bytes_val):
+                    print("Warning: index_size_bytes missing in pgvector IVF build file")
+                    return None
+                return float(bytes_val) / 1024.0
+            except Exception as e:
+                print(f"Error reading pgvector IVF build file: {e}")
+                return None
 
     if not results_path.exists():
         print(f"Warning: Results file not found: {results_path}")
@@ -104,6 +144,8 @@ def load_memory_footprint_results(
         "Filtered DiskANN": "filtered_diskann",
         "ACORN-1": "acorn_1",
         "ACORN-gamma": "acorn_gamma",
+        "pgvector HNSW": "pgvector_hnsw",
+        "pgvector IVF": "pgvector_ivf",
     }
 
     # Map to display names for plotting
@@ -117,6 +159,8 @@ def load_memory_footprint_results(
         "Filtered DiskANN": "DiskANN",
         "ACORN-1": "ACORN-1",
         "ACORN-gamma": r"ACORN-$\gamma$",
+        "pgvector HNSW": "Pg-HNSW",
+        "pgvector IVF": "Pg-IVF",
     }
 
     results = []
@@ -261,6 +305,8 @@ def plot_memory_footprint(
         "DiskANN",
         r"ACORN-$\gamma$",
         "ACORN-1",
+        "Pg-HNSW",
+        "Pg-IVF",
         "S-HNSW",
         "S-IVF",
         "Curator",
