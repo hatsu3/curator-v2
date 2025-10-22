@@ -135,8 +135,8 @@ class LoadDataset:
         test_size: float = 0.01,
         copy_format: str = "binary",  # binary | csv
         create_gin: bool | None = None,
-        unlogged: bool = False,
-        sync_commit_off: bool = False,
+        unlogged: bool = True,
+        sync_commit_off: bool = True,
         # Optional post-load build
         build_index: str | None = None,  # gin | hnsw | ivf
         m: int | None = None,
@@ -376,8 +376,8 @@ class LoadDataset:
         dim: int = 192,
         test_size: float = 0.01,
         strategy: str = "hnsw",  # prefilter | hnsw | ivf
-        unlogged: bool = False,
-        sync_commit_off: bool = False,
+        unlogged: bool = True,
+        sync_commit_off: bool = True,
         # Optional knobs
         m: int | None = None,
         efc: int | None = None,
@@ -670,12 +670,17 @@ class LoadDataset:
             )
         )
         index_size_bytes = None
+        table_size_bytes = None
         if idx_name is not None:
             with psycopg2.connect(_resolve_dsn(args.dsn)) as _c:
                 _c.autocommit = True
                 with _c.cursor() as _cur:
                     _cur.execute("SELECT pg_relation_size(%s);", (idx_name,))
                     index_size_bytes = int(_cur.fetchone()[0])
+                    _cur.execute("SELECT pg_table_size('items');")
+                    table_size_bytes = int(_cur.fetchone()[0])
+
+        vector_bytes = int(n_rows) * int(args.dim) * 4
 
         metrics: Dict[str, Any] = {
             "status": "ok",
@@ -691,6 +696,8 @@ class LoadDataset:
             "insert_lat_p50": float(np.percentile(lat, 50)) if lat.size else None,
             "insert_lat_p99": float(np.percentile(lat, 99)) if lat.size else None,
             "index_size_bytes": index_size_bytes,
+            "table_size_bytes": table_size_bytes,
+            "vector_bytes": vector_bytes,
             "timestamp": datetime.utcnow().isoformat(),
         }
 

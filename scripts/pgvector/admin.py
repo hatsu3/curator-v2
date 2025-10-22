@@ -47,6 +47,7 @@ class IndexBuildResult:
     table: str = "items"
     build_time_seconds: Optional[float] = None
     index_size_bytes: Optional[int] = None
+    table_size_bytes: Optional[int] = None
     dim: Optional[int] = None
     params: Optional[Dict[str, Any]] = None
     gucs: Optional[Dict[str, Any]] = None
@@ -210,7 +211,7 @@ def create_schema(
     dim: int,
     schema: str = "option_a",
     create_gin: bool = True,
-    unlogged: bool = False,
+    unlogged: bool = True,
     dry_run: bool = False,
     label_ids: Optional[Iterable[int]] = None,
 ) -> None:
@@ -394,10 +395,12 @@ def create_index(
             _exec(conn, stmt)
         build_time = time.monotonic() - start
 
-        # Measure index size
+        # Measure index and table sizes
         with conn.cursor() as cur:
             cur.execute("SELECT pg_relation_size(%s);", (idx_name,))
             size_bytes = cur.fetchone()[0]
+            cur.execute("SELECT pg_table_size('items');")
+            table_bytes = cur.fetchone()[0]
     finally:
         conn.close()
 
@@ -408,6 +411,7 @@ def create_index(
         dim=dim,
         build_time_seconds=build_time,
         index_size_bytes=size_bytes,
+        table_size_bytes=table_bytes,
         params={"m": m, "efc": efc, "lists": lists, "opclass": opclass},
     )
     _emit_json_csv(result, output_json=output_json, output_csv=output_csv)
