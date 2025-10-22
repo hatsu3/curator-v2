@@ -248,7 +248,7 @@ def exp_pgvector_complex(
                 "recall_at_k": float(rec),
                 "query_qps": float(1.0 / lat.mean()) if lat.size else 0.0,
                 "query_lat_avg": float(lat.mean()) if lat.size else 0.0,
-                "query_lat_p50": float(np.percentile(lat, 50)) if lat.size else 0.0,
+                "query_lat_p90": float(np.percentile(lat, 90)) if lat.size else 0.0,
                 "query_lat_p95": float(np.percentile(lat, 95)) if lat.size else 0.0,
                 "query_lat_p99": float(np.percentile(lat, 99)) if lat.size else 0.0,
             }

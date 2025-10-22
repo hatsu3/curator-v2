@@ -324,6 +324,47 @@ def exp_pgvector_single(
         # Compute recall against the prefix of ground truth matching processed queries
         rec = recall(query_results, ds.ground_truth[: len(query_results)])
 
+        # Gather storage metrics from DB
+        def _relation_size(name: str) -> int:
+            with conn.cursor() as _c:
+                _c.execute("SELECT pg_relation_size(%s);", (name,))
+                row = _c.fetchone()
+                return int(row[0]) if row and row[0] is not None else 0
+
+        def _table_size(name: str) -> int:
+            with conn.cursor() as _c:
+                _c.execute("SELECT pg_table_size(%s);", (name,))
+                row = _c.fetchone()
+                return int(row[0]) if row and row[0] is not None else 0
+
+        # Determine index name for vector strategies
+        idx_name: Optional[str] = None
+        if strategy == "hnsw":
+            idx_name = "items_emb_hnsw"
+        elif strategy == "ivf":
+            idx_name = "items_emb_ivf"
+
+        index_size_bytes: Optional[int] = None
+        if idx_name is not None:
+            try:
+                index_size_bytes = _relation_size(idx_name)
+            except Exception:
+                index_size_bytes = None
+
+        table_size_bytes: Optional[int] = None
+        try:
+            table_size_bytes = _table_size("items")
+        except Exception:
+            table_size_bytes = None
+
+        # Estimate raw vector bytes from DB row count and dimension
+        n_rows = 0
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM items;")
+            n_rows = int(cur.fetchone()[0])
+        dim_eff = get_embedding_dim_from_db(conn) or int(ds.dim)
+        vector_bytes = int(n_rows) * int(dim_eff) * 4
+
         # Summarize metrics
         lat = np.array(query_latencies, dtype=float)
         results_row: Dict[str, Any] = {
@@ -331,14 +372,17 @@ def exp_pgvector_single(
             "iter_mode": iter_mode,
             "k": int(k),
             "recall_at_k": float(rec),
-            "query_qps": float(1.0 / lat.mean()),
-            "query_lat_avg": float(lat.mean()),
-            "query_lat_std": float(lat.std()),
-            "query_lat_p50": float(np.percentile(lat, 50)),
-            "query_lat_p95": float(np.percentile(lat, 95)),
-            "query_lat_p99": float(np.percentile(lat, 99)),
+            "query_qps": float(1.0 / lat.mean()) if lat.size else 0.0,
+            "query_lat_avg": float(lat.mean()) if lat.size else 0.0,
+            "query_lat_std": float(lat.std()) if lat.size else 0.0,
+            "query_lat_p90": float(np.percentile(lat, 90)) if lat.size else 0.0,
+            "query_lat_p95": float(np.percentile(lat, 95)) if lat.size else 0.0,
+            "query_lat_p99": float(np.percentile(lat, 99)) if lat.size else 0.0,
             "dataset_key": dataset_key,
             "test_size": float(test_size),
+            "index_size_bytes": int(index_size_bytes) if index_size_bytes is not None else None,
+            "table_size_bytes": int(table_size_bytes) if table_size_bytes is not None else None,
+            "vector_bytes": int(vector_bytes),
         }
 
         # Emit outputs
