@@ -13,12 +13,12 @@ This module invokes the existing insert benchmark implementation from
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
+import csv
 import json
 import os
-import csv
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import fire
 
@@ -35,7 +35,6 @@ def _run_json_path(dataset_key: str, strategy: str, durability: str) -> Path:
 @dataclass
 class SweepArgs:
     dsn: Optional[str]
-    dataset: str
     dataset_key: str
     test_size: float
     dim: int
@@ -72,7 +71,6 @@ class InsertAB:
         """
         args = SweepArgs(
             dsn=dsn,
-            dataset=dataset,
             dataset_key=dataset_key,
             test_size=test_size,
             dim=dim,
@@ -98,7 +96,7 @@ class InsertAB:
                 out_dir = _ab_dir(args.dataset_key, idx_tag, label)
                 cmd = (
                     "python -m scripts.pgvector.load_dataset insert_bench "
-                    f"--dsn {args.dsn or '<DSN>'} --dataset {args.dataset} --dataset_key {args.dataset_key} "
+                    f"--dsn {args.dsn or '<DSN>'} --dataset_key {args.dataset_key} "
                     f"--dim {args.dim} --test_size {args.test_size} --strategy {strat}"
                 )
                 if strat == "hnsw":
@@ -119,6 +117,7 @@ class InsertAB:
 
         # Real execution path
         from scripts.pgvector.load_dataset import LoadDataset  # type: ignore
+
         try:
             from scripts.pgvector import admin  # type: ignore
         except Exception:
@@ -138,12 +137,13 @@ class InsertAB:
                             dry_run=False,
                         )
                     except Exception as e:  # pragma: no cover
-                        print(f"[insert_ab][WARN] IVF build failed or admin missing: {e}")
+                        print(
+                            f"[insert_ab][WARN] IVF build failed or admin missing: {e}"
+                        )
 
                 # Execute insert bench
                 ld.insert_bench(
                     dsn=args.dsn,
-                    dataset=args.dataset,
                     dataset_key=args.dataset_key,
                     dim=args.dim,
                     test_size=args.test_size,
@@ -188,11 +188,16 @@ class InsertAB:
                     w.writerow(r)
         # Write JSON
         with open(out_json, "w", encoding="utf-8") as f:
-            json.dump({
-                "dataset_key": args.dataset_key,
-                "test_size": args.test_size,
-                "runs": rows,
-            }, f, indent=2, sort_keys=True)
+            json.dump(
+                {
+                    "dataset_key": args.dataset_key,
+                    "test_size": args.test_size,
+                    "runs": rows,
+                },
+                f,
+                indent=2,
+                sort_keys=True,
+            )
         print("[insert_ab] wrote", out_csv)
         print("[insert_ab] wrote", out_json)
 
@@ -203,4 +208,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
