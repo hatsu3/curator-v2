@@ -6,21 +6,19 @@ This module provides a thin abstraction for:
 - Adding boolean label columns and backfilling from tags INT[]
 - Measuring relation sizes (table and indexes) for storage comparisons
 - Emitting profiling artifacts (JSON/CSV)
-
-Use `--dry_run` for previewing SQL without connecting to the database
-where supported.
 """
-
-from __future__ import annotations
 
 import csv
 import json
 import os
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Dict, Iterable, Optional, Sequence
+
+import psycopg2
 
 
 def _warn(msg: str) -> None:
@@ -41,7 +39,7 @@ def deterministic_index_name(index: str) -> str:
 
 @dataclass
 class IndexBuildResult:
-    status: str  # "ok", "deferred", or "dry_run"
+    status: str  # "ok", "deferred"
     index_type: str
     index_name: str
     table: str = "items"
@@ -94,11 +92,6 @@ def get_relation_size(dsn: str, relname: str) -> int:
 
     Raises on connection or query errors.
     """
-    try:
-        import psycopg2  # type: ignore
-    except Exception as e:  # pragma: no cover
-        _warn(f"psycopg2 not available: {e}")
-        raise
     conn = psycopg2.connect(dsn)
     try:
         with conn.cursor() as cur:
@@ -114,11 +107,6 @@ def get_total_relation_size(dsn: str, relname: str) -> int:
 
     Useful for table-wide storage comparisons (includes TOAST, indexes).
     """
-    try:
-        import psycopg2  # type: ignore
-    except Exception as e:  # pragma: no cover
-        _warn(f"psycopg2 not available: {e}")
-        raise
     conn = psycopg2.connect(dsn)
     try:
         with conn.cursor() as cur:
@@ -150,11 +138,7 @@ def _backfill_boolean_labels_from_tags(conn, label_ids: Sequence[int]) -> None:
             )
 
 
-def create_all_boolean_labels(
-    dsn: str,
-    *,
-    dry_run: bool = False,
-) -> None:
+def create_all_boolean_labels(dsn: str) -> None:
     """Create boolean columns for all distinct labels in items.tags and backfill.
 
     This procedure:
@@ -170,15 +154,6 @@ def create_all_boolean_labels(
         "then backfill from tags"
     )
     print(plan_note)
-    if dry_run:
-        print("[pgvector] Dry-run: no DB changes executed.")
-        return
-
-    try:
-        import psycopg2  # type: ignore
-    except Exception as e:  # pragma: no cover
-        _warn(f"psycopg2 not available: {e}")
-        raise
 
     conn = psycopg2.connect(dsn)
     try:
@@ -209,15 +184,14 @@ def create_schema(
     dsn: str,
     *,
     dim: int,
-    schema: str = "option_a",
+    schema: str = "int_array",
     create_gin: bool = True,
     unlogged: bool = True,
-    dry_run: bool = False,
     label_ids: Optional[Iterable[int]] = None,
 ) -> None:
     """Create extension, `items` table, and relational index.
 
-    Option A (default):
+    Int array schema variant (default):
       - items(id BIGINT PRIMARY KEY, tags INT[], embedding vector(D))
       - CREATE INDEX items_tags_gin ON items USING GIN (tags)
 
@@ -226,30 +200,23 @@ def create_schema(
       - Adds boolean columns label_<id> for provided label_ids and backfills
       - GIN creation is typically skipped for fair A/B storage comparison
     """
-    if schema not in {"option_a", "boolean"}:
-        _warn("unsupported schema; expected one of: option_a, boolean")
+    if schema not in {"int_array", "boolean"}:
+        _warn("unsupported schema; expected one of: int_array, boolean")
     table_kw = "UNLOGGED " if unlogged else ""
     sql = [
         "CREATE EXTENSION IF NOT EXISTS vector;",
         f"CREATE {table_kw}TABLE IF NOT EXISTS items (id BIGINT PRIMARY KEY, tags INT[], embedding vector({dim}));",
     ]
     if create_gin:
-        sql.append("CREATE INDEX IF NOT EXISTS items_tags_gin ON items USING GIN (tags);")
+        sql.append(
+            "CREATE INDEX IF NOT EXISTS items_tags_gin ON items USING GIN (tags);"
+        )
 
     print("[pgvector] Planned schema SQL:")
     for stmt in sql:
         print("  ", stmt)
 
-    if dry_run:
-        return
-
     # Real execution path
-    try:
-        import psycopg2  # type: ignore
-    except Exception as e:  # pragma: no cover
-        _warn(f"psycopg2 not available: {e}")
-        raise
-
     def _exec_all(dsn_: str, statements: Iterable[str]) -> None:
         conn = psycopg2.connect(dsn_)
         try:
@@ -286,19 +253,15 @@ def create_index(
     lists: Optional[int] = None,
     opclass: str = "vector_l2_ops",
     force: bool = False,
-    dry_run: bool = False,
     output_json: Optional[str] = None,
     output_csv: Optional[str] = None,
 ) -> None:
-    """Create a vector index and optionally emit profiling artifacts.
-
-    In this scaffold, we print SQL and emit a placeholder result when
-    `dry_run=True`. Full execution and timings land in later commits.
-    """
+    """Create a vector index and optionally emit profiling artifacts."""
     if index == "gin":
         idx_name = "items_tags_gin"
     else:
         idx_name = deterministic_index_name(index)
+
     sql: list[str] = []
     if index == "hnsw":
         if m is None or efc is None:
@@ -323,24 +286,7 @@ def create_index(
     for stmt in sql:
         print("  ", stmt)
 
-    if dry_run:
-        result = IndexBuildResult(
-            status="dry_run",
-            index_type=index,
-            index_name=idx_name,
-            dim=dim,
-            params={"m": m, "efc": efc, "lists": lists, "opclass": opclass},
-        )
-        _emit_json_csv(result, output_json=output_json, output_csv=output_csv)
-        return
-
     # Real execution path
-    try:
-        import psycopg2  # type: ignore
-    except Exception as e:  # pragma: no cover
-        _warn(f"psycopg2 not available: {e}")
-        raise
-
     def _exec(conn, stmt: str) -> None:
         with conn.cursor() as cur:
             cur.execute(stmt)
@@ -390,10 +336,78 @@ def create_index(
             # For GIN baseline, ensure fresh timing of the GIN index
             _exec(conn, 'DROP INDEX IF EXISTS "items_tags_gin";')
 
-        start = time.monotonic()
-        for stmt in sql:
-            _exec(conn, stmt)
-        build_time = time.monotonic() - start
+        # Monitor CREATE INDEX progress in a background thread filtered by this backend pid
+        with conn.cursor() as _pid_cur:
+            _pid_cur.execute("SELECT pg_backend_pid();")
+            leader_pid = int(_pid_cur.fetchone()[0])
+
+        stop_evt = threading.Event()
+
+        def _monitor_progress(
+            dsn_: str, pid_: int, stop_event: threading.Event, idx_type: str
+        ) -> None:
+            try:
+                mon = psycopg2.connect(dsn_)
+                mon.autocommit = True
+            except Exception:
+                return
+            last_pct = None
+            try:
+                while not stop_event.is_set():
+                    try:
+                        with mon.cursor() as c:
+                            c.execute(
+                                """
+                                SELECT phase,
+                                       COALESCE(blocks_done, 0),
+                                       COALESCE(blocks_total, 0),
+                                       COALESCE(tuples_done, 0),
+                                       COALESCE(tuples_total, 0)
+                                FROM pg_stat_progress_create_index
+                                WHERE pid = %s;
+                                """,
+                                (pid_,),
+                            )
+                            row = c.fetchone()
+                        if row:
+                            phase, b_done, b_total, t_done, t_total = row
+                            pct = None
+                            if b_total and b_total > 0:
+                                pct = 100.0 * float(b_done) / float(b_total)
+                            elif t_total and t_total > 0:
+                                pct = 100.0 * float(t_done) / float(t_total)
+                            if pct is not None and (
+                                last_pct is None or int(pct) != int(last_pct)
+                            ):
+                                print(
+                                    f"[pgvector][build] {idx_type} phase='{phase}', progress={pct:.1f}% (blocks {b_done}/{b_total})"
+                                )
+                                last_pct = pct
+                        time.sleep(0.5)
+                    except Exception:
+                        time.sleep(0.5)
+                        continue
+            finally:
+                try:
+                    mon.close()
+                except Exception:
+                    pass
+
+        mon_thread = threading.Thread(
+            target=_monitor_progress,
+            args=(dsn, leader_pid, stop_evt, index),
+            daemon=True,
+        )
+        mon_thread.start()
+
+        try:
+            start = time.monotonic()
+            for stmt in sql:
+                _exec(conn, stmt)
+            build_time = time.monotonic() - start
+        finally:
+            stop_evt.set()
+            mon_thread.join(timeout=2.0)
 
         # Measure index and table sizes
         with conn.cursor() as cur:
