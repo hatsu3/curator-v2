@@ -1,13 +1,7 @@
-"""CLI for pgvector database setup and index management.
-
-Commands are implemented with Python Fire and delegate to `admin`.
-This file is a scaffold in commit 2: commands print SQL and warnings
-unless `dry_run=True`. Subsequent commits will add real DB execution.
-"""
-
-from __future__ import annotations
+"""CLI for pgvector database setup and index management."""
 
 import fire
+
 from scripts.pgvector import admin
 
 
@@ -17,18 +11,16 @@ class SetupDB:
         *,
         dsn: str,
         dim: int,
-        schema: str = "option_a",
+        schema: str = "int_array",
         label_ids: object | None = None,
-        dry_run: bool = False,
     ) -> None:
         """Create extension, `items` table, and `GIN(tags)`.
 
         Args:
             dsn: Postgres DSN, e.g. `postgresql://user:pass@host:5432/db`.
             dim: Embedding dimension for `vector(dim)`.
-            schema: Schema option; `option_a` or `boolean`.
+            schema: Schema option; `int_array` or `boolean`.
             label_ids: Comma-separated top label IDs for boolean columns, e.g. "1,2,3".
-            dry_run: If true, print SQL without connecting to DB.
         """
         lids = None
         if label_ids is not None:
@@ -42,11 +34,11 @@ class SetupDB:
                     lids = [int(label_ids)]
             except Exception as e:
                 raise ValueError(f"invalid label_ids: {label_ids}") from e
+
         admin.create_schema(
             dsn,
             dim=dim,
             schema=schema,
-            dry_run=dry_run,
             label_ids=lids,
             create_gin=(schema != "boolean"),
         )
@@ -62,7 +54,6 @@ class SetupDB:
         lists: int | None = None,
         opclass: str = "vector_l2_ops",
         force: bool = False,
-        dry_run: bool = False,
         output_json: str | None = None,
         output_csv: str | None = None,
     ) -> None:
@@ -79,7 +70,6 @@ class SetupDB:
             lists=lists,
             opclass=opclass,
             force=force,
-            dry_run=dry_run,
             output_json=output_json,
             output_csv=output_csv,
         )
@@ -88,20 +78,14 @@ class SetupDB:
         self,
         *,
         dsn: str,
-        dry_run: bool = False,
     ) -> None:
         """Create boolean columns for all distinct labels and backfill.
 
         Args:
             dsn: Postgres DSN
-            dry_run: If true, prints plan only.
         """
-        admin.create_all_boolean_labels(dsn, dry_run=dry_run)
-
-
-def main() -> None:
-    fire.Fire(SetupDB)
+        admin.create_all_boolean_labels(dsn)
 
 
 if __name__ == "__main__":
-    main()
+    fire.Fire(SetupDB)

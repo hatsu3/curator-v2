@@ -1,14 +1,10 @@
-"""pgvector baselines for single-label search (YFCC-focused).
+"""pgvector baselines for single-label search.
 
 This initial commit provides:
 - DSN handling with default and explicit flag
 - Session GUC helpers
 - Strict-order SQL wrapper (for iterative relaxed modes)
 - Index presence checks (GIN(tags), HNSW, IVFFlat)
-
-Implementation is scaffold-only: supports `--dry_run` to preview SQL and
-validate DB connectivity/index presence without running full benchmarks.
-Subsequent commits will add actual query logic and metrics emission.
 """
 
 from __future__ import annotations
@@ -23,6 +19,8 @@ from typing import Any, Dict, List, Optional
 import fire
 import numpy as np
 import pandas as pd
+import psycopg2
+from tqdm import tqdm
 
 from benchmark.profiler import Dataset
 from benchmark.utils import recall
@@ -37,7 +35,6 @@ Note on dataset caching and ground truth:
 """
 
 
-# Defaults per project description
 DEFAULT_DSN = "postgresql://postgres:postgres@localhost:5432/curator_bench"
 
 
@@ -141,10 +138,7 @@ def get_embedding_dim_from_db(conn) -> Optional[int]:
         )
         row = cur.fetchone()
         if row and row[0] is not None:
-            try:
-                return int(row[0])
-            except Exception:
-                return None
+            return int(row[0])
     return None
 
 
@@ -174,7 +168,7 @@ def exp_pgvector_single(
     # IVF params
     lists: int | None = None,
     probes: int | None = None,
-    # HNSW params
+    # HNSW params (m, ef_construction only required for logging)
     m: int | None = None,
     ef_construction: int | None = None,
     ef_search: int | None = None,
@@ -184,61 +178,28 @@ def exp_pgvector_single(
     dataset_cache_path: str | Path | None = None,
     k: int = 10,
     output_path: str | None = None,
-    # Control
-    dry_run: bool = False,
 ):
-    """Single-label baseline runner.
-
-    - dry_run=True: preview SQL and GUCs without DB or dataset
-    - dry_run=False: execute queries over Postgres and emit CSV/JSON
-    """
+    """Single-label baseline runner."""
     dsn_resolved = resolve_dsn(dsn)
     print(f"[pgvector] Using DSN: {dsn_resolved}")
+
     # Session GUCs
     gucs: Dict[str, object] = {}
     if strategy == "ivf":
-        # If probes not provided, default to nlist (lists) for full coverage
-        if probes is not None:
-            gucs["ivfflat.probes"] = int(probes)
-        elif lists is not None:
-            gucs["ivfflat.probes"] = int(lists)
+        assert (
+            lists is not None and probes is not None
+        ), "lists and probes are required for ivf"
+        gucs["ivfflat.probes"] = int(probes)
         gucs["ivfflat.iterative_scan"] = iter_mode
     elif strategy == "hnsw":
-        if ef_search is not None:
-            gucs["hnsw.ef_search"] = ef_search
+        assert (
+            ef_search is not None and m is not None and ef_construction is not None
+        ), "ef_search, m, and ef_construction are required for hnsw"
+        gucs["hnsw.ef_search"] = ef_search
         gucs["hnsw.iterative_scan"] = iter_mode
-        # Remove tuple scan cap to avoid early cutoffs when debugging recall
         gucs["hnsw.max_scan_tuples"] = 1000000000
 
-    if dry_run:
-        if gucs:
-            print("[pgvector] Session GUCs (preview):", gucs)
-        # Example SQL preview without DB connection
-        if schema == "int_array":
-            core_sql = (
-                "SELECT id, embedding <-> $1::vector AS distance "
-                "FROM items WHERE tags @> ARRAY[$2] ORDER BY distance LIMIT $3"
-            )
-        elif schema == "boolean":
-            # Show a representative boolean column (substitute a label id)
-            core_sql = (
-                "SELECT id, embedding <-> $1::vector AS distance "
-                "FROM items WHERE label_<L> ORDER BY distance LIMIT $2"
-            )
-        else:
-            raise AssertionError("schema must be one of: int_array, boolean")
-        sql = (
-            strict_order_wrapper(core_sql) if iter_mode == "relaxed_order" else core_sql
-        )
-        print("[pgvector] Example query SQL (preview):\n", sql)
-        print("[pgvector] Dry-run: skipping DB connection and dataset work.")
-        return
-
-    # Real path: connect, set GUCs, check indexes
-    try:
-        import psycopg2  # type: ignore
-    except Exception as e:  # pragma: no cover
-        raise RuntimeError(f"psycopg2 not available: {e}")
+    # Connect, set GUCs, check indexes
     conn = psycopg2.connect(dsn_resolved)
     conn.autocommit = True
     try:
@@ -246,27 +207,19 @@ def exp_pgvector_single(
         print("[pgvector] Session GUCs applied.")
         ensure_indexes_for_strategy(conn, strategy, schema)
         print(f"[pgvector] Index presence OK for strategy '{strategy}'.")
-        # Load dataset; if cache_path is provided and exists, Dataset will use it.
-        # Otherwise, it will use raw sources and load ground truth from data/ground_truth
-        # if present (compute only if missing).
+
+        # Load dataset
         cache_path = Path(dataset_cache_path) if dataset_cache_path else None
         ds = Dataset.from_dataset_key(
             dataset_key, test_size=test_size, cache_path=cache_path, k=k, verbose=True
         )
 
-        # Enforce dataset dim for known datasets (e.g., YFCC == 192)
-        if dataset_key.startswith("yfcc"):
-            assert (
-                ds.dim == 192
-            ), f"YFCC dataset must have dim=192, got {ds.dim}. Check your cache and data."
-
-        # Detect DB embedding dimension; enforce equality when available
+        # Check DB embedding dimension
         db_dim = get_embedding_dim_from_db(conn)
-        if db_dim is not None:
-            assert int(db_dim) == ds.dim, (
-                f"DB embedding dimension ({db_dim}) does not match dataset dim ({ds.dim}). "
-                "Ensure table uses vector(192) for YFCC and data is loaded with 192-D embeddings."
-            )
+        assert db_dim is not None and int(db_dim) == ds.dim, (
+            f"DB embedding dimension ({db_dim}) does not match dataset dim ({ds.dim}). "
+            "Ensure table uses vector(192) for YFCC and data is loaded with 192-D embeddings."
+        )
 
         # Prepare SQL builder per schema
         def build_sql_for_label(lab: int) -> str:
@@ -277,11 +230,6 @@ def exp_pgvector_single(
                 )
             elif schema == "boolean":
                 col = f"label_{int(lab)}"
-                # Optionally validate column exists before querying
-                if not _has_column(conn, "items", col):
-                    raise AssertionError(
-                        f"Missing boolean label column '{col}'. Create via setup_db.create_schema --schema boolean --label_ids ..."
-                    )
                 core = (
                     f"SELECT id, embedding <-> %s::vector AS distance "
                     f"FROM items WHERE {col} ORDER BY distance LIMIT %s"
@@ -298,31 +246,33 @@ def exp_pgvector_single(
         processed = 0
 
         with conn.cursor() as cur:
-            for vec, access_list in zip(ds.test_vecs, ds.test_mds):
+            for vec, access_list in tqdm(zip(ds.test_vecs, ds.test_mds), total=len(ds.test_vecs), desc="Querying database"):
                 for label in access_list:
-                    if label not in ds.all_labels:
-                        continue
                     if max_queries is not None and processed >= int(max_queries):
                         break
+
                     vlit = vec_to_literal(vec)
                     sql = build_sql_for_label(int(label))
+
                     start = time.perf_counter()
                     if schema == "int_array":
                         cur.execute(sql, (vlit, int(label), int(k)))
                     else:
-                        # boolean mode: only vector and k are parameters
-                        cur.execute(sql, (vlit, int(k)))
+                        cur.execute(sql, (vlit, int(k)))  # label embedded in SQL
                     rows = cur.fetchall()
                     elapsed = time.perf_counter() - start
+
                     query_latencies.append(elapsed)
-                    # Map DB ids (1-based) to 0-based train indices for recall comparison
-                    ids = [int(r[0]) - 1 for r in rows]
+                    ids = [
+                        int(r[0]) - 1 for r in rows
+                    ]  # map DB ids (1-based) to 0-based
                     query_results.append(ids)
                     processed += 1
+
                 if max_queries is not None and processed >= int(max_queries):
                     break
 
-        # Compute recall against the prefix of ground truth matching processed queries
+        # Compute recall
         rec = recall(query_results, ds.ground_truth[: len(query_results)])
 
         # Gather storage metrics from DB
@@ -338,32 +288,17 @@ def exp_pgvector_single(
                 row = _c.fetchone()
                 return int(row[0]) if row and row[0] is not None else 0
 
-        # Determine index name for vector strategies
-        idx_name: Optional[str] = None
-        if strategy == "hnsw":
-            idx_name = "items_emb_hnsw"
-        elif strategy == "ivf":
-            idx_name = "items_emb_ivf"
-
-        index_size_bytes: Optional[int] = None
-        if idx_name is not None:
-            try:
-                index_size_bytes = _relation_size(idx_name)
-            except Exception:
-                index_size_bytes = None
-
-        table_size_bytes: Optional[int] = None
-        try:
-            table_size_bytes = _table_size("items")
-        except Exception:
-            table_size_bytes = None
+        idx_name = {"hnsw": "items_emb_hnsw", "ivf": "items_emb_ivf"}[strategy]
+        index_size_bytes = _relation_size(idx_name)
+        table_size_bytes = _table_size("items")
 
         # Estimate raw vector bytes from DB row count and dimension
         n_rows = 0
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM items;")
             n_rows = int(cur.fetchone()[0])
-        dim_eff = get_embedding_dim_from_db(conn) or int(ds.dim)
+        dim_eff = get_embedding_dim_from_db(conn)
+        assert dim_eff is not None, "embedding dimension is not found"
         vector_bytes = int(n_rows) * int(dim_eff) * 4
 
         # Summarize metrics
@@ -371,10 +306,7 @@ def exp_pgvector_single(
 
         # Per-query recall list for plotting pipelines
         def _recall_at_k_single(pred: List[int], gt: List[int], kk: int) -> float:
-            if not pred or not gt:
-                return 0.0
-            kk = int(kk)
-            return float(len(set(pred) & set(gt[:kk]))) / max(kk, 1)
+            return float(len(set(pred) & set(gt[:kk]))) / kk
 
         gt_lists = ds.ground_truth[: len(query_results)]
         per_query_recalls = [
@@ -394,26 +326,22 @@ def exp_pgvector_single(
             "query_lat_p99": float(np.percentile(lat, 99)) if lat.size else 0.0,
             "dataset_key": dataset_key,
             "test_size": float(test_size),
-            "index_size_bytes": (
-                int(index_size_bytes) if index_size_bytes is not None else None
-            ),
-            "table_size_bytes": (
-                int(table_size_bytes) if table_size_bytes is not None else None
-            ),
-            "vector_bytes": int(vector_bytes),
+            "index_size_bytes": index_size_bytes,
+            "table_size_bytes": table_size_bytes,
+            "vector_bytes": vector_bytes,
             # list-valued columns for plotting preprocessors
             "query_latencies": json.dumps([float(x) for x in query_latencies]),
             "query_recalls": json.dumps([float(x) for x in per_query_recalls]),
         }
 
-        # Emit outputs
+        # Save results to CSV
         assert output_path is not None, "output_path is required for execution"
         out_path = Path(output_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         pd.DataFrame([results_row]).to_csv(out_path, index=False)
         print(f"[pgvector] Wrote results CSV to {out_path}")
 
-        # parameters.json sidecar
+        # Dump parameters to JSON
         params_json = {
             "dsn": dsn_resolved,
             "strategy": strategy,
@@ -435,13 +363,10 @@ def exp_pgvector_single(
         with open(params_path, "w", encoding="utf-8") as f:
             json.dump(params_json, f, indent=2, sort_keys=True)
         print(f"[pgvector] Wrote parameters to {params_path}")
+
     finally:
         conn.close()
 
 
-def main() -> None:
-    fire.Fire()
-
-
 if __name__ == "__main__":
-    main()
+    fire.Fire()
