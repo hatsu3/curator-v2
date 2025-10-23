@@ -29,8 +29,9 @@ from typing import Any, Dict, Iterable, Optional
 import fire
 import numpy as np
 import psycopg2
+from tqdm import tqdm
 
-from dataset import get_dataset, get_metadata
+from benchmark.utils import get_dataset_config, load_dataset
 from scripts.pgvector import admin
 
 DEFAULT_DSN = "postgresql://postgres:postgres@localhost:5432/curator_bench"
@@ -89,7 +90,6 @@ def _validate_copy_format(copy_format: str) -> str:
 @dataclass
 class BulkArgs:
     dsn: Optional[str]
-    dataset: str
     dataset_key: str
     dim: int
     test_size: float
@@ -103,7 +103,6 @@ class BulkArgs:
     lists: Optional[int]
     limit: Optional[int]
     truncate: bool
-    dry_run: bool
 
 
 @dataclass
@@ -121,7 +120,6 @@ class InsertArgs:
     ef_search: Optional[int]
     lists: Optional[int]
     limit: Optional[int]
-    dry_run: bool
 
 
 class LoadDataset:
@@ -129,7 +127,6 @@ class LoadDataset:
         self,
         *,
         dsn: str | None = None,
-        dataset: str = "yfcc100m",  # yfcc100m | arxiv
         dataset_key: str = "yfcc100m",
         dim: int = 192,
         test_size: float = 0.01,
@@ -144,18 +141,15 @@ class LoadDataset:
         lists: int | None = None,
         limit: int | None = None,
         truncate: bool = True,
-        dry_run: bool = False,
     ) -> None:
         """Bulk load vectors: execute COPY and optional post-load index build.
 
         Notes:
         - copy_format is strict; default binary; no auto-fallback.
         - build_index controls post-load index timing (gin|hnsw|ivf).
-        - When `dry_run=True`, prints a preview only without DB actions.
         """
         args = BulkArgs(
             dsn=dsn,
-            dataset=dataset,
             dataset_key=dataset_key,
             dim=dim,
             test_size=test_size,
@@ -169,7 +163,6 @@ class LoadDataset:
             lists=lists,
             limit=limit,
             truncate=truncate,
-            dry_run=dry_run,
         )
 
         dsn_resolved = _resolve_dsn(args.dsn)
@@ -177,7 +170,6 @@ class LoadDataset:
         print(
             "[pgvector] Bulk load:",
             {
-                "dataset": args.dataset,
                 "dataset_key": args.dataset_key,
                 "dim": args.dim,
                 "test_size": args.test_size,
@@ -201,12 +193,6 @@ class LoadDataset:
             print("  ", build_json)
             print("  ", build_csv)
 
-        if args.dry_run:
-            print(
-                "[pgvector] Dry-run: preview only. COPY and CREATE INDEX not executed."
-            )
-            return
-
         # Real execution path: create schema (optionally without GIN), COPY rows, ANALYZE, and build index if requested.
         # If create_gin is not specified, defer GIN creation when timing GIN build.
         if args.create_gin is None:
@@ -218,16 +204,14 @@ class LoadDataset:
             dim=args.dim,
             create_gin=create_gin_eff,
             unlogged=args.unlogged,
-            dry_run=False,
         )
 
         # Load train split vectors and metadata
-        train_vecs, _test_vecs, _meta = get_dataset(
-            args.dataset, test_size=args.test_size
+        dataset_config, _dim = get_dataset_config(args.dataset_key, args.test_size)
+        train_vecs, _test_vecs, train_mds, _test_mds, _ground_truth, _train_cates = (
+            load_dataset(dataset_config)
         )
-        train_mds, _test_mds = get_metadata(
-            synthesized=False, dataset_name=args.dataset, test_size=args.test_size
-        )
+
         if train_vecs.shape[1] != args.dim:
             _warn(
                 f"dim mismatch: dataset has {train_vecs.shape[1]}, CLI --dim {args.dim}. Proceeding with dataset dim."
@@ -362,7 +346,6 @@ class LoadDataset:
                 m=args.m,
                 efc=args.efc,
                 lists=args.lists,
-                dry_run=False,
                 output_json=build_json,
                 output_csv=build_csv,
             )
@@ -387,7 +370,6 @@ class LoadDataset:
         # IVF training seed controls
         ivf_seed_frac: float = 0.1,  # fraction of vectors to train IVF
         seed_copy_format: str = "binary",  # csv | binary
-        dry_run: bool = False,
     ) -> None:
         """Single-thread incremental insert benchmark.
 
@@ -407,7 +389,6 @@ class LoadDataset:
             ef_search=ef_search,
             lists=lists,
             limit=limit,
-            dry_run=dry_run,
         )
 
         dsn_resolved = _resolve_dsn(args.dsn)
@@ -415,10 +396,9 @@ class LoadDataset:
         print(
             "[pgvector] Insert bench:",
             {
-                "dataset": args.dataset,
                 "dataset_key": args.dataset_key,
-                "dim": args.dim,
                 "test_size": args.test_size,
+                "dim": args.dim,
                 "strategy": args.strategy,
                 "unlogged": args.unlogged,
                 "sync_commit_off": args.sync_commit_off,
@@ -458,10 +438,6 @@ class LoadDataset:
             print("  ", os.path.join(out_b, "build.json"))
             print("  ", os.path.join(out_b, "build.csv"))
 
-        if args.dry_run:
-            print("[pgvector] Dry-run: preview only. No inserts executed.")
-            return
-
         s = args.strategy.lower()
         if s not in {"hnsw", "ivf", "prefilter"}:
             _warn(
@@ -475,16 +451,14 @@ class LoadDataset:
             dim=args.dim,
             create_gin=True,
             unlogged=args.unlogged,
-            dry_run=False,
         )
 
         # Load training data
-        train_vecs, _test_vecs, _meta = get_dataset(
-            args.dataset, test_size=args.test_size
+        dataset_config, _dim = get_dataset_config(args.dataset_key, args.test_size)
+        train_vecs, _test_vecs, train_mds, _test_mds, _ground_truth, _train_cates = (
+            load_dataset(dataset_config)
         )
-        train_mds, _test_mds = get_metadata(
-            synthesized=False, dataset_name=args.dataset, test_size=args.test_size
-        )
+
         n_rows = train_vecs.shape[0]
         if args.limit is not None:
             n_rows = min(n_rows, int(args.limit))
@@ -494,6 +468,7 @@ class LoadDataset:
         try:
             conn.autocommit = True
             with conn.cursor() as cur:
+                print("[pgvector] Truncating items table")
                 cur.execute("TRUNCATE items;")  # start from empty table
                 if args.sync_commit_off:  # disable durability
                     cur.execute("SET synchronous_commit = off;")
@@ -510,7 +485,6 @@ class LoadDataset:
                     dim=args.dim,
                     m=args.m,
                     efc=args.efc,
-                    dry_run=False,
                 )
             elif s == "ivf":
                 # Seed a fraction for IVFFlat training, then build, then delete seeds
@@ -619,7 +593,6 @@ class LoadDataset:
                     index="ivf",
                     dim=args.dim,
                     lists=args.lists,
-                    dry_run=False,
                     output_json=os.path.join(out_b, "build.json"),
                     output_csv=os.path.join(out_b, "build.csv"),
                 )
@@ -633,14 +606,13 @@ class LoadDataset:
                     dsn_resolved,
                     index="gin",
                     dim=args.dim,
-                    dry_run=False,
                 )
 
             # Insert rows one by one; measure per-row latency
             latencies: list[float] = []
             total_start = time.perf_counter()
             with conn.cursor() as cur:
-                for i in range(n_rows):
+                for i in tqdm(range(n_rows), desc="Inserting rows"):
                     rid = i + 1
                     vec = train_vecs[i]
                     tags = train_mds[i]
