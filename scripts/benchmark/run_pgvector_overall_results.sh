@@ -31,7 +31,7 @@ set -u
 
 DSN="${PG_DSN:-postgresql://postgres:postgres@localhost:5432/curator_bench}"
 
-# Build tuning (follow run_insert_ab_yfcc1m.sh defaults)
+# Build tuning
 PARALLEL_MAINT_WORKERS=${PARALLEL_MAINT_WORKERS:-0}
 MAINTENANCE_WORK_MEM=${MAINTENANCE_WORK_MEM:-64GB}
 
@@ -141,7 +141,6 @@ case "$TASK" in
     check_clean_for_build
     python -m scripts.pgvector.load_dataset bulk \
       --dsn "$DSN" \
-      --dataset "$DATASET" \
       --dataset_key "$DATASET_KEY" \
       --dim "$DIM" \
       --test_size "$TEST_SIZE" \
@@ -159,32 +158,32 @@ case "$TASK" in
         --dataset_key "$DATASET_KEY" \
         --test_size "$TEST_SIZE" \
         --k 10 \
+        --lists "$NLIST" \
         --probes "$np" \
         --output_path "$out"
     done
     # merge
-    python - <<'PY'
+    python - "$OUT_BASE_IVF" <<'PY'
 import pandas as pd,glob,sys
 p=sys.argv[1]
 fs=sorted(glob.glob(p+"/nprobe*.csv"))
 assert fs, f"no files to merge under {p}"
 pd.concat([pd.read_csv(f) for f in fs],ignore_index=True).to_csv(p+"/results.csv",index=False)
 print(f"[pgvector][merge] wrote {p}/results.csv with {len(fs)} parts")
-PY "$OUT_BASE_IVF"
+PY
     ;;
   hnsw_build)
     check_db_reachable
     check_clean_for_build
-    python -m scripts.pgvector.load_dataset insert_bench \
+    python -m scripts.pgvector.load_dataset bulk \
       --dsn "$DSN" \
-      --dataset "$DATASET" \
       --dataset_key "$DATASET_KEY" \
       --dim "$DIM" \
       --test_size "$TEST_SIZE" \
-      --strategy hnsw \
+      --unlogged \
+      --build_index hnsw \
       --m "$M" \
-      --efc "$EFC" \
-      --unlogged
+      --efc "$EFC"
     ;;
   hnsw_search)
     EF_LIST=$(python -c "import json; print(' '.join(str(x) for x in json.loads('$HNSW_EF_LIST')))" )
@@ -196,18 +195,20 @@ PY "$OUT_BASE_IVF"
         --dataset_key "$DATASET_KEY" \
         --test_size "$TEST_SIZE" \
         --k 10 \
+        --m "$M" \
+        --ef_construction "$EFC" \
         --ef_search "$ef" \
         --output_path "$out"
     done
     # merge
-    python - <<'PY'
+    python - "$OUT_BASE_HNSW" <<'PY'
 import pandas as pd,glob,sys
 p=sys.argv[1]
 fs=sorted(glob.glob(p+"/ef*.csv"))
 assert fs, f"no files to merge under {p}"
 pd.concat([pd.read_csv(f) for f in fs],ignore_index=True).to_csv(p+"/results.csv",index=False)
 print(f"[pgvector][merge] wrote {p}/results.csv with {len(fs)} parts")
-PY "$OUT_BASE_HNSW"
+PY
     ;;
   *)
     echo "Invalid task: $TASK (expected ivf_build|ivf_search|hnsw_build|hnsw_search)" >&2
