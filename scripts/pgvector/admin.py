@@ -46,6 +46,7 @@ class IndexBuildResult:
     build_time_seconds: Optional[float] = None
     index_size_bytes: Optional[int] = None
     table_size_bytes: Optional[int] = None
+    labels_kb: Optional[float] = None
     dim: Optional[int] = None
     params: Optional[Dict[str, Any]] = None
     gucs: Optional[Dict[str, Any]] = None
@@ -115,6 +116,23 @@ def get_total_relation_size(dsn: str, relname: str) -> int:
             return int(row[0]) if row and row[0] is not None else 0
     finally:
         conn.close()
+
+
+def _estimate_labels_bytes(conn: psycopg2.extensions.connection) -> int:
+    """Compute total bytes used by the INT[] labels column (tags).
+
+    Executes an exact aggregate over the table:
+      SELECT COALESCE(sum(pg_column_size(tags)), 0)::bigint FROM items;
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COALESCE(sum(pg_column_size(tags)), 0)::bigint FROM items;"
+            )
+            val = cur.fetchone()
+            return int(val[0]) if val and val[0] is not None else 0
+    except Exception:
+        return 0
 
 
 def _add_boolean_label_columns(conn, label_ids: Sequence[int]) -> None:
@@ -415,6 +433,10 @@ def create_index(
             size_bytes = cur.fetchone()[0]
             cur.execute("SELECT pg_table_size('items');")
             table_bytes = cur.fetchone()[0]
+
+        # Estimate label column size (approximate) and convert to KB
+        labels_bytes = _estimate_labels_bytes(conn)
+        labels_kb = float(labels_bytes) / 1024.0
     finally:
         conn.close()
 
@@ -426,6 +448,7 @@ def create_index(
         build_time_seconds=build_time,
         index_size_bytes=size_bytes,
         table_size_bytes=table_bytes,
+        labels_kb=labels_kb,
         params={"m": m, "efc": efc, "lists": lists, "opclass": opclass},
     )
     _emit_json_csv(result, output_json=output_json, output_csv=output_csv)
