@@ -169,6 +169,7 @@ def exp_pgvector_single(
     lists: int | None = None,
     probes: int | None = None,
     ivf_max_probes: int | None = None,
+    ivf_overscan: int | None = None,
     # HNSW params (m, ef_construction only required for logging)
     m: int | None = None,
     ef_construction: int | None = None,
@@ -262,16 +263,19 @@ def exp_pgvector_single(
 
                     start = time.perf_counter()
                     if schema == "int_array":
-                        cur.execute(sql, (vlit, int(label), int(k)))
+                        inner_k = int(k) * int(ivf_overscan) if (strategy == "ivf" and ivf_overscan) else int(k)
+                        cur.execute(sql, (vlit, int(label), inner_k))
                     else:
-                        cur.execute(sql, (vlit, int(k)))  # label embedded in SQL
+                        inner_k = int(k) * int(ivf_overscan) if (strategy == "ivf" and ivf_overscan) else int(k)
+                        cur.execute(sql, (vlit, inner_k))  # label embedded in SQL
                     rows = cur.fetchall()
                     elapsed = time.perf_counter() - start
 
                     query_latencies.append(elapsed)
-                    ids = [
-                        int(r[0]) - 1 for r in rows
-                    ]  # map DB ids (1-based) to 0-based
+                    # Optionally overscan within IVF, but keep exactly top-k
+                    if strategy == "ivf" and ivf_overscan:
+                        rows = rows[: int(k)]
+                    ids = [int(r[0]) - 1 for r in rows]  # map DB ids (1-based) to 0-based
                     query_results.append(ids)
                     processed += 1
 
@@ -348,17 +352,25 @@ def exp_pgvector_single(
         print(f"[pgvector] Wrote results CSV to {out_path}")
 
         # Dump parameters to JSON
+        # Derive num_threads from PARALLEL_MAINT_WORKERS (+1 for leader)
+        try:
+            pmw = int(os.environ.get("PARALLEL_MAINT_WORKERS", "0") or "0")
+        except ValueError:
+            pmw = 0
+        num_threads = max(1, pmw + 1)
+
         params_json = {
             "dsn": dsn_resolved,
             "strategy": strategy,
             "iter_mode": iter_mode,
             "k": int(k),
-            "ivf": {"lists": lists, "probes": probes},
+            "ivf": {"lists": lists, "probes": probes, "max_probes": ivf_max_probes, "overscan": ivf_overscan},
             "hnsw": {
                 "m": m,
                 "ef_construction": ef_construction,
                 "ef_search": ef_search,
             },
+            "experiment_config": {"num_threads": int(num_threads)},
             "gucs": gucs,
             "dataset_key": dataset_key,
             "test_size": float(test_size),
