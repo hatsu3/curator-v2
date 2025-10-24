@@ -31,54 +31,40 @@ def load_algorithm_build_time(
         Build time in seconds, or None if not found
     """
     base_dir = Path(output_dir) / algorithm / f"{dataset_key}_test{test_size}"
-    results_path = base_dir / "results.csv"
 
-    # Special handling for pgvector baselines: read build/insert artifacts
+    # Resolve thread count from parameters.json or env
+    params_path = base_dir / "parameters.json"
+    assert params_path.exists(), f"Parameters file not found: {params_path}"
+    num_threads = 1
+    with open(params_path, "r") as f:
+        params = json.load(f)
+        if (
+            "experiment_config" in params
+            and "num_threads" in params["experiment_config"]
+        ):
+            num_threads = params["experiment_config"]["num_threads"]
+            print(f"  Found thread count: {num_threads}")
+        else:
+            print("  Thread count not in parameters; using default: 1")
+
+    # Special handling for pgvector baselines: read build artifacts
+    # We do not support incremental builds for pgvector baselines for now
     if algorithm in {"pgvector_hnsw", "pgvector_ivf"}:
-        if algorithm == "pgvector_hnsw":
-            insert_path = base_dir / "insert_non_durable.csv"
-            if not insert_path.exists():
-                print(f"Warning: pgvector HNSW insert file not found: {insert_path}")
-                return None
-            try:
-                df = pd.read_csv(insert_path)
-                if len(df) == 0:
-                    print(f"Warning: Empty pgvector HNSW insert file: {insert_path}")
-                    return None
-                row = df.iloc[0]
-                n_rows = int(row.get("n_rows", 0))
-                insert_qps = float(row.get("insert_qps", 0.0))
-                if n_rows <= 0 or insert_qps <= 0:
-                    print("  Warning: invalid n_rows or insert_qps in pgvector HNSW insert file")
-                    return None
-                build_time = n_rows / insert_qps
-                print(f"  pgvector HNSW build_time = n_rows/insert_qps = {n_rows}/{insert_qps:.3f} = {build_time:.2f}s")
-                return float(build_time)
-            except Exception as e:
-                print(f"Error reading pgvector HNSW insert file: {e}")
-                return None
-        else:  # pgvector_ivf
-            build_path = base_dir / "build.csv"
-            if not build_path.exists():
-                print(f"Warning: pgvector IVF build file not found: {build_path}")
-                return None
-            try:
-                df = pd.read_csv(build_path)
-                if len(df) == 0:
-                    print(f"Warning: Empty pgvector IVF build file: {build_path}")
-                    return None
-                row = df.iloc[0]
-                if "build_time_seconds" in df.columns and not pd.isna(row["build_time_seconds"]):
-                    return float(row["build_time_seconds"])
-                print("Warning: build_time_seconds missing in pgvector IVF build.csv")
-                return None
-            except Exception as e:
-                print(f"Error reading pgvector IVF build file: {e}")
-                return None
+        build_path = base_dir / "build.csv"
+        df = pd.read_csv(build_path)
+        assert len(df) > 0, f"Empty pgvector build file: {build_path}"
+        row = df.iloc[0]
+        assert (
+            "build_time_seconds" in df.columns
+        ), "build_time_seconds missing in pgvector build.csv"
+        total_build_time = float(row["build_time_seconds"]) * num_threads
+        print(
+            f"  pgvector build_time_seconds: {float(row['build_time_seconds']):.2f} * {num_threads} threads = {total_build_time:.2f}s"
+        )
+        return total_build_time
 
-    if not results_path.exists():
-        print(f"Warning: Results file not found: {results_path}")
-        return None
+    results_path = base_dir / "results.csv"
+    assert results_path.exists(), f"Results file not found: {results_path}"
 
     try:
         # Read the CSV file
@@ -87,28 +73,6 @@ def load_algorithm_build_time(
         if len(df) == 0:
             print(f"Warning: Empty results file: {results_path}")
             return None
-
-        # Read parameters.json to get thread count
-        params_path = results_path.parent / "parameters.json"
-        num_threads = 1  # Default to 1 thread
-        if params_path.exists():
-            try:
-                with open(params_path, "r") as f:
-                    params = json.load(f)
-                    if (
-                        "experiment_config" in params
-                        and "num_threads" in params["experiment_config"]
-                    ):
-                        num_threads = params["experiment_config"]["num_threads"]
-                        print(f"  Found thread count: {num_threads}")
-                    else:
-                        print(
-                            f"  Thread count not found in parameters, using default: {num_threads}"
-                        )
-            except Exception as e:
-                print(f"  Warning: Could not read parameters.json: {e}")
-        else:
-            print(f"  Warning: parameters.json not found at {params_path}")
 
         # Method 1: Try to use batch_insert_latency (for most baselines)
         if "batch_insert_latency" in df.columns:
@@ -257,6 +221,8 @@ def load_build_time_results(
         "Filtered DiskANN": "DiskANN",
         "ACORN-1": "ACORN-1",
         "ACORN-gamma": r"ACORN-$\gamma$",
+        "pgvector HNSW": "Pg-HNSW",
+        "pgvector IVF": "Pg-IVF",
     }
 
     results = []
@@ -344,6 +310,8 @@ def plot_construction_time(
         "ACORN-1",
         "S-HNSW",
         "S-IVF",
+        "Pg-HNSW",
+        "Pg-IVF",
         "Curator",
     ]
 

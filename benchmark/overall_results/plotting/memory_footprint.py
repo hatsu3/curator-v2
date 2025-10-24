@@ -29,75 +29,38 @@ def load_algorithm_memory_usage(
         Memory usage in KB, or None if not found
     """
     base_dir = Path(output_dir) / algorithm / f"{dataset_key}_test{test_size}"
-    results_path = base_dir / "results.csv"
 
-    # Special handling for pgvector baselines: memory comes from build/insert artifacts
+    # Special handling for pgvector baselines: memory comes from build artifacts
     if algorithm in {"pgvector_hnsw", "pgvector_ivf"}:
-        if algorithm == "pgvector_hnsw":
-            insert_path = base_dir / "insert_non_durable.csv"
-            if not insert_path.exists():
-                print(f"Warning: pgvector HNSW insert file not found: {insert_path}")
-                return None
-            try:
-                df = pd.read_csv(insert_path)
-                if len(df) == 0:
-                    print(f"Warning: Empty pgvector HNSW insert file: {insert_path}")
-                    return None
-                row = df.iloc[0]
-                bytes_val = row.get("index_size_bytes")
-                if pd.isna(bytes_val):
-                    print("Warning: index_size_bytes missing in pgvector HNSW insert file")
-                    return None
-                return float(bytes_val) / 1024.0
-            except Exception as e:
-                print(f"Error reading pgvector HNSW insert file: {e}")
-                return None
-        else:  # pgvector_ivf
-            build_path = base_dir / "build.csv"
-            if not build_path.exists():
-                print(f"Warning: pgvector IVF build file not found: {build_path}")
-                return None
-            try:
-                df = pd.read_csv(build_path)
-                if len(df) == 0:
-                    print(f"Warning: Empty pgvector IVF build file: {build_path}")
-                    return None
-                row = df.iloc[0]
-                bytes_val = row.get("index_size_bytes")
-                if pd.isna(bytes_val):
-                    print("Warning: index_size_bytes missing in pgvector IVF build file")
-                    return None
-                return float(bytes_val) / 1024.0
-            except Exception as e:
-                print(f"Error reading pgvector IVF build file: {e}")
-                return None
+        build_path = base_dir / "build.csv"
+        df = pd.read_csv(build_path)
+        assert len(df) > 0, f"Empty pgvector build file: {build_path}"
 
-    if not results_path.exists():
-        print(f"Warning: Results file not found: {results_path}")
-        return None
+        row = df.iloc[0]
+        bytes_val = row.get("index_size_bytes")
+        assert not pd.isna(bytes_val), "index_size_bytes missing in pgvector build file"
+        idx_kb = float(bytes_val) / 1024.0
 
-    try:
-        # Read the CSV file and get the index_size_kb from the first row
-        # (all rows should have the same index size for a given configuration)
-        df = pd.read_csv(results_path)
+        # Add size of the labels column to the index size (assuming INT[] tags)
+        assert "labels_kb" in df.columns, "labels_kb column not found in build file"
+        idx_kb += float(row["labels_kb"])
+        return idx_kb
 
-        if "index_size_kb" not in df.columns:
-            print(f"Warning: 'index_size_kb' column not found in {results_path}")
-            print(f"Available columns: {list(df.columns)}")
-            return None
+    results_path = base_dir / "results.csv"
+    assert results_path.exists(), f"Results file not found: {results_path}"
 
-        # Get the index size from the first row (should be consistent across all rows)
-        index_size_kb = df["index_size_kb"].iloc[0]
+    # Read the CSV file and get the index_size_kb from the first row
+    # (all rows should have the same index size for a given configuration)
+    df = pd.read_csv(results_path)
+    assert (
+        "index_size_kb" in df.columns
+    ), "index_size_kb column not found in results file"
 
-        if pd.isna(index_size_kb):
-            print(f"Warning: index_size_kb is NaN in {results_path}")
-            return None
+    # Get the index size from the first row (should be consistent across all rows)
+    index_size_kb = df["index_size_kb"].iloc[0]
+    assert not pd.isna(index_size_kb), "index_size_kb is NaN in results file"
 
-        return float(index_size_kb)
-
-    except Exception as e:
-        print(f"Error reading {results_path}: {e}")
-        return None
+    return float(index_size_kb)
 
 
 def load_memory_footprint_results(
@@ -305,10 +268,10 @@ def plot_memory_footprint(
         "DiskANN",
         r"ACORN-$\gamma$",
         "ACORN-1",
-        "Pg-HNSW",
-        "Pg-IVF",
         "S-HNSW",
         "S-IVF",
+        "Pg-HNSW",
+        "Pg-IVF",
         "Curator",
     ]
 
