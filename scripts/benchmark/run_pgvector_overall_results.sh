@@ -139,10 +139,11 @@ IVF_JSON_NAME="pgvector IVF"
 NLIST=$(extract_param "$IVF_JSON_NAME" "$DATASET" construction_params.nlist)
 NPROBE_LIST=$(extract_param "$IVF_JSON_NAME" "$DATASET" search_param_combinations.nprobe)
 IVF_MAX_PROBES_LIST=$(extract_param "$IVF_JSON_NAME" "$DATASET" search_param_combinations.max_probes)
+IVF_OVERSCAN_LIST=$(extract_param "$IVF_JSON_NAME" "$DATASET" search_param_combinations.overscan)
 
 echo "[pgvector][cfg] DSN=$DSN DATASET_KEY=$DATASET_KEY TEST_SIZE=$TEST_SIZE DIM=$DIM"
 echo "[pgvector][cfg] HNSW m=$M efc=$EFC ef_search_list=$HNSW_EF_LIST max_scan_tuples_list=$HNSW_MAX_TUPLES_LIST"
-echo "[pgvector][cfg] IVF nlist=$NLIST nprobe_list=$NPROBE_LIST max_probes_list=$IVF_MAX_PROBES_LIST"
+echo "[pgvector][cfg] IVF nlist=$NLIST nprobe_list=$NPROBE_LIST max_probes_list=$IVF_MAX_PROBES_LIST overscan_list=${IVF_OVERSCAN_LIST}"
 
 case "$TASK" in
   ivf_build)
@@ -160,32 +161,54 @@ case "$TASK" in
   ivf_search)
     NP_LIST=$(python -c "import json; print(' '.join(str(x) for x in json.loads('$NPROBE_LIST')))" )
     MP_LIST=$(python -c "import json; print(' '.join(str(x) for x in json.loads('$IVF_MAX_PROBES_LIST')))" )
+    OV_LIST=$(python -c "import json; s='$IVF_OVERSCAN_LIST'; print(' '.join(str(x) for x in (json.loads(s) if isinstance(s,str) and len(s)>0 else [])))" )
     echo "[pgvector][ivf_search] running in parallel: MAX_PROCS=${MAX_PROCS}"
     pids=()
     logs=()
-    for np in $NP_LIST; do
-      for mp in $MP_LIST; do
-        out="$OUT_BASE_IVF/nprobe${np}_maxprobes${mp}.csv"
-        # throttle concurrency
-        while [ "$(jobs -pr | wc -l)" -ge "$MAX_PROCS" ]; do
-          wait -n || true
+    if [ -n "$OV_LIST" ]; then
+      for np in $NP_LIST; do
+        for ov in $OV_LIST; do
+          out="$OUT_BASE_IVF/nprobe${np}_overscan${ov}.csv"
+          while [ "$(jobs -pr | wc -l)" -ge "$MAX_PROCS" ]; do wait -n || true; done
+          log="$OUT_BASE_IVF/nprobe${np}_overscan${ov}.log"
+          echo "[pgvector][ivf_search] launch nprobe=$np overscan=$ov (max_probes=$NLIST) -> $out (log=$log)"
+          python -u -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
+            --strategy ivf \
+            --iter_mode relaxed_order \
+            --dataset_key "$DATASET_KEY" \
+            --test_size "$TEST_SIZE" \
+            --k 10 \
+            --lists "$NLIST" \
+            --probes "$np" \
+            --ivf_max_probes "$NLIST" \
+            --ivf_overscan "$ov" \
+            --output_path "$out" >"$log" 2>&1 &
+          pids+=("$!")
+          logs+=("$log")
         done
-        log="$OUT_BASE_IVF/nprobe${np}_maxprobes${mp}.log"
-        echo "[pgvector][ivf_search] launch nprobe=$np max_probes=$mp -> $out (log=$log)"
-        python -u -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
-          --strategy ivf \
-          --iter_mode relaxed_order \
-          --dataset_key "$DATASET_KEY" \
-          --test_size "$TEST_SIZE" \
-          --k 10 \
-          --lists "$NLIST" \
-          --probes "$np" \
-          --ivf_max_probes "$mp" \
-          --output_path "$out" >"$log" 2>&1 &
-        pids+=("$!")
-        logs+=("$log")
       done
-    done
+    else
+      for np in $NP_LIST; do
+        for mp in $MP_LIST; do
+          out="$OUT_BASE_IVF/nprobe${np}_maxprobes${mp}.csv"
+          while [ "$(jobs -pr | wc -l)" -ge "$MAX_PROCS" ]; do wait -n || true; done
+          log="$OUT_BASE_IVF/nprobe${np}_maxprobes${mp}.log"
+          echo "[pgvector][ivf_search] launch nprobe=$np max_probes=$mp -> $out (log=$log)"
+          python -u -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
+            --strategy ivf \
+            --iter_mode relaxed_order \
+            --dataset_key "$DATASET_KEY" \
+            --test_size "$TEST_SIZE" \
+            --k 10 \
+            --lists "$NLIST" \
+            --probes "$np" \
+            --ivf_max_probes "$mp" \
+            --output_path "$out" >"$log" 2>&1 &
+          pids+=("$!")
+          logs+=("$log")
+        done
+      done
+    fi
     # wait for all
     fail=0
     for i in "${!pids[@]}"; do
@@ -203,7 +226,9 @@ case "$TASK" in
     python - "$OUT_BASE_IVF" <<'PY'
 import pandas as pd,glob,sys
 p=sys.argv[1]
-fs=sorted(glob.glob(p+"/nprobe*_maxprobes*.csv"))
+fs=sorted(glob.glob(p+"/nprobe*_overscan*.csv"))
+if not fs:
+    fs=sorted(glob.glob(p+"/nprobe*_maxprobes*.csv"))
 assert fs, f"no files to merge under {p}"
 pd.concat([pd.read_csv(f) for f in fs],ignore_index=True).to_csv(p+"/results.csv",index=False)
 print(f"[pgvector][merge] wrote {p}/results.csv with {len(fs)} parts")
