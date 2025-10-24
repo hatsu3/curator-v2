@@ -168,10 +168,12 @@ def exp_pgvector_single(
     # IVF params
     lists: int | None = None,
     probes: int | None = None,
+    ivf_max_probes: int | None = None,
     # HNSW params (m, ef_construction only required for logging)
     m: int | None = None,
     ef_construction: int | None = None,
     ef_search: int | None = None,
+    hnsw_max_scan_tuples: int | None = None,
     # Dataset/outputs
     dataset_key: str = "yfcc100m",
     test_size: float = 0.01,
@@ -191,13 +193,17 @@ def exp_pgvector_single(
         ), "lists and probes are required for ivf"
         gucs["ivfflat.probes"] = int(probes)
         gucs["ivfflat.iterative_scan"] = iter_mode
+        # Optional cap for iterative IVF total probes
+        if ivf_max_probes is not None:
+            gucs["ivfflat.max_probes"] = int(ivf_max_probes)
     elif strategy == "hnsw":
         assert (
             ef_search is not None and m is not None and ef_construction is not None
         ), "ef_search, m, and ef_construction are required for hnsw"
         gucs["hnsw.ef_search"] = ef_search
         gucs["hnsw.iterative_scan"] = iter_mode
-        gucs["hnsw.max_scan_tuples"] = 1000000000
+        if hnsw_max_scan_tuples is not None:
+            gucs["hnsw.max_scan_tuples"] = int(hnsw_max_scan_tuples)
 
     # Connect, set GUCs, check indexes
     conn = psycopg2.connect(dsn_resolved)

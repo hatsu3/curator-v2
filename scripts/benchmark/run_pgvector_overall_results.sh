@@ -64,13 +64,19 @@ OUT_BASE_HNSW="$OUTPUT_DIR/$(algo_dir_for hnsw)/${DATASET_KEY}_test${TEST_SIZE}"
 OUT_BASE_IVF="$OUTPUT_DIR/$(algo_dir_for ivf)/${DATASET_KEY}_test${TEST_SIZE}"
 mkdir -p "$OUT_BASE_HNSW" "$OUT_BASE_IVF"
 
-# Export PGOPTIONS to influence build sessions (used by psycopg2 connections)
-PGOPTIONS_SET="-c max_parallel_maintenance_workers=${PARALLEL_MAINT_WORKERS} -c max_parallel_workers=${PARALLEL_MAINT_WORKERS} -c hnsw.max_scan_tuples=1000000000"
+# Export PGOPTIONS to influence build sessions
+PGOPTIONS_SET="-c max_parallel_maintenance_workers=${PARALLEL_MAINT_WORKERS} -c max_parallel_workers=${PARALLEL_MAINT_WORKERS} -c work_mem=1GB"
 if [[ -n "${MAINTENANCE_WORK_MEM}" ]]; then
   PGOPTIONS_SET+=" -c maintenance_work_mem=${MAINTENANCE_WORK_MEM}"
 fi
 export PGOPTIONS="${PGOPTIONS:-} ${PGOPTIONS_SET}"
 echo "[pgvector][cfg] PGOPTIONS='${PGOPTIONS}'"
+
+# Max concurrent search jobs (only used for *search tasks)
+MAX_PROCS=${MAX_PROCS:-5}
+
+# On Ctrl-C/TERM, stop all background jobs cleanly
+trap 'echo "[pgvector][parallel] cancel"; jobs -pr | xargs -r kill; wait; exit 130' INT TERM
 
 check_db_reachable() {
   python - "$DSN" <<'PY'
@@ -124,16 +130,19 @@ PY
 
 # Read construction/search spaces
 HNSW_JSON_NAME="pgvector HNSW"
-IVF_JSON_NAME="pgvector IVF"
 M=$(extract_param "$HNSW_JSON_NAME" "$DATASET" construction_params.m)
 EFC=$(extract_param "$HNSW_JSON_NAME" "$DATASET" construction_params.construction_ef)
 HNSW_EF_LIST=$(extract_param "$HNSW_JSON_NAME" "$DATASET" search_param_combinations.search_ef)
+HNSW_MAX_TUPLES_LIST=$(extract_param "$HNSW_JSON_NAME" "$DATASET" search_param_combinations.max_scan_tuples)
+
+IVF_JSON_NAME="pgvector IVF"
 NLIST=$(extract_param "$IVF_JSON_NAME" "$DATASET" construction_params.nlist)
 NPROBE_LIST=$(extract_param "$IVF_JSON_NAME" "$DATASET" search_param_combinations.nprobe)
+IVF_MAX_PROBES_LIST=$(extract_param "$IVF_JSON_NAME" "$DATASET" search_param_combinations.max_probes)
 
 echo "[pgvector][cfg] DSN=$DSN DATASET_KEY=$DATASET_KEY TEST_SIZE=$TEST_SIZE DIM=$DIM"
-echo "[pgvector][cfg] HNSW m=$M efc=$EFC ef_search_list=$HNSW_EF_LIST"
-echo "[pgvector][cfg] IVF nlist=$NLIST nprobe_list=$NPROBE_LIST"
+echo "[pgvector][cfg] HNSW m=$M efc=$EFC ef_search_list=$HNSW_EF_LIST max_scan_tuples_list=$HNSW_MAX_TUPLES_LIST"
+echo "[pgvector][cfg] IVF nlist=$NLIST nprobe_list=$NPROBE_LIST max_probes_list=$IVF_MAX_PROBES_LIST"
 
 case "$TASK" in
   ivf_build)
@@ -150,23 +159,51 @@ case "$TASK" in
     ;;
   ivf_search)
     NP_LIST=$(python -c "import json; print(' '.join(str(x) for x in json.loads('$NPROBE_LIST')))" )
+    MP_LIST=$(python -c "import json; print(' '.join(str(x) for x in json.loads('$IVF_MAX_PROBES_LIST')))" )
+    echo "[pgvector][ivf_search] running in parallel: MAX_PROCS=${MAX_PROCS}"
+    pids=()
+    logs=()
     for np in $NP_LIST; do
-      out="$OUT_BASE_IVF/nprobe${np}.csv"
-      python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
-        --strategy ivf \
-        --iter_mode relaxed_order \
-        --dataset_key "$DATASET_KEY" \
-        --test_size "$TEST_SIZE" \
-        --k 10 \
-        --lists "$NLIST" \
-        --probes "$np" \
-        --output_path "$out"
+      for mp in $MP_LIST; do
+        out="$OUT_BASE_IVF/nprobe${np}_maxprobes${mp}.csv"
+        # throttle concurrency
+        while [ "$(jobs -pr | wc -l)" -ge "$MAX_PROCS" ]; do
+          wait -n || true
+        done
+        log="$OUT_BASE_IVF/nprobe${np}_maxprobes${mp}.log"
+        echo "[pgvector][ivf_search] launch nprobe=$np max_probes=$mp -> $out (log=$log)"
+        python -u -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
+          --strategy ivf \
+          --iter_mode relaxed_order \
+          --dataset_key "$DATASET_KEY" \
+          --test_size "$TEST_SIZE" \
+          --k 10 \
+          --lists "$NLIST" \
+          --probes "$np" \
+          --ivf_max_probes "$mp" \
+          --output_path "$out" >"$log" 2>&1 &
+        pids+=("$!")
+        logs+=("$log")
+      done
     done
+    # wait for all
+    fail=0
+    for i in "${!pids[@]}"; do
+      pid="${pids[$i]}"; log="${logs[$i]}"
+      if ! wait "$pid"; then
+        echo "[pgvector][ivf_search][ERROR] job pid=$pid failed; see $log" >&2
+        fail=1
+      fi
+    done
+    if [[ "$fail" -ne 0 ]]; then
+      echo "[pgvector][ivf_search][ERROR] one or more search jobs failed" >&2
+      exit 1
+    fi
     # merge
     python - "$OUT_BASE_IVF" <<'PY'
 import pandas as pd,glob,sys
 p=sys.argv[1]
-fs=sorted(glob.glob(p+"/nprobe*.csv"))
+fs=sorted(glob.glob(p+"/nprobe*_maxprobes*.csv"))
 assert fs, f"no files to merge under {p}"
 pd.concat([pd.read_csv(f) for f in fs],ignore_index=True).to_csv(p+"/results.csv",index=False)
 print(f"[pgvector][merge] wrote {p}/results.csv with {len(fs)} parts")
@@ -187,24 +224,52 @@ PY
     ;;
   hnsw_search)
     EF_LIST=$(python -c "import json; print(' '.join(str(x) for x in json.loads('$HNSW_EF_LIST')))" )
+    MT_LIST=$(python -c "import json; print(' '.join(str(x) for x in json.loads('$HNSW_MAX_TUPLES_LIST')))" )
+    echo "[pgvector][hnsw_search] running in parallel: MAX_PROCS=${MAX_PROCS}"
+    pids=()
+    logs=()
     for ef in $EF_LIST; do
-      out="$OUT_BASE_HNSW/ef${ef}.csv"
-      python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
-        --strategy hnsw \
-        --iter_mode relaxed_order \
-        --dataset_key "$DATASET_KEY" \
-        --test_size "$TEST_SIZE" \
-        --k 10 \
-        --m "$M" \
-        --ef_construction "$EFC" \
-        --ef_search "$ef" \
-        --output_path "$out"
+      for mt in $MT_LIST; do
+        out="$OUT_BASE_HNSW/ef${ef}_scan${mt}.csv"
+        # throttle concurrency
+        while [ "$(jobs -pr | wc -l)" -ge "$MAX_PROCS" ]; do
+          wait -n || true
+        done
+        log="$OUT_BASE_HNSW/ef${ef}_scan${mt}.log"
+        echo "[pgvector][hnsw_search] launch ef_search=$ef max_scan_tuples=$mt -> $out (log=$log)"
+        python -u -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
+          --strategy hnsw \
+          --iter_mode relaxed_order \
+          --dataset_key "$DATASET_KEY" \
+          --test_size "$TEST_SIZE" \
+          --k 10 \
+          --m "$M" \
+          --ef_construction "$EFC" \
+          --ef_search "$ef" \
+          --hnsw_max_scan_tuples "$mt" \
+          --output_path "$out" >"$log" 2>&1 &
+        pids+=("$!")
+        logs+=("$log")
+      done
     done
+    # wait for all
+    fail=0
+    for i in "${!pids[@]}"; do
+      pid="${pids[$i]}"; log="${logs[$i]}"
+      if ! wait "$pid"; then
+        echo "[pgvector][hnsw_search][ERROR] job pid=$pid failed; see $log" >&2
+        fail=1
+      fi
+    done
+    if [[ "$fail" -ne 0 ]]; then
+      echo "[pgvector][hnsw_search][ERROR] one or more search jobs failed" >&2
+      exit 1
+    fi
     # merge
     python - "$OUT_BASE_HNSW" <<'PY'
 import pandas as pd,glob,sys
 p=sys.argv[1]
-fs=sorted(glob.glob(p+"/ef*.csv"))
+fs=sorted(glob.glob(p+"/ef*_scan*.csv"))
 assert fs, f"no files to merge under {p}"
 pd.concat([pd.read_csv(f) for f in fs],ignore_index=True).to_csv(p+"/results.csv",index=False)
 print(f"[pgvector][merge] wrote {p}/results.csv with {len(fs)} parts")
