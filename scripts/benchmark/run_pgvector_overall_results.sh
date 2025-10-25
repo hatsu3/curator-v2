@@ -31,7 +31,7 @@ set -u
 
 DSN="${PG_DSN:-postgresql://postgres:postgres@localhost:5432/curator_bench}"
 
-# Build tuning
+# Build-time knobs
 PARALLEL_MAINT_WORKERS=${PARALLEL_MAINT_WORKERS:-0}
 MAINTENANCE_WORK_MEM=${MAINTENANCE_WORK_MEM:-64GB}
 
@@ -128,7 +128,7 @@ else: print(json.dumps(v))
 PY
 }
 
-# Read construction/search spaces
+# Read construction/search parameter spaces
 HNSW_JSON_NAME="pgvector HNSW"
 M=$(extract_param "$HNSW_JSON_NAME" "$DATASET" construction_params.m)
 EFC=$(extract_param "$HNSW_JSON_NAME" "$DATASET" construction_params.construction_ef)
@@ -154,61 +154,41 @@ case "$TASK" in
       --dataset_key "$DATASET_KEY" \
       --dim "$DIM" \
       --test_size "$TEST_SIZE" \
+      --copy_format binary \
+      --create_gin \
       --unlogged \
+      --sync_commit_off \
       --build_index ivf \
-      --lists "$NLIST"
+      --lists "$NLIST" \
+      --truncate
     ;;
   ivf_search)
-    NP_LIST=$(python -c "import json; print(' '.join(str(x) for x in json.loads('$NPROBE_LIST')))" )
-    MP_LIST=$(python -c "import json; print(' '.join(str(x) for x in json.loads('$IVF_MAX_PROBES_LIST')))" )
-    OV_LIST=$(python -c "import json; s='$IVF_OVERSCAN_LIST'; print(' '.join(str(x) for x in (json.loads(s) if isinstance(s,str) and len(s)>0 else [])))" )
-    echo "[pgvector][ivf_search] running in parallel: MAX_PROCS=${MAX_PROCS}"
+    # Assume overscan list exists; nprobe and max_probes are fixed
+    NP_FIXED=$(python -c "import json; a=json.loads('$NPROBE_LIST'); print(a[0] if isinstance(a,list) and a else a)" )
+    MP_FIXED=$(python -c "import json; a=json.loads('$IVF_MAX_PROBES_LIST'); print(a[0] if isinstance(a,list) and a else a)" )
+    OV_LIST=$(python -c "import json; print(' '.join(str(x) for x in json.loads('$IVF_OVERSCAN_LIST')))" )
+    echo "[pgvector][ivf_search] running in parallel: MAX_PROCS=${MAX_PROCS} (nprobe=$NP_FIXED max_probes=$MP_FIXED)"
     pids=()
     logs=()
-    if [ -n "$OV_LIST" ]; then
-      for np in $NP_LIST; do
-        for ov in $OV_LIST; do
-          out="$OUT_BASE_IVF/nprobe${np}_overscan${ov}.csv"
-          while [ "$(jobs -pr | wc -l)" -ge "$MAX_PROCS" ]; do wait -n || true; done
-          log="$OUT_BASE_IVF/nprobe${np}_overscan${ov}.log"
-          echo "[pgvector][ivf_search] launch nprobe=$np overscan=$ov (max_probes=$NLIST) -> $out (log=$log)"
-          python -u -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
-            --strategy ivf \
-            --iter_mode relaxed_order \
-            --dataset_key "$DATASET_KEY" \
-            --test_size "$TEST_SIZE" \
-            --k 10 \
-            --lists "$NLIST" \
-            --probes "$np" \
-            --ivf_max_probes "$NLIST" \
-            --ivf_overscan "$ov" \
-            --output_path "$out" >"$log" 2>&1 &
-          pids+=("$!")
-          logs+=("$log")
-        done
-      done
-    else
-      for np in $NP_LIST; do
-        for mp in $MP_LIST; do
-          out="$OUT_BASE_IVF/nprobe${np}_maxprobes${mp}.csv"
-          while [ "$(jobs -pr | wc -l)" -ge "$MAX_PROCS" ]; do wait -n || true; done
-          log="$OUT_BASE_IVF/nprobe${np}_maxprobes${mp}.log"
-          echo "[pgvector][ivf_search] launch nprobe=$np max_probes=$mp -> $out (log=$log)"
-          python -u -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
-            --strategy ivf \
-            --iter_mode relaxed_order \
-            --dataset_key "$DATASET_KEY" \
-            --test_size "$TEST_SIZE" \
-            --k 10 \
-            --lists "$NLIST" \
-            --probes "$np" \
-            --ivf_max_probes "$mp" \
-            --output_path "$out" >"$log" 2>&1 &
-          pids+=("$!")
-          logs+=("$log")
-        done
-      done
-    fi
+    for ov in $OV_LIST; do
+      out="$OUT_BASE_IVF/nprobe${NP_FIXED}_overscan${ov}.csv"
+      while [ "$(jobs -pr | wc -l)" -ge "$MAX_PROCS" ]; do wait -n || true; done
+      log="$OUT_BASE_IVF/nprobe${NP_FIXED}_overscan${ov}.log"
+      echo "[pgvector][ivf_search] launch overscan=$ov -> $out (log=$log)"
+      python -u -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
+        --strategy ivf \
+        --iter_mode relaxed_order \
+        --dataset_key "$DATASET_KEY" \
+        --test_size "$TEST_SIZE" \
+        --k 10 \
+        --lists "$NLIST" \
+        --probes "$NP_FIXED" \
+        --ivf_max_probes "$MP_FIXED" \
+        --ivf_overscan "$ov" \
+        --output_path "$out" >"$log" 2>&1 &
+      pids+=("$!")
+      logs+=("$log")
+    done
     # wait for all
     fail=0
     for i in "${!pids[@]}"; do
@@ -242,10 +222,14 @@ PY
       --dataset_key "$DATASET_KEY" \
       --dim "$DIM" \
       --test_size "$TEST_SIZE" \
+      --copy_format binary \
+      --create_gin \
       --unlogged \
+      --sync_commit_off \
       --build_index hnsw \
       --m "$M" \
-      --efc "$EFC"
+      --efc "$EFC" \
+      --truncate
     ;;
   hnsw_search)
     EF_LIST=$(python -c "import json; print(' '.join(str(x) for x in json.loads('$HNSW_EF_LIST')))" )

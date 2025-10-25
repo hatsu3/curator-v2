@@ -178,4 +178,33 @@
       }
     }
   }
+  ,
+  "pgvector HNSW": {
+    "yfcc100m": {
+      "OR": {
+        "construction_params": {
+          "construction_ef": 64,
+          "m": 32
+        },
+        "search_param_combinations": {
+          "ef_search": [128],
+          "max_scan_tuples": [2500, 5000, 10000, 20000, 40000]
+        }
+      }
+    }
+  },
+  "pgvector IVF": {
+    "yfcc100m": {
+      "OR": {
+        "construction_params": {
+          "lists": 1024
+        },
+        "search_param_combinations": {
+          "nprobe": [8],
+          "max_probes": [256],
+          "overscan": [1, 2, 4, 8, 16]
+        }
+      }
+    }
+  }
 }

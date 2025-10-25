@@ -10,17 +10,18 @@ Features:
 
 from __future__ import annotations
 
+import json
 import os
+import time
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import fire
-import json
-import time
 import numpy as np
-from pathlib import Path
+import psycopg2
 
-from benchmark.utils import recall
 from benchmark.complex_predicate.dataset import ComplexPredicateDataset
+from benchmark.utils import recall
 
 DEFAULT_DSN = "postgresql://postgres:postgres@localhost:5432/curator_bench"
 
@@ -126,14 +127,14 @@ def exp_pgvector_complex(
     # IVF params
     lists: int | None = None,
     probes: int | None = None,
+    ivf_max_probes: int | None = None,
+    ivf_overscan: int | None = None,
     # HNSW params
     m: int | None = None,
     ef_construction: int | None = None,
     ef_search: int | None = None,
-    # Output
+    hnsw_max_scan_tuples: int | None = None,
     output_path: str | None = None,
-    # Control
-    dry_run: bool = False,
     allow_gt_compute: bool = True,
 ):
     """AND/OR baselines for complex predicates (two-term): metrics per template."""
@@ -148,41 +149,16 @@ def exp_pgvector_complex(
         if probes is not None:
             gucs["ivfflat.probes"] = probes
         gucs["ivfflat.iterative_scan"] = iter_mode
+        if ivf_max_probes is not None:
+            gucs["ivfflat.max_probes"] = int(ivf_max_probes)
     elif strategy == "hnsw":
         if ef_search is not None:
             gucs["hnsw.ef_search"] = ef_search
         gucs["hnsw.iterative_scan"] = iter_mode
+        if hnsw_max_scan_tuples is not None:
+            gucs["hnsw.max_scan_tuples"] = int(hnsw_max_scan_tuples)
 
-    if dry_run:
-        if gucs:
-            print("[pgvector] Session GUCs (preview):", gucs)
-        # Example SQL previews without DB connection
-        pred_and = "tags @> ARRAY[$2] AND tags @> ARRAY[$3]"
-        pred_or = "tags @> ARRAY[$2] OR tags @> ARRAY[$3]"
-        core_sql = (
-            "SELECT id, embedding <-> $1::vector AS distance FROM items WHERE {pred} "
-            "ORDER BY distance LIMIT $4"
-        )
-        sqls = []
-        for t in templates:
-            if t.startswith("AND"):
-                c = core_sql.format(pred=pred_and)
-            elif t.startswith("OR"):
-                c = core_sql.format(pred=pred_or)
-            else:
-                raise AssertionError(f"Unsupported template: {t}")
-            sqls.append(strict_order_wrapper(c) if iter_mode == "relaxed_order" else c)
-        print("[pgvector] Example query SQLs (preview):")
-        for s in sqls:
-            print("---\n", s)
-        print("[pgvector] Dry-run: skipping DB connection and index checks.")
-        return
-
-    # Real path: connect, set GUCs, check indexes
-    try:
-        import psycopg2  # type: ignore
-    except Exception as e:  # pragma: no cover
-        raise RuntimeError(f"psycopg2 not available: {e}")
+    # Connect, set GUCs, check indexes
     conn = psycopg2.connect(dsn_resolved)
     conn.autocommit = True
     try:
@@ -226,22 +202,37 @@ def exp_pgvector_complex(
             for fstr in cpd.template_to_filters[template]:
                 pred_sql, pred_params = parse_polish_to_sql(fstr)
                 core_sql = core_sql_tpl.format(pred=pred_sql)
-                sql = strict_order_wrapper(core_sql) if iter_mode == "relaxed_order" else core_sql
-                gt_list = cpd.filter_to_ground_truth[fstr]
+                sql = (
+                    strict_order_wrapper(core_sql)
+                    if iter_mode == "relaxed_order"
+                    else core_sql
+                )
 
                 with conn.cursor() as cur:
                     for qi, vec in enumerate(cpd.test_vecs):
                         vlit = vec_to_literal(vec)
+                        inner_k = int(k)
+                        if strategy == "ivf" and ivf_overscan:
+                            inner_k = int(k) * int(ivf_overscan)
+
                         start = time.perf_counter()
-                        cur.execute(sql, (vlit, *pred_params, int(k)))
+                        cur.execute(sql, (vlit, *pred_params, inner_k))
                         rows = cur.fetchall()
                         elapsed = time.perf_counter() - start
+
                         query_latencies.append(elapsed)
+
+                        if strategy == "ivf" and ivf_overscan:
+                            rows = rows[: int(k)]
                         ids = [int(r[0]) for r in rows]
                         query_results.append(ids)
 
             # Compute metrics per template
-            flat_gts = [gt for f in cpd.template_to_filters[template] for gt in cpd.filter_to_ground_truth[f]]
+            flat_gts = [
+                gt
+                for f in cpd.template_to_filters[template]
+                for gt in cpd.filter_to_ground_truth[f]
+            ]
             rec = recall(query_results, flat_gts)
             lat = np.array(query_latencies, dtype=float)
             results[template] = {
@@ -277,9 +268,5 @@ def exp_pgvector_complex(
         conn.close()
 
 
-def main() -> None:
-    fire.Fire()
-
-
 if __name__ == "__main__":
-    main()
+    fire.Fire()
