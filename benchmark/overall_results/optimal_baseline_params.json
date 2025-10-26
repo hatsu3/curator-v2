@@ -179,8 +179,8 @@
       },
       "search_param_combinations": {
         "nprobe": [32],
-        "max_probes": [16384],
-        "overscan": [32, 64, 128, 256, 512]
+        "max_probes": [512],
+        "overscan": [1, 2, 4, 8, 16]
       }
     },
     "arxiv": {
@@ -189,8 +189,8 @@
       },
       "search_param_combinations": {
         "nprobe": [8],
-        "max_probes": [1024],
-        "overscan": [32, 64, 128, 256, 512]
+        "max_probes": [256],
+        "overscan": [1, 2, 4, 8, 16]
       }
     }
   },

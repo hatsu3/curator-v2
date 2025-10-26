@@ -224,7 +224,7 @@ def exp_pgvector_complex(
 
                         if strategy == "ivf" and ivf_overscan:
                             rows = rows[: int(k)]
-                        ids = [int(r[0]) for r in rows]
+                        ids = [int(r[0]) - 1 for r in rows]  # map DB ids (1-based) to 0-based
                         query_results.append(ids)
 
             # Compute metrics per template

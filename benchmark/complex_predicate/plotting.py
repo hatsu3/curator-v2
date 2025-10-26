@@ -346,7 +346,7 @@ def plot_optimal_results(
         "Parlay IVF": colors[3],
         "ACORN": colors[4],
         "Pg-HNSW": colors[5],
-        "Pg-IVF": colors[5]
+        "Pg-IVF": colors[5],
     }
 
     # Plot each template
@@ -602,7 +602,15 @@ def plot_optimal_results_clean(
     }
 
     # Define slow algorithms for AND template
-    slow_algorithms = {"Shared HNSW", "Shared IVF", "ACORN", "Parlay IVF", "Pre-Filter", "Pg-HNSW", "Pg-IVF"}
+    slow_algorithms = {
+        "Shared HNSW",
+        "Shared IVF",
+        "ACORN",
+        "Parlay IVF",
+        "Pre-Filter",
+        "Pg-HNSW",
+        "Pg-IVF",
+    }
 
     # Set up plotting - 3 subplots with custom spacing to group AND subplots
     plt.rcParams.update({"font.size": font_size})
@@ -850,15 +858,15 @@ def plot_optimal_results_clean(
         legend_labels = available_algorithms
 
         # Two-row legend, positioned to avoid overlap
-        ncol = min(len(legend_labels), 5)  # Max 5 columns
+        ncol = min(len(legend_labels), 4)  # Max 4 columns
         legend = fig.legend(
             legend_handles,
             legend_labels,
             loc="upper center",
-            bbox_to_anchor=(0.55, 1.30),
+            bbox_to_anchor=(0.55, 1.45),
             ncol=ncol,
-            fontsize=font_size - 3,
-            columnspacing=0.8,  # Reduced from 1.0
+            fontsize=font_size - 2,
+            columnspacing=1.0,
             handletextpad=0.5,
         )
 

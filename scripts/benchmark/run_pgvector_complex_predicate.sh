@@ -69,7 +69,7 @@ MAX_PROCS=${MAX_PROCS:-5}
 # On Ctrl-C/TERM, stop all background jobs cleanly
 trap 'echo "[pgvector][parallel] cancel"; jobs -pr | xargs -r kill; wait; exit 130' INT TERM
 
-# Connectivity and cleanliness checks (mirrors overall_results runner)
+# Connectivity and cleanliness checks
 check_db_reachable() {
   python - "$PG_DSN" <<'PY'
 import sys
@@ -121,21 +121,23 @@ PY
 }
 
 # Read construction/search parameter spaces via extract_param
+# We use optimal parameters learned on the OR template for BOTH OR and AND
 HNSW_JSON_NAME="pgvector HNSW"
 IVF_JSON_NAME="pgvector IVF"
+TEMPLATE_KEY="${TEMPLATE_KEY:-OR}"
 
-M=$(extract_param "$HNSW_JSON_NAME" "$DATASET_KEY" construction_params.m)
-EFC=$(extract_param "$HNSW_JSON_NAME" "$DATASET_KEY" construction_params.construction_ef)
-HNSW_EF_LIST=$(extract_param "$HNSW_JSON_NAME" "$DATASET_KEY" search_param_combinations.ef_search)
-SCAN_ARR=$(extract_param "$HNSW_JSON_NAME" "$DATASET_KEY" search_param_combinations.max_scan_tuples)
+M=$(extract_param "$HNSW_JSON_NAME" "$DATASET_KEY" "$TEMPLATE_KEY.construction_params.m")
+EFC=$(extract_param "$HNSW_JSON_NAME" "$DATASET_KEY" "$TEMPLATE_KEY.construction_params.construction_ef")
+HNSW_EF_LIST=$(extract_param "$HNSW_JSON_NAME" "$DATASET_KEY" "$TEMPLATE_KEY.search_param_combinations.ef_search")
+SCAN_ARR=$(extract_param "$HNSW_JSON_NAME" "$DATASET_KEY" "$TEMPLATE_KEY.search_param_combinations.max_scan_tuples")
 # pick first ef for sweep naming; per our design ef list has one value
 EF=$(python -c "import json,sys; a=json.loads(sys.argv[1]); print(a[0] if isinstance(a,list) and a else a)" "$HNSW_EF_LIST")
 
-LISTS=$(extract_param "$IVF_JSON_NAME" "$DATASET_KEY" construction_params.lists)
-NPROBE_LIST=$(extract_param "$IVF_JSON_NAME" "$DATASET_KEY" search_param_combinations.nprobe)
+LISTS=$(extract_param "$IVF_JSON_NAME" "$DATASET_KEY" "$TEMPLATE_KEY.construction_params.lists")
+NPROBE_LIST=$(extract_param "$IVF_JSON_NAME" "$DATASET_KEY" "$TEMPLATE_KEY.search_param_combinations.nprobe")
 NPROBE=$(python -c "import json,sys; a=json.loads(sys.argv[1]); print(a[0] if isinstance(a,list) and a else a)" "$NPROBE_LIST")
-OVERSCAN_LIST=$(extract_param "$IVF_JSON_NAME" "$DATASET_KEY" search_param_combinations.overscan)
-MAXP_LIST=$(extract_param "$IVF_JSON_NAME" "$DATASET_KEY" search_param_combinations.max_probes)
+OVERSCAN_LIST=$(extract_param "$IVF_JSON_NAME" "$DATASET_KEY" "$TEMPLATE_KEY.search_param_combinations.overscan")
+MAXP_LIST=$(extract_param "$IVF_JSON_NAME" "$DATASET_KEY" "$TEMPLATE_KEY.search_param_combinations.max_probes")
 MAXP=$(python -c "import json,sys; a=json.loads(sys.argv[1]); print(a[0] if isinstance(a,list) and a else a)" "$MAXP_LIST")
 
 echo "[pgvector][cfg] DSN=$PG_DSN DATASET_KEY=$DATASET_KEY TEST_SIZE=$TEST_SIZE DIM=$DIM"

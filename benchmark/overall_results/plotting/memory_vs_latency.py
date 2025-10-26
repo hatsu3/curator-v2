@@ -434,8 +434,8 @@ SHORT_NAMES = {
     "Filtered DiskANN": "Disk",
     "ACORN-1": "A-1",
     r"ACORN-$\gamma$": "A-γ",
-    "Pg-HNSW": "PG-H",
-    "Pg-IVF": "PG-I",
+    "Pg-HNSW": "Pg-H",
+    "Pg-IVF": "Pg-I",
 }
 
 # Consistent color mapping for baselines across all plots
@@ -575,6 +575,8 @@ def plot_memory_vs_latency_vs_build_time(
     target_recall: float = 0.9,
     figsize: tuple = (7, 3),
     font_size: int = 14,
+    ignore_cache: bool = False,
+    skip_annotation_lines: bool = False,
 ):
     """
     Plot build time vs index overhead with marker size representing search latency.
@@ -615,12 +617,13 @@ def plot_memory_vs_latency_vs_build_time(
         cache_path = get_cache_path(
             str(results_dir), ds_name, selectivity_threshold, target_recall
         )
+        use_cache = cache_path.exists() and not ignore_cache
 
-        if cache_path.exists():
-            # Cache exists, load from it
+        if use_cache:
+            print(f"Using cache for {ds_name}. Pass ignore_cache=True to recompute.")
             df = load_from_cache(cache_path)
         else:
-            # Cache doesn't exist, process data and save to cache
+            # Process data and refresh cache
             df = process_dataset_data(
                 results_dir=results_dir,
                 dataset_name=ds_name,
@@ -732,21 +735,23 @@ def plot_memory_vs_latency_vs_build_time(
                 default_offset=(5, 2),
             )
 
-            ax.annotate(
-                row["short_name"],
-                (row["build_time_sec"], row["memory_gb"]),
+            kwargs = dict(
+                text=row["short_name"],
+                xy=(row["build_time_sec"], row["memory_gb"]),
                 xytext=(annotation_params["x_offset"], annotation_params["y_offset"]),
                 textcoords="offset points",
                 fontsize=font_size - 4,
                 ha=annotation_params["ha"],
                 va=annotation_params["va"],
-                arrowprops=dict(
+            )
+            if not skip_annotation_lines:
+                kwargs["arrowprops"] = dict(
                     arrowstyle="-",
                     color="gray",
                     linewidth=0.8,
                     alpha=0.6,
-                ),
-            )
+                )
+            ax.annotate(**kwargs)
 
         # Set scales and labels
         ax.set_xscale("log")
