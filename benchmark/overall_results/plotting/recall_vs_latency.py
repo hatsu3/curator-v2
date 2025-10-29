@@ -455,6 +455,7 @@ def plot_recall_vs_latency(
     figsize_per_subplot: tuple = (3, 3),
     font_size: int = 14,
     prefilter_model_dir: Union[str, Path] = "output/overall_results2/pre_filtering",
+    y_metric: str = "qps",
 ):
     """
     Plot recall vs latency across different selectivity levels using results from run_overall_results.sh
@@ -468,6 +469,7 @@ def plot_recall_vs_latency(
         force_reprocess: Whether to force reprocessing of raw results
         figsize_per_subplot: Size of each subplot (width, height)
         font_size: Font size for the plot
+        y_metric: Y axis metric: "qps" (default) or "latency" (milliseconds)
     """
 
     # Map dataset names to dataset keys and test sizes
@@ -536,7 +538,7 @@ def plot_recall_vs_latency(
 
         if res_list:
             res = pd.concat(res_list, ignore_index=True)
-            res["latency"] *= 1000  # convert to ms
+            res["latency"] *= 1000.0  # convert to milliseconds
             per_pct_results[percentile] = res
 
     if not per_pct_results:
@@ -669,6 +671,10 @@ def plot_recall_vs_latency(
         "Pre-Filtering": "X",
     }
 
+    # Validate y_metric selection
+    if y_metric not in {"qps", "latency"}:
+        raise ValueError("y_metric must be one of {'qps', 'latency'}")
+
     # Plot each percentile
     for i, (ax, percentile) in enumerate(zip(axes, percentiles)):
         if percentile not in per_pct_results:
@@ -676,15 +682,16 @@ def plot_recall_vs_latency(
             continue
 
         per_pct_df = per_pct_results[percentile]
+        per_pct_df["latency_ms"] = per_pct_df["latency"]
+        per_pct_df["qps"] = 1000.0 / per_pct_df["latency_ms"].clip(lower=1e-12)
 
-        # Convert latency to QPS (queries per second)
-        per_pct_df["qps"] = 1000 / per_pct_df["latency"]
+        y_col = "qps" if y_metric == "qps" else "latency_ms"
 
         # Create line plot
         sns.lineplot(
             data=per_pct_df,
             x="recall",
-            y="qps",
+            y=y_col,
             hue="index_key",
             hue_order=baseline_names,
             style="index_key",
@@ -697,7 +704,9 @@ def plot_recall_vs_latency(
 
         ax.set_yscale("log")
         ax.set_xlabel("Recall@10" if i == len(axes) // 2 else "")
-        ax.set_ylabel("QPS" if i == 0 else "")
+        ax.set_ylabel(
+            ("QPS" if y_metric == "qps" else "Latency (ms)") if i == 0 else ""
+        )
 
         # Set title with selectivity info
         if percentile in pct_to_sel:
