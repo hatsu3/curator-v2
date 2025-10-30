@@ -239,6 +239,7 @@ def aggregate_per_selectivity_results(
     output_path: Path | str | None = None,
     dataset: Dataset | None = None,
     label_groups: list[dict] | None = None,
+    pg_ivf_mode: str | None = None,  # "iter" or "classic"
 ):
     """Aggregate profiling results of a specific index across all search configurations
 
@@ -300,6 +301,20 @@ def aggregate_per_selectivity_results(
         results = results_df.to_dict(orient="records")
     else:
         raise ValueError(f"Unsupported file extension {results_path.suffix}")
+
+    # Filter pgvector IVF results by mode (iter or classic), based on
+    # per-config metadata iter_search. 
+    def _keep(res: dict) -> bool:
+        is_pg = "strategy" in res  # hacky
+        is_pg_ivf = is_pg and str(res.get("strategy")) == "ivf"
+        
+        # only apply checks if we are reading pgvector-ivf results and pg_ivf_mode is set
+        if is_pg_ivf and pg_ivf_mode is not None:
+            return res["iter_search"] == (pg_ivf_mode == "iter")
+        else:
+            return True
+
+    results = [res for res in results if _keep(res)]
 
     print("Preprocessing results ...")
     preproc_res = pd.concat(
@@ -366,6 +381,7 @@ def preprocess_all_baselines(
     labels_per_group: int | None = None,
     percentiles: List[float] = [0.01, 0.25, 0.50, 0.75, 1.00],
     force_reprocess: bool = False,
+    pg_ivf_mode: str | None = None,
 ) -> Dict[str, str]:
     """Preprocess all available baseline results for plotting
 
@@ -436,6 +452,7 @@ def preprocess_all_baselines(
                     output_path=preproc_path,
                     dataset=dataset,
                     label_groups=label_groups,
+                    pg_ivf_mode=(pg_ivf_mode if baseline_name == "Pg-IVF" else None),
                 )
                 preprocessed_results[baseline_name] = str(preproc_path)
                 print(f"Preprocessed {baseline_name} -> {preproc_path}")
@@ -456,6 +473,7 @@ def plot_recall_vs_latency(
     font_size: int = 14,
     prefilter_model_dir: Union[str, Path] = "output/overall_results2/pre_filtering",
     y_metric: str = "qps",
+    pg_ivf_mode: str = "iter",
 ):
     """
     Plot recall vs latency across different selectivity levels using results from run_overall_results.sh
@@ -470,6 +488,8 @@ def plot_recall_vs_latency(
         figsize_per_subplot: Size of each subplot (width, height)
         font_size: Font size for the plot
         y_metric: Y axis metric: "qps" (default) or "latency" (milliseconds)
+        pg_ivf_mode: Which Pg-IVF mode to plot: "iter" (default) or "classic". If the
+            selected mode is unavailable in results, falls back to any available mode.
     """
 
     # Map dataset names to dataset keys and test sizes
@@ -506,6 +526,7 @@ def plot_recall_vs_latency(
         labels_per_group=labels_per_group,
         percentiles=percentiles,
         force_reprocess=force_reprocess,
+        pg_ivf_mode=pg_ivf_mode,
     )
 
     if not preprocessed_results:
