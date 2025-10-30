@@ -118,7 +118,7 @@ class LabelModelAB:
             out_csv = out_dir / "results.csv"
             base = (
                 "python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single "
-                f"--strategy {strategy} --iter_mode relaxed_order --schema {schema} "
+                f"--strategy {strategy} --iter_search true --schema {schema} "
                 f"--dataset_key {args.dataset_key} --test_size {args.test_size} --k {args.k} "
                 f"--output_path {out_csv}"
             )
@@ -171,4 +171,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

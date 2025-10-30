@@ -154,7 +154,7 @@ python -m scripts.pgvector.setup_db create_index \
 echo "[run_ab] Run baselines: int_array + hnsw"
 cmd=(python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
   --dsn "${DSN_INT}" --strategy hnsw \
-  --iter_mode relaxed_order --schema int_array \
+  --iter_search true --schema int_array \
   --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}" \
   --output_path output/pgvector/label_ab/yfcc100m_1m/int_array/hnsw/results.csv)
@@ -169,7 +169,7 @@ python -m scripts.pgvector.setup_db create_index \
 echo "[run_ab] Run baselines: int_array + ivf"
 cmd=(python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
   --dsn "${DSN_INT}" --strategy ivf \
-  --iter_mode relaxed_order --schema int_array \
+  --iter_search true --schema int_array \
   --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --lists "${IVF_LISTS}" --probes "${IVF_PROBES}" \
   --output_path output/pgvector/label_ab/yfcc100m_1m/int_array/ivf/results.csv)
@@ -184,7 +184,7 @@ python -m scripts.pgvector.setup_db create_index \
 echo "[run_ab] Run baselines: boolean + hnsw"
 cmd=(python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
   --dsn "${DSN_BOOL}" --strategy hnsw \
-  --iter_mode relaxed_order --schema boolean \
+  --iter_search true --schema boolean \
   --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --m "${HNSW_M}" --ef_construction "${HNSW_EFC}" --ef_search "${HNSW_EFS}" \
   --output_path output/pgvector/label_ab/yfcc100m_1m/boolean/hnsw/results.csv)
@@ -199,7 +199,7 @@ python -m scripts.pgvector.setup_db create_index \
 echo "[run_ab] Run baselines: boolean + ivf"
 cmd=(python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
   --dsn "${DSN_BOOL}" --strategy ivf \
-  --iter_mode relaxed_order --schema boolean \
+  --iter_search true --schema boolean \
   --dataset_key "${DATASET_KEY}" --test_size "${TEST_SIZE}" --k "${K}" \
   --lists "${IVF_LISTS}" --probes "${IVF_PROBES}" \
   --output_path output/pgvector/label_ab/yfcc100m_1m/boolean/ivf/results.csv)

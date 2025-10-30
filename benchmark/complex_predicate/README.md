@@ -18,7 +18,7 @@ DSN
 
 Run (HNSW)
 - `python -m benchmark.complex_predicate.baselines.pgvector exp_pgvector_complex \\
-    --strategy hnsw --m 32 --ef_construction 64 --ef_search 64 --iter_mode relaxed_order \\
+    --strategy hnsw --m 32 --ef_construction 64 --ef_search 64 --iter_search true \\
     --dataset_key yfcc100m --test_size 0.01 --k 10 \\
     --n_filters_per_template 50 --n_queries_per_filter 100 \\
     --gt_cache_dir data/ground_truth/complex_predicate \\
@@ -26,7 +26,7 @@ Run (HNSW)
 
 Run (IVFFlat)
 - `python -m benchmark.complex_predicate.baselines.pgvector exp_pgvector_complex \\
-    --strategy ivf --lists 200 --probes 16 --iter_mode relaxed_order \\
+    --strategy ivf --lists 200 --probes 16 --iter_search true \\
     --dataset_key yfcc100m --test_size 0.01 --k 10 \\
     --n_filters_per_template 50 --n_queries_per_filter 100 \\
     --gt_cache_dir data/ground_truth/complex_predicate \\
@@ -34,7 +34,7 @@ Run (IVFFlat)
 
 Run (Prefilter exact)
 - `python -m benchmark.complex_predicate.baselines.pgvector exp_pgvector_complex \\
-    --strategy prefilter --iter_mode strict_order \\
+    --strategy prefilter \\
     --dataset_key yfcc100m --test_size 0.01 --k 10 \\
     --n_filters_per_template 50 --n_queries_per_filter 100 \\
     --gt_cache_dir data/ground_truth/complex_predicate \\
@@ -49,6 +49,6 @@ Notes
 - For reproducibility, keep the dataset and DB schema aligned to 192-D embeddings for YFCC.
 
 A/B Orchestrator (preview)
-- To preview HNSW `strict_order` vs `relaxed_order` commands and output paths for complex predicates:
+- To preview HNSW engine ordering A/B for complex predicates (strict engine vs relaxed engine + post-sort):
   - `python -m benchmark.pgvector_ab.hnsw_ordering_ab ab_complex --dataset_variant yfcc100m_1m --dataset_key yfcc100m --test_size 0.01 --k 10 --m 32 --ef_construction 64 --ef_search 64 --n_filters_per_template 50 --n_queries_per_filter 100 --dry_run true`
 - The orchestrator prints baseline commands and target paths under `output/pgvector/hnsw_ordering_ab/yfcc100m_1m/{strict_order|relaxed_order}/`.

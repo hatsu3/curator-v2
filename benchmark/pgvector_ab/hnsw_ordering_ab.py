@@ -33,7 +33,7 @@ class HnswOrderingAB:
         strict_cmd = (
             "python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single "
             f"--strategy hnsw --m {m} --ef_construction {ef_construction} "
-            f"--ef_search {ef_search} --iter_mode strict_order "
+            f"--ef_search {ef_search} --iter_search true --iter_search_mode strict_order "
             f"--dataset_key {dataset_key} --test_size {test_size} --k {k} "
             f"--output_path {strict_csv}" + (f" --dsn {dsn}" if dsn else "")
         )
@@ -45,7 +45,7 @@ class HnswOrderingAB:
         relaxed_cmd = (
             "python -m benchmark.overall_results.baselines.pgvector exp_pgvector_single "
             f"--strategy hnsw --m {m} --ef_construction {ef_construction} "
-            f"--ef_search {ef_search} --iter_mode relaxed_order "
+            f"--ef_search {ef_search} --iter_search true --iter_search_mode relaxed_order "
             f"--dataset_key {dataset_key} --test_size {test_size} --k {k} "
             f"--output_path {relaxed_csv}" + (f" --dsn {dsn}" if dsn else "")
         )
@@ -68,7 +68,8 @@ class HnswOrderingAB:
         exp_pgvector_single(
             dsn=dsn,
             strategy="hnsw",
-            iter_mode="strict_order",
+            iter_search=True,
+            iter_search_mode="strict_order",
             m=m,
             ef_construction=ef_construction,
             ef_search=ef_search,
@@ -87,7 +88,8 @@ class HnswOrderingAB:
         exp_pgvector_single(
             dsn=dsn,
             strategy="hnsw",
-            iter_mode="relaxed_order",
+            iter_search=True,
+            iter_search_mode="relaxed_order",
             m=m,
             ef_construction=ef_construction,
             ef_search=ef_search,
