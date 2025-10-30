@@ -473,7 +473,7 @@ def plot_recall_vs_latency(
     font_size: int = 14,
     prefilter_model_dir: Union[str, Path] = "output/overall_results2/pre_filtering",
     y_metric: str = "qps",
-    pg_ivf_mode: str = "iter",
+    pg_ivf_mode: str = "classic",
 ):
     """
     Plot recall vs latency across different selectivity levels using results from run_overall_results.sh
@@ -488,7 +488,7 @@ def plot_recall_vs_latency(
         figsize_per_subplot: Size of each subplot (width, height)
         font_size: Font size for the plot
         y_metric: Y axis metric: "qps" (default) or "latency" (milliseconds)
-        pg_ivf_mode: Which Pg-IVF mode to plot: "iter" (default) or "classic". If the
+        pg_ivf_mode: Which Pg-IVF mode to plot: "classic" (default) or "iter". If the
             selected mode is unavailable in results, falls back to any available mode.
     """
 

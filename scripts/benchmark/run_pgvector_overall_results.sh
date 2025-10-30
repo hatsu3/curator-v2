@@ -15,12 +15,12 @@ set -euo pipefail
 
 TASK="${1:-}"
 DATASET="${2:-}"
-MODE="${3:-iter}"   # iter | classic (ivf only)
+MODE="${3:-classic}"   # classic | iter (ivf only)
 OUTPUT_DIR="${4:-output/overall_results2}"
 PARAMS_FILE="${5:-benchmark/overall_results/optimal_baseline_params.json}"
 
 if [[ -z "$TASK" || -z "$DATASET" ]]; then
-  echo "Usage: $0 <ivf_build|ivf_search|hnsw_build|hnsw_search> <yfcc100m|arxiv> [iter|classic] [output_dir] [params_file]" >&2
+  echo "Usage: $0 <ivf_build|ivf_search|hnsw_build|hnsw_search> <yfcc100m|arxiv> [classic|iter] [output_dir] [params_file]" >&2
   exit 1
 fi
 
@@ -184,7 +184,7 @@ case "$TASK" in
           echo "[pgvector][ivf_search] launch overscan=$ov -> $out (log=$log)"
           python -u -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
             --strategy ivf \
-            --iter_search true \
+            --iter_search \
             --dataset_key "$DATASET_KEY" \
             --test_size "$TEST_SIZE" \
             --k 10 \
@@ -209,7 +209,6 @@ case "$TASK" in
           echo "[pgvector][ivf_search] launch nprobe=$np -> $out (log=$log)"
           python -u -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
             --strategy ivf \
-            --iter_search false \
             --dataset_key "$DATASET_KEY" \
             --test_size "$TEST_SIZE" \
             --k 10 \
@@ -289,7 +288,7 @@ PY
         echo "[pgvector][hnsw_search] launch ef_search=$ef max_scan_tuples=$mt -> $out (log=$log)"
         python -u -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
           --strategy hnsw \
-          --iter_search true \
+          --iter_search \
           --dataset_key "$DATASET_KEY" \
           --test_size "$TEST_SIZE" \
           --k 10 \
