@@ -6,9 +6,10 @@ set -euo pipefail
 # Reads parameter grids from benchmark/complex_predicate/optimal_baseline_params.json
 
 usage() {
-  echo "Usage: $0 <task> [output_dir] [params_json]" >&2
+  echo "Usage: $0 <task> [mode] [output_dir] [params_json]" >&2
   echo "  task        ivf_build | ivf_search | hnsw_build | hnsw_search" >&2
-  echo "  output_dir  default: output/complex_predicate_pgvector" >&2
+  echo "  mode        classic | iter (default: classic, for ivf/hnsw search only)" >&2
+  echo "  output_dir  default: output/complex_predicate_optimal" >&2
   echo "  params_json default: benchmark/complex_predicate/optimal_baseline_params.json" >&2
 }
 
@@ -16,6 +17,7 @@ usage() {
 if [[ $# -lt 1 ]]; then usage; exit 1; fi
 
 TASK="$1"; shift || true
+MODE="${1:-classic}"; shift || true   # classic | iter (for ivf/hnsw search)
 OUT_ROOT="${1:-output/complex_predicate_optimal}"; shift || true
 PARAMS_JSON="${1:-benchmark/complex_predicate/optimal_baseline_params.json}"; shift || true
 
@@ -134,15 +136,15 @@ SCAN_ARR=$(extract_param "$HNSW_JSON_NAME" "$DATASET_KEY" "$TEMPLATE_KEY.search_
 EF=$(python -c "import json,sys; a=json.loads(sys.argv[1]); print(a[0] if isinstance(a,list) and a else a)" "$HNSW_EF_LIST")
 
 LISTS=$(extract_param "$IVF_JSON_NAME" "$DATASET_KEY" "$TEMPLATE_KEY.construction_params.lists")
-NPROBE_LIST=$(extract_param "$IVF_JSON_NAME" "$DATASET_KEY" "$TEMPLATE_KEY.search_param_combinations.nprobe")
-NPROBE=$(python -c "import json,sys; a=json.loads(sys.argv[1]); print(a[0] if isinstance(a,list) and a else a)" "$NPROBE_LIST")
+NPROBE_ITER=$(extract_param "$IVF_JSON_NAME" "$DATASET_KEY" "$TEMPLATE_KEY.search_param_combinations.nprobe_iter")
+NPROBE_CLASSIC_LIST=$(extract_param "$IVF_JSON_NAME" "$DATASET_KEY" "$TEMPLATE_KEY.search_param_combinations.nprobe_classic")
 OVERSCAN_LIST=$(extract_param "$IVF_JSON_NAME" "$DATASET_KEY" "$TEMPLATE_KEY.search_param_combinations.overscan")
 MAXP_LIST=$(extract_param "$IVF_JSON_NAME" "$DATASET_KEY" "$TEMPLATE_KEY.search_param_combinations.max_probes")
 MAXP=$(python -c "import json,sys; a=json.loads(sys.argv[1]); print(a[0] if isinstance(a,list) and a else a)" "$MAXP_LIST")
 
 echo "[pgvector][cfg] DSN=$PG_DSN DATASET_KEY=$DATASET_KEY TEST_SIZE=$TEST_SIZE DIM=$DIM"
 echo "[pgvector][cfg] HNSW m=$M efc=$EFC ef=$EF max_scan_tuples=$SCAN_ARR"
-echo "[pgvector][cfg] IVF nlist=$LISTS nprobe=$NPROBE max_probes=$MAXP overscan_list=$OVERSCAN_LIST"
+echo "[pgvector][cfg] IVF nlist=$LISTS nprobe_iter=$NPROBE_ITER nprobe_classic_list=$NPROBE_CLASSIC_LIST max_probes=$MAXP overscan_list=$OVERSCAN_LIST"
 
 case "$TASK" in
   ivf_build)
@@ -181,32 +183,68 @@ case "$TASK" in
     ;;
 
   ivf_search)
-    OV_LIST=$(python -c "import json; print(' '.join(str(x) for x in json.loads('$OVERSCAN_LIST')))" )
-    echo "[pgvector][ivf_search] running in parallel: MAX_PROCS=${MAX_PROCS}"
-    pids=()
-    logs=()
-    for ov in $OV_LIST; do
-      OUT_JSON="$OUT_ROOT/pgvector_ivf/overscan${ov}.json"
-      log="$OUT_ROOT/pgvector_ivf/overscan${ov}.log"
-      while [ "$(jobs -pr | wc -l)" -ge "$MAX_PROCS" ]; do wait -n || true; done
-      echo "[pgvector][ivf_search] launch nprobe=$NPROBE overscan=$ov (max_probes=$MAXP) -> $OUT_JSON (log=$log)"
-      python -u -m benchmark.complex_predicate.baselines.pgvector \
-        exp_pgvector_complex \
-        --dsn "$PG_DSN" \
-        --strategy ivf \
-        --iter_mode relaxed_order \
-        --dataset_key "$DATASET_KEY" \
-        --test_size "$TEST_SIZE" \
-        --k 10 \
-        --lists "$LISTS" \
-        --probes "$NPROBE" \
-        --ivf_max_probes "$MAXP" \
-        --ivf_overscan "$ov" \
-        --output_path "$OUT_JSON" >"$log" 2>&1 &
-      pids+=("$!")
-      logs+=("$log")
-    done
-    # wait for all
+    case "$MODE" in
+      iter|classic) ;;
+      *) echo "[pgvector][ivf_search][ERROR] mode must be 'iter' or 'classic'" >&2; exit 1;;
+    esac
+
+    case "$MODE" in
+      iter)
+        # Iterative mode: Fixed nprobe, sweep overscan
+        NP_FIXED=$NPROBE_ITER
+        MP_FIXED=$(python -c "import json; a=json.loads('$MAXP_LIST'); print(a[0] if isinstance(a,list) and a else a)" )
+        OV_LIST=$(python -c "import json; print(' '.join(str(x) for x in json.loads('$OVERSCAN_LIST')))" )
+        echo "[pgvector][ivf_search][iter] MAX_PROCS=${MAX_PROCS} (nprobe=$NP_FIXED max_probes=$MP_FIXED)"
+        pids=(); logs=()
+        for ov in $OV_LIST; do
+          OUT_JSON="$OUT_ROOT/pgvector_ivf/nprobe${NP_FIXED}_overscan${ov}.json"
+          log="$OUT_ROOT/pgvector_ivf/nprobe${NP_FIXED}_overscan${ov}.log"
+          while [ "$(jobs -pr | wc -l)" -ge "$MAX_PROCS" ]; do wait -n || true; done
+          echo "[pgvector][ivf_search] launch overscan=$ov -> $OUT_JSON (log=$log)"
+          python -u -m benchmark.complex_predicate.baselines.pgvector \
+            exp_pgvector_complex \
+            --dsn "$PG_DSN" \
+            --strategy ivf \
+            --iter_search \
+            --dataset_key "$DATASET_KEY" \
+            --test_size "$TEST_SIZE" \
+            --k 10 \
+            --lists "$LISTS" \
+            --probes "$NP_FIXED" \
+            --ivf_max_probes "$MP_FIXED" \
+            --ivf_overscan "$ov" \
+            --output_path "$OUT_JSON" >"$log" 2>&1 &
+          pids+=("$!")
+          logs+=("$log")
+        done
+        ;;
+      classic)
+        # Classic mode: Sweep nprobe, no overscan
+        NPS=$(python -c "import json; print(' '.join(str(x) for x in json.loads('$NPROBE_CLASSIC_LIST')))" )
+        echo "[pgvector][ivf_search][classic] MAX_PROCS=${MAX_PROCS} (nprobe list=$NPS)"
+        pids=(); logs=()
+        for np in $NPS; do
+          OUT_JSON="$OUT_ROOT/pgvector_ivf/nprobe${np}.json"
+          log="$OUT_ROOT/pgvector_ivf/nprobe${np}.log"
+          while [ "$(jobs -pr | wc -l)" -ge "$MAX_PROCS" ]; do wait -n || true; done
+          echo "[pgvector][ivf_search] launch nprobe=$np -> $OUT_JSON (log=$log)"
+          python -u -m benchmark.complex_predicate.baselines.pgvector \
+            exp_pgvector_complex \
+            --dsn "$PG_DSN" \
+            --strategy ivf \
+            --dataset_key "$DATASET_KEY" \
+            --test_size "$TEST_SIZE" \
+            --k 10 \
+            --lists "$LISTS" \
+            --probes "$np" \
+            --output_path "$OUT_JSON" >"$log" 2>&1 &
+          pids+=("$!")
+          logs+=("$log")
+        done
+        ;;
+    esac
+
+    # Wait for all jobs
     fail=0
     for i in "${!pids[@]}"; do
       pid="${pids[$i]}"; log="${logs[$i]}"
@@ -219,33 +257,52 @@ case "$TASK" in
       echo "[pgvector][ivf_search][ERROR] one or more search jobs failed" >&2
       exit 1
     fi
-    # merge JSONs into results.json with per_template_results
-    python - "$OUT_ROOT/pgvector_ivf" "$DATASET_KEY" "$TEST_SIZE" "$LISTS" "$NPROBE" "${MAXP}" <<'PY'
-import json,glob,sys,os
-out_dir, dataset_key, test_size, nlist, nprobe, maxp = sys.argv[1:7]
-parts = sorted(glob.glob(os.path.join(out_dir, 'overscan*.json')))
+
+    # Merge based on mode
+    python - "$OUT_ROOT/pgvector_ivf" "$DATASET_KEY" "$TEST_SIZE" "$LISTS" "$MODE" <<'PY'
+import json,glob,sys,os,shutil
+out_dir, dataset_key, test_size, nlist, mode = sys.argv[1:6]
+
+if mode == 'iter':
+    pattern = os.path.join(out_dir, 'nprobe*_overscan*.json')
+    outfile = 'results_iter.json'
+elif mode == 'classic':
+    pattern = os.path.join(out_dir, 'nprobe*.json')
+    outfile = 'results_classic.json'
+else:
+    raise SystemExit(f"unknown mode: {mode}")
+
+parts = [p for p in sorted(glob.glob(pattern)) if (mode == 'classic' and '_overscan' not in p) or (mode == 'iter' and '_overscan' in p)]
+assert parts, f"no files matching {pattern}"
+
 merged = []
 for p in parts:
     d = json.load(open(p))
-    # extract overscan from filename
-    base=os.path.basename(p)
-    ov = int(base.replace('overscan','').replace('.json',''))
-    merged.append({
-        'dataset_key': dataset_key,
-        'test_size': float(test_size),
-        'strategy': 'ivf',
-        'nlist': int(nlist),
-        'nprobe': int(nprobe),
-        **({'max_probes': int(maxp)} if (maxp and maxp!='') else {}),
-        'overscan': int(ov),
-        'per_template_results': d.get('results', {}),
-    })
-json.dump(merged, open(os.path.join(out_dir, 'results.json'), 'w'))
-print(f"[pgvector][merge] wrote {out_dir}/results.json with {len(merged)} parts")
+    base = os.path.basename(p).replace('.json','')
+
+    # Parse filename based on mode
+    config = {'dataset_key': dataset_key, 'test_size': float(test_size), 'strategy': 'ivf', 'nlist': int(nlist)}
+    if mode == 'iter':
+        # nprobeXX_overscanYY.json
+        parts_name = base.split('_')
+        config['nprobe'] = int(parts_name[0].replace('nprobe',''))
+        config['overscan'] = int(parts_name[1].replace('overscan',''))
+    else:
+        # nprobeXX.json
+        config['nprobe'] = int(base.replace('nprobe',''))
+
+    config['per_template_results'] = d.get('results', {})
+    merged.append(config)
+
+out_path = os.path.join(out_dir, outfile)
+json.dump(merged, open(out_path, 'w'))
+shutil.copyfile(out_path, os.path.join(out_dir, 'results.json'))
+print(f"[pgvector][merge] wrote {out_path} and updated results.json ({len(merged)} parts)")
 PY
     ;;
 
   hnsw_search)
+    # HNSW always uses iterative search
     MT_LIST=$(python -c "import json; print(' '.join(str(x) for x in json.loads('$SCAN_ARR')))" )
     echo "[pgvector][hnsw_search] running in parallel: MAX_PROCS=${MAX_PROCS}"
     pids=()
@@ -259,7 +316,7 @@ PY
         exp_pgvector_complex \
         --dsn "$PG_DSN" \
         --strategy hnsw \
-        --iter_mode relaxed_order \
+        --iter_search \
         --dataset_key "$DATASET_KEY" \
         --test_size "$TEST_SIZE" \
         --k 10 \

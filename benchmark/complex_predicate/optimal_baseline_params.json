@@ -200,7 +200,8 @@
           "lists": 1024
         },
         "search_param_combinations": {
-          "nprobe": [8],
+          "nprobe_iter": 8,
+          "nprobe_classic": [16, 32, 64, 128, 256],
           "max_probes": [256],
           "overscan": [1, 2, 4, 8, 16]
         }
