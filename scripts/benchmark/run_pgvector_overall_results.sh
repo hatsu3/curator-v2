@@ -15,11 +15,12 @@ set -euo pipefail
 
 TASK="${1:-}"
 DATASET="${2:-}"
-OUTPUT_DIR="${3:-output/overall_results2}"
-PARAMS_FILE="${4:-benchmark/overall_results/optimal_baseline_params.json}"
+MODE="${3:-iter}"   # iter | classic (ivf only)
+OUTPUT_DIR="${4:-output/overall_results2}"
+PARAMS_FILE="${5:-benchmark/overall_results/optimal_baseline_params.json}"
 
 if [[ -z "$TASK" || -z "$DATASET" ]]; then
-  echo "Usage: $0 <ivf_build|ivf_search|hnsw_build|hnsw_search> <yfcc100m|arxiv> [output_dir] [params_file]" >&2
+  echo "Usage: $0 <ivf_build|ivf_search|hnsw_build|hnsw_search> <yfcc100m|arxiv> [iter|classic] [output_dir] [params_file]" >&2
   exit 1
 fi
 
@@ -137,13 +138,14 @@ HNSW_MAX_TUPLES_LIST=$(extract_param "$HNSW_JSON_NAME" "$DATASET" search_param_c
 
 IVF_JSON_NAME="pgvector IVF"
 NLIST=$(extract_param "$IVF_JSON_NAME" "$DATASET" construction_params.nlist)
-NPROBE_LIST=$(extract_param "$IVF_JSON_NAME" "$DATASET" search_param_combinations.nprobe)
+NPROBE_ITER=$(extract_param "$IVF_JSON_NAME" "$DATASET" search_param_combinations.nprobe_iter)
+NPROBE_CLASSIC_LIST=$(extract_param "$IVF_JSON_NAME" "$DATASET" search_param_combinations.nprobe_classic)
 IVF_MAX_PROBES_LIST=$(extract_param "$IVF_JSON_NAME" "$DATASET" search_param_combinations.max_probes)
 IVF_OVERSCAN_LIST=$(extract_param "$IVF_JSON_NAME" "$DATASET" search_param_combinations.overscan)
 
 echo "[pgvector][cfg] DSN=$DSN DATASET_KEY=$DATASET_KEY TEST_SIZE=$TEST_SIZE DIM=$DIM"
 echo "[pgvector][cfg] HNSW m=$M efc=$EFC ef_search_list=$HNSW_EF_LIST max_scan_tuples_list=$HNSW_MAX_TUPLES_LIST"
-echo "[pgvector][cfg] IVF nlist=$NLIST nprobe_list=$NPROBE_LIST max_probes_list=$IVF_MAX_PROBES_LIST overscan_list=${IVF_OVERSCAN_LIST}"
+echo "[pgvector][cfg] IVF nlist=$NLIST nprobe_iter=$NPROBE_ITER nprobe_classic_list=$NPROBE_CLASSIC_LIST max_probes_list=$IVF_MAX_PROBES_LIST overscan_list=${IVF_OVERSCAN_LIST}"
 
 case "$TASK" in
   ivf_build)
@@ -163,32 +165,62 @@ case "$TASK" in
       --truncate
     ;;
   ivf_search)
-    # Assume overscan list exists; nprobe and max_probes are fixed
-    NP_FIXED=$(python -c "import json; a=json.loads('$NPROBE_LIST'); print(a[0] if isinstance(a,list) and a else a)" )
-    MP_FIXED=$(python -c "import json; a=json.loads('$IVF_MAX_PROBES_LIST'); print(a[0] if isinstance(a,list) and a else a)" )
-    OV_LIST=$(python -c "import json; print(' '.join(str(x) for x in json.loads('$IVF_OVERSCAN_LIST')))" )
-    echo "[pgvector][ivf_search] running in parallel: MAX_PROCS=${MAX_PROCS} (nprobe=$NP_FIXED max_probes=$MP_FIXED)"
-    pids=()
-    logs=()
-    for ov in $OV_LIST; do
-      out="$OUT_BASE_IVF/nprobe${NP_FIXED}_overscan${ov}.csv"
-      while [ "$(jobs -pr | wc -l)" -ge "$MAX_PROCS" ]; do wait -n || true; done
-      log="$OUT_BASE_IVF/nprobe${NP_FIXED}_overscan${ov}.log"
-      echo "[pgvector][ivf_search] launch overscan=$ov -> $out (log=$log)"
-      python -u -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
-        --strategy ivf \
-        --iter_mode relaxed_order \
-        --dataset_key "$DATASET_KEY" \
-        --test_size "$TEST_SIZE" \
-        --k 10 \
-        --lists "$NLIST" \
-        --probes "$NP_FIXED" \
-        --ivf_max_probes "$MP_FIXED" \
-        --ivf_overscan "$ov" \
-        --output_path "$out" >"$log" 2>&1 &
-      pids+=("$!")
-      logs+=("$log")
-    done
+    case "$MODE" in
+      iter|classic) ;;
+      *) echo "[pgvector][ivf_search][ERROR] mode must be 'iter' or 'classic'" >&2; exit 1;;
+    esac
+    case "$MODE" in
+      iter)
+        # Assume overscan list exists; nprobe and max_probes are fixed
+        NP_FIXED=$NPROBE_ITER
+        MP_FIXED=$(python -c "import json; a=json.loads('$IVF_MAX_PROBES_LIST'); print(a[0] if isinstance(a,list) and a else a)" )
+        OV_LIST=$(python -c "import json; print(' '.join(str(x) for x in json.loads('$IVF_OVERSCAN_LIST')))" )
+        echo "[pgvector][ivf_search][iter] MAX_PROCS=${MAX_PROCS} (nprobe=$NP_FIXED max_probes=$MP_FIXED)"
+        pids=(); logs=()
+        for ov in $OV_LIST; do
+          out="$OUT_BASE_IVF/nprobe${NP_FIXED}_overscan${ov}.csv"
+          while [ "$(jobs -pr | wc -l)" -ge "$MAX_PROCS" ]; do wait -n || true; done
+          log="$OUT_BASE_IVF/nprobe${NP_FIXED}_overscan${ov}.log"
+          echo "[pgvector][ivf_search] launch overscan=$ov -> $out (log=$log)"
+          python -u -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
+            --strategy ivf \
+            --iter_search true \
+            --dataset_key "$DATASET_KEY" \
+            --test_size "$TEST_SIZE" \
+            --k 10 \
+            --lists "$NLIST" \
+            --probes "$NP_FIXED" \
+            --ivf_max_probes "$MP_FIXED" \
+            --ivf_overscan "$ov" \
+            --output_path "$out" >"$log" 2>&1 &
+          pids+=("$!")
+          logs+=("$log")
+        done
+        ;;
+      classic)
+        # Vary nprobe; iterative off, no overscan/max_probes
+        NPS=$(python -c "import json; print(' '.join(str(x) for x in json.loads('$NPROBE_CLASSIC_LIST')))" )
+        echo "[pgvector][ivf_search][classic] MAX_PROCS=${MAX_PROCS} (nprobe list=$NPS)"
+        pids=(); logs=()
+        for np in $NPS; do
+          out="$OUT_BASE_IVF/nprobe${np}.csv"
+          while [ "$(jobs -pr | wc -l)" -ge "$MAX_PROCS" ]; do wait -n || true; done
+          log="$OUT_BASE_IVF/nprobe${np}.log"
+          echo "[pgvector][ivf_search] launch nprobe=$np -> $out (log=$log)"
+          python -u -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
+            --strategy ivf \
+            --iter_search false \
+            --dataset_key "$DATASET_KEY" \
+            --test_size "$TEST_SIZE" \
+            --k 10 \
+            --lists "$NLIST" \
+            --probes "$np" \
+            --output_path "$out" >"$log" 2>&1 &
+          pids+=("$!")
+          logs+=("$log")
+        done
+        ;;
+    esac
     # wait for all
     fail=0
     for i in "${!pids[@]}"; do
@@ -202,16 +234,25 @@ case "$TASK" in
       echo "[pgvector][ivf_search][ERROR] one or more search jobs failed" >&2
       exit 1
     fi
-    # merge
-    python - "$OUT_BASE_IVF" <<'PY'
-import pandas as pd,glob,sys
+    # merge only files for the selected mode; also write a mode-specific file
+    python - "$OUT_BASE_IVF" "$MODE" <<'PY'
+import pandas as pd,glob,sys,shutil,os
 p=sys.argv[1]
-fs=sorted(glob.glob(p+"/nprobe*_overscan*.csv"))
-if not fs:
-    fs=sorted(glob.glob(p+"/nprobe*_maxprobes*.csv"))
-assert fs, f"no files to merge under {p}"
-pd.concat([pd.read_csv(f) for f in fs],ignore_index=True).to_csv(p+"/results.csv",index=False)
-print(f"[pgvector][merge] wrote {p}/results.csv with {len(fs)} parts")
+mode=sys.argv[2]
+if mode == 'iter':
+    fs=sorted(glob.glob(p+"/nprobe*_overscan*.csv"))
+    assert fs, f"no iterative files to merge under {p}"
+    out=os.path.join(p,"results_iter.csv")
+elif mode == 'classic':
+    allfs=sorted(glob.glob(p+"/nprobe*.csv"))
+    fs=[f for f in allfs if "_overscan" not in os.path.basename(f)]
+    assert fs, f"no classic files to merge under {p}"
+    out=os.path.join(p,"results_classic.csv")
+else:
+    raise SystemExit(f"unknown mode: {mode}")
+pd.concat([pd.read_csv(f) for f in fs],ignore_index=True).to_csv(out,index=False)
+shutil.copyfile(out, os.path.join(p,"results.csv"))
+print(f"[pgvector][merge] wrote {out} and updated results.csv ({len(fs)} parts)")
 PY
     ;;
   hnsw_build)
@@ -248,7 +289,7 @@ PY
         echo "[pgvector][hnsw_search] launch ef_search=$ef max_scan_tuples=$mt -> $out (log=$log)"
         python -u -m benchmark.overall_results.baselines.pgvector exp_pgvector_single \
           --strategy hnsw \
-          --iter_mode relaxed_order \
+          --iter_search true \
           --dataset_key "$DATASET_KEY" \
           --test_size "$TEST_SIZE" \
           --k 10 \

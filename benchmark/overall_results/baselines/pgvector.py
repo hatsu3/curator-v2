@@ -146,7 +146,6 @@ def get_embedding_dim_from_db(conn) -> Optional[int]:
 class SingleLabelParams:
     # Common
     strategy: str = "hnsw"  # prefilter|ivf|hnsw
-    iter_mode: str = "relaxed_order"  # relaxed_order|strict_order
     k: int = 10
     # IVF
     lists: Optional[int] = None
@@ -161,7 +160,7 @@ def exp_pgvector_single(
     *,
     dsn: str | None = None,
     strategy: str = "hnsw",
-    iter_mode: str = "relaxed_order",
+    iter_search: bool = False,
     schema: str = "int_array",  # int_array | boolean
     # Limit number of label-filtered queries (optional)
     max_queries: int | None = None,
@@ -182,7 +181,19 @@ def exp_pgvector_single(
     k: int = 10,
     output_path: str | None = None,
 ):
-    """Single-label baseline runner."""
+    """Single-label baseline runner.
+
+    Args:
+        iter_search: If True, use iterative scan with relaxed order; if False, use
+            classic (non-iterative) search. HNSW requires iterative search (True).
+    """
+    # Normalize iterative-search controls
+    if strategy == "hnsw" and not iter_search:
+        raise AssertionError("HNSW requires iterative search; set --iter_search true.")
+    if strategy == "ivf" and (not iter_search) and ivf_overscan:
+        raise AssertionError(
+            "ivf_overscan is only meaningful in iterative mode; set --iter_search true or unset ivf_overscan."
+        )
     dsn_resolved = resolve_dsn(dsn)
     print(f"[pgvector] Using DSN: {dsn_resolved}")
 
@@ -193,16 +204,16 @@ def exp_pgvector_single(
             lists is not None and probes is not None
         ), "lists and probes are required for ivf"
         gucs["ivfflat.probes"] = int(probes)
-        gucs["ivfflat.iterative_scan"] = iter_mode
-        # Optional cap for iterative IVF total probes
-        if ivf_max_probes is not None:
+        gucs["ivfflat.iterative_scan"] = "relaxed_order" if iter_search else "off"
+        # Optional cap only applies to iterative mode
+        if ivf_max_probes is not None and iter_search:
             gucs["ivfflat.max_probes"] = int(ivf_max_probes)
     elif strategy == "hnsw":
         assert (
             ef_search is not None and m is not None and ef_construction is not None
         ), "ef_search, m, and ef_construction are required for hnsw"
         gucs["hnsw.ef_search"] = ef_search
-        gucs["hnsw.iterative_scan"] = iter_mode
+        gucs["hnsw.iterative_scan"] = "relaxed_order" if iter_search else "off"
         if hnsw_max_scan_tuples is not None:
             gucs["hnsw.max_scan_tuples"] = int(hnsw_max_scan_tuples)
 
@@ -243,7 +254,7 @@ def exp_pgvector_single(
                 )
             else:
                 raise AssertionError("schema must be one of: int_array, boolean")
-            return strict_order_wrapper(core) if iter_mode == "relaxed_order" else core
+            return core
 
         def vec_to_literal(vec: np.ndarray) -> str:
             return "[" + ",".join(f"{float(x):.6f}" for x in vec.tolist()) + "]"
@@ -253,7 +264,11 @@ def exp_pgvector_single(
         processed = 0
 
         with conn.cursor() as cur:
-            for vec, access_list in tqdm(zip(ds.test_vecs, ds.test_mds), total=len(ds.test_vecs), desc="Querying database"):
+            for vec, access_list in tqdm(
+                zip(ds.test_vecs, ds.test_mds),
+                total=len(ds.test_vecs),
+                desc="Querying database",
+            ):
                 for label in access_list:
                     if max_queries is not None and processed >= int(max_queries):
                         break
@@ -261,21 +276,32 @@ def exp_pgvector_single(
                     vlit = vec_to_literal(vec)
                     sql = build_sql_for_label(int(label))
 
+                    # Execute query
                     start = time.perf_counter()
                     if schema == "int_array":
-                        inner_k = int(k) * int(ivf_overscan) if (strategy == "ivf" and ivf_overscan) else int(k)
+                        inner_k = (
+                            int(k) * int(ivf_overscan)
+                            if (strategy == "ivf" and ivf_overscan and iter_search)
+                            else int(k)
+                        )
                         cur.execute(sql, (vlit, int(label), inner_k))
                     else:
-                        inner_k = int(k) * int(ivf_overscan) if (strategy == "ivf" and ivf_overscan) else int(k)
+                        inner_k = (
+                            int(k) * int(ivf_overscan)
+                            if (strategy == "ivf" and ivf_overscan and iter_search)
+                            else int(k)
+                        )
                         cur.execute(sql, (vlit, inner_k))  # label embedded in SQL
                     rows = cur.fetchall()
                     elapsed = time.perf_counter() - start
 
                     query_latencies.append(elapsed)
                     # Optionally overscan within IVF, but keep exactly top-k
-                    if strategy == "ivf" and ivf_overscan:
+                    if strategy == "ivf" and ivf_overscan and iter_search:
                         rows = rows[: int(k)]
-                    ids = [int(r[0]) - 1 for r in rows]  # map DB ids (1-based) to 0-based
+                    ids = [
+                        int(r[0]) - 1 for r in rows
+                    ]  # map DB ids (1-based) to 0-based
                     query_results.append(ids)
                     processed += 1
 
@@ -325,7 +351,7 @@ def exp_pgvector_single(
         ]
         results_row: Dict[str, Any] = {
             "strategy": strategy,
-            "iter_mode": iter_mode,
+            "iter_search": bool(iter_search),
             "k": int(k),
             "recall_at_k": float(rec),
             "query_qps": float(1.0 / lat.mean()) if lat.size else 0.0,
@@ -362,9 +388,14 @@ def exp_pgvector_single(
         params_json = {
             "dsn": dsn_resolved,
             "strategy": strategy,
-            "iter_mode": iter_mode,
+            "iter_search": iter_search,
             "k": int(k),
-            "ivf": {"lists": lists, "probes": probes, "max_probes": ivf_max_probes, "overscan": ivf_overscan},
+            "ivf": {
+                "lists": lists,
+                "probes": probes,
+                "max_probes": ivf_max_probes,
+                "overscan": ivf_overscan,
+            },
             "hnsw": {
                 "m": m,
                 "ef_construction": ef_construction,
