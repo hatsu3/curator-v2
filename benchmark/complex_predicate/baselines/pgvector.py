@@ -1,11 +1,9 @@
-"""pgvector baselines for AND/OR complex predicates on YFCC 1M.
+"""pgvector AND/OR baselines for YFCC 1M.
 
-Features:
-- DSN default and explicit flag override
-- Session GUC helpers
-- Strict-order SQL wrapper for iterative relaxed modes
-- Index presence checks (GIN(tags), HNSW, IVFFlat)
-- Executes queries per-template (AND/OR), aggregates recall@k and latency/QPS
+- DSN + session GUC helpers
+- Index presence checks (GIN, HNSW, IVFFlat)
+- Iterative scans: use relaxed order and post-sort wrapper for strict results
+- Metrics per template (recall@k, QPS, latency percentiles)
 """
 
 from __future__ import annotations
@@ -39,6 +37,11 @@ def set_session_gucs(conn, gucs: Dict[str, object]) -> None:
 
 
 def strict_order_wrapper(core_sql: str) -> str:
+    """Materialize relaxed results then sort by distance.
+
+    Expects ``core_sql`` to select ``(id, distance)`` and include
+    ``ORDER BY distance LIMIT %s``.
+    """
     return (
         "WITH relaxed_results AS MATERIALIZED (\n"
         f"{core_sql}\n"
@@ -115,7 +118,8 @@ def exp_pgvector_complex(
     *,
     dsn: str | None = None,
     strategy: str = "hnsw",  # prefilter|ivf|hnsw
-    iter_mode: str = "relaxed_order",
+    iter_search: bool = False,
+    iter_search_mode: str | None = None,  # optional override: 'relaxed_order' | 'strict_order' | 'off'
     templates: List[str] | None = None,
     # Dataset / GT
     dataset_key: str = "yfcc100m",
@@ -137,24 +141,45 @@ def exp_pgvector_complex(
     output_path: str | None = None,
     allow_gt_compute: bool = True,
 ):
-    """AND/OR baselines for complex predicates (two-term): metrics per template."""
+    """Run AND/OR (two-term) baselines.
+
+    - Requires iterative search for HNSW
+    - If ``iter_search`` is True and strategy is HNSW/IVF, applies
+      ``strict_order_wrapper`` for strict final ordering.
+    """
     dsn_resolved = resolve_dsn(dsn)
     print(f"[pgvector] Using DSN: {dsn_resolved}")
     if templates is None:
         templates = ["AND {0} {1}", "OR {0} {1}"]
 
+    # Normalize iterative-search controls
+    if strategy == "hnsw" and not iter_search:
+        raise AssertionError("HNSW requires iterative search; set --iter_search true.")
+    if strategy == "ivf" and (not iter_search) and ivf_overscan:
+        raise AssertionError(
+            "ivf_overscan is only meaningful in iterative mode; set --iter_search true or unset ivf_overscan."
+        )
+
     # Session GUCs
     gucs: Dict[str, object] = {}
     if strategy == "ivf":
-        if probes is not None:
-            gucs["ivfflat.probes"] = probes
-        gucs["ivfflat.iterative_scan"] = iter_mode
-        if ivf_max_probes is not None:
+        assert lists is not None and probes is not None, "lists and probes are required for ivf"
+        gucs["ivfflat.probes"] = int(probes)
+        if iter_search_mode is not None:
+            gucs["ivfflat.iterative_scan"] = str(iter_search_mode)
+        else:
+            gucs["ivfflat.iterative_scan"] = "relaxed_order" if iter_search else "off"
+        # Optional cap only applies to iterative mode
+        if ivf_max_probes is not None and iter_search:
             gucs["ivfflat.max_probes"] = int(ivf_max_probes)
     elif strategy == "hnsw":
-        if ef_search is not None:
-            gucs["hnsw.ef_search"] = ef_search
-        gucs["hnsw.iterative_scan"] = iter_mode
+        assert ef_search is not None and m is not None and ef_construction is not None, \
+            "ef_search, m, and ef_construction are required for hnsw"
+        gucs["hnsw.ef_search"] = ef_search
+        if iter_search_mode is not None:
+            gucs["hnsw.iterative_scan"] = str(iter_search_mode)
+        else:
+            gucs["hnsw.iterative_scan"] = "relaxed_order" if iter_search else "off"
         if hnsw_max_scan_tuples is not None:
             gucs["hnsw.max_scan_tuples"] = int(hnsw_max_scan_tuples)
 
@@ -202,18 +227,25 @@ def exp_pgvector_complex(
             for fstr in cpd.template_to_filters[template]:
                 pred_sql, pred_params = parse_polish_to_sql(fstr)
                 core_sql = core_sql_tpl.format(pred=pred_sql)
+                # Iterative relaxed scan + post-sort for strict order (faster)
                 sql = (
                     strict_order_wrapper(core_sql)
-                    if iter_mode == "relaxed_order"
+                    if (
+                        iter_search
+                        and strategy in {"hnsw", "ivf"}
+                        and (iter_search_mode is None or str(iter_search_mode) == "relaxed_order")
+                    )
                     else core_sql
                 )
 
                 with conn.cursor() as cur:
                     for qi, vec in enumerate(cpd.test_vecs):
                         vlit = vec_to_literal(vec)
-                        inner_k = int(k)
-                        if strategy == "ivf" and ivf_overscan:
-                            inner_k = int(k) * int(ivf_overscan)
+                        inner_k = (
+                            int(k) * int(ivf_overscan)
+                            if (strategy == "ivf" and ivf_overscan and iter_search)
+                            else int(k)
+                        )
 
                         start = time.perf_counter()
                         cur.execute(sql, (vlit, *pred_params, inner_k))
@@ -222,7 +254,7 @@ def exp_pgvector_complex(
 
                         query_latencies.append(elapsed)
 
-                        if strategy == "ivf" and ivf_overscan:
+                        if strategy == "ivf" and ivf_overscan and iter_search:
                             rows = rows[: int(k)]
                         ids = [int(r[0]) - 1 for r in rows]  # map DB ids (1-based) to 0-based
                         query_results.append(ids)
@@ -254,7 +286,7 @@ def exp_pgvector_complex(
                     "dataset_key": dataset_key,
                     "test_size": float(test_size),
                     "strategy": strategy,
-                    "iter_mode": iter_mode,
+                    "iter_search": bool(iter_search),
                     "k": int(k),
                     "templates": sorted(cpd.templates),
                     "results": results,

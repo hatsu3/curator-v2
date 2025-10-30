@@ -1,10 +1,8 @@
-"""pgvector baselines for single-label search.
+"""pgvector single-label baselines.
 
-This initial commit provides:
-- DSN handling with default and explicit flag
-- Session GUC helpers
-- Strict-order SQL wrapper (for iterative relaxed modes)
-- Index presence checks (GIN(tags), HNSW, IVFFlat)
+- DSN + session GUC helpers
+- Index presence checks (GIN, HNSW, IVFFlat)
+- Iterative scans: use relaxed order and post-sort wrapper for strict results
 """
 
 from __future__ import annotations
@@ -53,10 +51,10 @@ def set_session_gucs(conn, gucs: Dict[str, object]) -> None:
 
 
 def strict_order_wrapper(core_sql: str) -> str:
-    """Wrap an iterative relaxed query to enforce strict ordering.
+    """Materialize relaxed results then sort by distance.
 
-    Expects `core_sql` to select columns `(id, distance)`.
-    Returns SQL that materializes and re-orders by `distance + 0`.
+    Expects ``core_sql`` to select ``(id, distance)`` and include
+    ``ORDER BY distance LIMIT %s``.
     """
     return (
         "WITH relaxed_results AS MATERIALIZED (\n"
@@ -161,6 +159,7 @@ def exp_pgvector_single(
     dsn: str | None = None,
     strategy: str = "hnsw",
     iter_search: bool = False,
+    iter_search_mode: str | None = None,  # optional override: 'relaxed_order' | 'strict_order' | 'off'
     schema: str = "int_array",  # int_array | boolean
     # Limit number of label-filtered queries (optional)
     max_queries: int | None = None,
@@ -183,9 +182,9 @@ def exp_pgvector_single(
 ):
     """Single-label baseline runner.
 
-    Args:
-        iter_search: If True, use iterative scan with relaxed order; if False, use
-            classic (non-iterative) search. HNSW requires iterative search (True).
+    - Requires iterative search for HNSW
+    - If ``iter_search`` is True and strategy is HNSW/IVF, applies
+      ``strict_order_wrapper`` for strict final ordering.
     """
     # Normalize iterative-search controls
     if strategy == "hnsw" and not iter_search:
@@ -204,7 +203,10 @@ def exp_pgvector_single(
             lists is not None and probes is not None
         ), "lists and probes are required for ivf"
         gucs["ivfflat.probes"] = int(probes)
-        gucs["ivfflat.iterative_scan"] = "relaxed_order" if iter_search else "off"
+        if iter_search_mode is not None:
+            gucs["ivfflat.iterative_scan"] = str(iter_search_mode)
+        else:
+            gucs["ivfflat.iterative_scan"] = "relaxed_order" if iter_search else "off"
         # Optional cap only applies to iterative mode
         if ivf_max_probes is not None and iter_search:
             gucs["ivfflat.max_probes"] = int(ivf_max_probes)
@@ -213,7 +215,10 @@ def exp_pgvector_single(
             ef_search is not None and m is not None and ef_construction is not None
         ), "ef_search, m, and ef_construction are required for hnsw"
         gucs["hnsw.ef_search"] = ef_search
-        gucs["hnsw.iterative_scan"] = "relaxed_order" if iter_search else "off"
+        if iter_search_mode is not None:
+            gucs["hnsw.iterative_scan"] = str(iter_search_mode)
+        else:
+            gucs["hnsw.iterative_scan"] = "relaxed_order" if iter_search else "off"
         if hnsw_max_scan_tuples is not None:
             gucs["hnsw.max_scan_tuples"] = int(hnsw_max_scan_tuples)
 
@@ -275,6 +280,11 @@ def exp_pgvector_single(
 
                     vlit = vec_to_literal(vec)
                     sql = build_sql_for_label(int(label))
+                    # Iterative relaxed scan + post-sort for strict order (faster)
+                    if iter_search and strategy in {"hnsw", "ivf"} and (
+                        iter_search_mode is None or str(iter_search_mode) == "relaxed_order"
+                    ):
+                        sql = strict_order_wrapper(sql)
 
                     # Execute query
                     start = time.perf_counter()
