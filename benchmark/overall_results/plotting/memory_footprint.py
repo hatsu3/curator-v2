@@ -67,6 +67,7 @@ def load_memory_footprint_results(
     output_dir: str = "output/overall_results2",
     datasets: list[str] = ["yfcc100m", "arxiv"],
     optimal_params_file: str = "benchmark/overall_results/optimal_baseline_params.json",
+    exclude_pgvector: bool = False,
 ) -> list[dict]:
     """Load memory footprint results from experiment outputs.
 
@@ -74,6 +75,7 @@ def load_memory_footprint_results(
         output_dir: Directory containing experiment results
         datasets: List of dataset names to process
         optimal_params_file: Path to optimal parameters JSON file
+        exclude_pgvector: If True, exclude pgvector baselines from results
 
     Returns:
         List of result dictionaries with algorithm names and memory usage
@@ -125,6 +127,16 @@ def load_memory_footprint_results(
         "pgvector HNSW": "Pg-HNSW",
         "pgvector IVF": "Pg-IVF",
     }
+
+    if exclude_pgvector:
+        algorithm_mapping = {
+            k: v for k, v in algorithm_mapping.items()
+            if k not in {"pgvector HNSW", "pgvector IVF"}
+        }
+        display_name_mapping = {
+            k: v for k, v in display_name_mapping.items()
+            if k not in {"pgvector HNSW", "pgvector IVF"}
+        }
 
     results = []
 
@@ -181,6 +193,7 @@ def plot_memory_footprint(
     optimal_params_file: str = "benchmark/overall_results/optimal_baseline_params.json",
     output_path: str = "output/overall_results2/figs/memory_footprint.pdf",
     subtract_vectors: bool = True,
+    exclude_pgvector: bool = False,
 ):
     """Plot memory footprint comparison using real evaluation results.
 
@@ -190,12 +203,14 @@ def plot_memory_footprint(
         optimal_params_file: Path to optimal parameters JSON file
         output_path: Path to save the output plot
         subtract_vectors: If True, subtract raw vector storage size from memory footprint
+        exclude_pgvector: If True, exclude pgvector baselines from the plot
     """
     print("Loading memory footprint results from experiment outputs...")
     profile_results = load_memory_footprint_results(
         output_dir=output_dir,
         datasets=datasets,
         optimal_params_file=optimal_params_file,
+        exclude_pgvector=exclude_pgvector,
     )
 
     # Convert dataset names to display names
@@ -274,6 +289,9 @@ def plot_memory_footprint(
         "Pg-IVF",
         "Curator",
     ]
+
+    if exclude_pgvector:
+        baseline_order = [b for b in baseline_order if b not in {"Pg-HNSW", "Pg-IVF"}]
 
     print(f"Plotting {len(df)} data points...")
     print(f"Datasets: {dataset_display_names}")

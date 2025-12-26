@@ -577,6 +577,7 @@ def plot_memory_vs_latency_vs_build_time(
     font_size: int = 14,
     ignore_cache: bool = False,
     skip_annotation_lines: bool = False,
+    exclude_pgvector: bool = False,
 ):
     """
     Plot build time vs index overhead with marker size representing search latency.
@@ -591,6 +592,7 @@ def plot_memory_vs_latency_vs_build_time(
         target_recall: Target recall for latency interpolation (default: 0.9)
         figsize: Figure size (width, height)
         font_size: Font size for the plot
+        exclude_pgvector: If True, exclude pgvector baselines from the plot
     """
     # Determine which datasets to process
     if dataset_names is None:
@@ -637,6 +639,9 @@ def plot_memory_vs_latency_vs_build_time(
                 save_to_cache(df, cache_path)
 
         if not df.empty:
+            # Filter out pgvector baselines if requested
+            if exclude_pgvector:
+                df = df[~df["baseline"].isin(["Pg-HNSW", "Pg-IVF"])]
             dataset_dataframes[ds_name] = df
         print()
 

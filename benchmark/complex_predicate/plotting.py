@@ -114,23 +114,33 @@ def load_optimal_algo_results(
 def load_all_optimal_results(
     output_dir: str | Path,
     algorithms: Optional[List[str]] = None,
+    exclude_pgvector: bool = False,
 ) -> Dict[str, pd.DataFrame]:
     """Load results from all available optimal parameter experiments.
 
     Args:
         output_dir: Base output directory containing results
         algorithms: List of algorithm names to include. If None, discovers all available.
+        exclude_pgvector: If True, exclude pgvector baselines from results
 
     Returns:
         Dictionary mapping algorithm display names to their results DataFrames
     """
     output_dir = Path(output_dir)
 
+    # Create filtered algorithm mapping if excluding pgvector
+    algorithm_mapping = ALGORITHM_MAPPING
+    if exclude_pgvector:
+        algorithm_mapping = {
+            k: v for k, v in ALGORITHM_MAPPING.items()
+            if k not in {"pgvector_hnsw", "pgvector_ivf"}
+        }
+
     if algorithms is None:
         # Discover available algorithms
         algorithms = []
         for algo_dir in output_dir.iterdir():
-            if algo_dir.is_dir() and algo_dir.name in ALGORITHM_MAPPING:
+            if algo_dir.is_dir() and algo_dir.name in algorithm_mapping:
                 results_file = algo_dir / "results.json"
                 if results_file.exists():
                     algorithms.append(algo_dir.name)
@@ -139,7 +149,7 @@ def load_all_optimal_results(
 
     for algorithm_name in algorithms:
         try:
-            display_name = ALGORITHM_MAPPING[algorithm_name]
+            display_name = algorithm_mapping[algorithm_name]
             print(f"Loading {display_name} results...")
 
             df = load_optimal_algo_results(
@@ -291,6 +301,7 @@ def plot_optimal_results(
     output_path: str = "output/complex_predicate_optimal/figs/recall_vs_latency.pdf",
     subplot_size: tuple = (3, 2.5),
     font_size: int = 14,
+    exclude_pgvector: bool = False,
 ):
     """Plot recall vs latency for all algorithms using optimal construction parameters.
 
@@ -301,6 +312,7 @@ def plot_optimal_results(
         output_path: Path to save the output plot
         figsize: Figure size per template subplot
         font_size: Font size for the plot
+        exclude_pgvector: If True, exclude pgvector baselines from the plot
     """
     print(f"=== Plotting Optimal Parameter Results ===")
     print(f"Output directory: {output_dir}")
@@ -312,9 +324,15 @@ def plot_optimal_results(
     template_selectivities = compute_template_selectivities(output_dir)
     print(f"Template selectivities: {template_selectivities}")
 
+    # Determine algorithm order (filter pgvector if requested)
+    algorithm_order = ALGORITHM_ORDER
+    if exclude_pgvector:
+        algorithm_order = [a for a in ALGORITHM_ORDER if a not in {"Pg-HNSW", "Pg-IVF"}]
+
     # Load all baseline results
     all_results = load_all_optimal_results(
         output_dir=output_dir,
+        exclude_pgvector=exclude_pgvector,
         algorithms=algorithms,
     )
 
@@ -332,7 +350,7 @@ def plot_optimal_results(
         axes = [axes]
 
     # Filter to only available algorithms in the desired order
-    available_algorithms = [alg for alg in ALGORITHM_ORDER if alg in all_results]
+    available_algorithms = [alg for alg in algorithm_order if alg in all_results]
 
     # Custom color palette
     colors = sns.color_palette("tab10", n_colors=6)
@@ -530,6 +548,7 @@ def plot_optimal_results_clean(
     output_path: str = "output/complex_predicate_optimal/figs/recall_vs_latency_clean.pdf",
     subplot_size: tuple = (2, 2),  # Make subplots more compact
     font_size: int = 14,
+    exclude_pgvector: bool = False,
 ):
     """Plot recall vs latency with clean visualization handling clustering.
 
@@ -542,6 +561,7 @@ def plot_optimal_results_clean(
         output_path: Path to save the output plot
         subplot_size: Figure size per template subplot
         font_size: Font size for the plot
+        exclude_pgvector: If True, exclude pgvector baselines from the plot
     """
     print(f"=== Plotting Clean Optimal Parameter Results ===")
     print(f"Output directory: {output_dir}")
@@ -553,10 +573,16 @@ def plot_optimal_results_clean(
     template_selectivities = compute_template_selectivities(output_dir)
     print(f"Template selectivities: {template_selectivities}")
 
+    # Determine algorithm order (filter pgvector if requested)
+    algorithm_order = ALGORITHM_ORDER
+    if exclude_pgvector:
+        algorithm_order = [a for a in ALGORITHM_ORDER if a not in {"Pg-HNSW", "Pg-IVF"}]
+
     # Load all baseline results
     all_results = load_all_optimal_results(
         output_dir=output_dir,
         algorithms=algorithms,
+        exclude_pgvector=exclude_pgvector,
     )
 
     # Inject Pre-Filter single points computed from linear model
@@ -568,7 +594,7 @@ def plot_optimal_results_clean(
         raise ValueError("No baseline results found")
 
     # Filter to only available algorithms in the desired order
-    available_algorithms = [alg for alg in ALGORITHM_ORDER if alg in all_results]
+    available_algorithms = [alg for alg in algorithm_order if alg in all_results]
 
     # Custom color palette
     colors = sns.color_palette("tab10", n_colors=6)

@@ -158,6 +158,7 @@ def load_build_time_results(
     output_dir: str = "output/overall_results2",
     datasets: list[str] = ["yfcc100m", "arxiv"],
     optimal_params_file: str = "benchmark/overall_results/optimal_baseline_params.json",
+    exclude_pgvector: bool = False,
 ) -> list[dict]:
     """Load build time results from experiment outputs.
 
@@ -165,6 +166,7 @@ def load_build_time_results(
         output_dir: Directory containing experiment results
         datasets: List of dataset names to process
         optimal_params_file: Path to optimal parameters JSON file
+        exclude_pgvector: If True, exclude pgvector baselines from results
 
     Returns:
         List of result dictionaries with algorithm names and build times
@@ -225,6 +227,16 @@ def load_build_time_results(
         "pgvector IVF": "Pg-IVF",
     }
 
+    if exclude_pgvector:
+        algorithm_mapping = {
+            k: v for k, v in algorithm_mapping.items()
+            if k not in {"pgvector HNSW", "pgvector IVF"}
+        }
+        display_name_mapping = {
+            k: v for k, v in display_name_mapping.items()
+            if k not in {"pgvector HNSW", "pgvector IVF"}
+        }
+
     results = []
 
     for algorithm_json_name, dir_name in algorithm_mapping.items():
@@ -280,6 +292,7 @@ def plot_construction_time(
     datasets: list[str] = ["yfcc100m", "arxiv"],
     optimal_params_file: str = "benchmark/overall_results/optimal_baseline_params.json",
     output_path: str = "output/overall_results2/figs/build_time.pdf",
+    exclude_pgvector: bool = False,
 ):
     """Plot build time comparison using real evaluation results.
 
@@ -288,12 +301,14 @@ def plot_construction_time(
         datasets: List of dataset names to process
         optimal_params_file: Path to optimal parameters JSON file
         output_path: Path to save the output plot
+        exclude_pgvector: If True, exclude pgvector baselines from the plot
     """
     print("Loading build time results from experiment outputs...")
     profile_results = load_build_time_results(
         output_dir=output_dir,
         datasets=datasets,
         optimal_params_file=optimal_params_file,
+        exclude_pgvector=exclude_pgvector,
     )
 
     # Convert dataset names to display names
@@ -314,6 +329,9 @@ def plot_construction_time(
         "Pg-IVF",
         "Curator",
     ]
+
+    if exclude_pgvector:
+        baseline_order = [b for b in baseline_order if b not in {"Pg-HNSW", "Pg-IVF"}]
 
     # Create DataFrame for plotting
     df_rows = []

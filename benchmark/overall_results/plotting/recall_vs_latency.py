@@ -330,6 +330,7 @@ def discover_baseline_results(
     results_dir: Union[Path, str],
     dataset_key: str = "yfcc100m-10m",
     test_size: float = 0.001,
+    exclude_pgvector: bool = False,
 ) -> Dict[str, Optional[str]]:
     """Discover available baseline results from the output directory structure of run_overall_results.sh
 
@@ -337,6 +338,7 @@ def discover_baseline_results(
         results_dir: Root directory containing baseline results (e.g., output/overall_results2)
         dataset_key: Dataset key (e.g., "yfcc100m-10m", "arxiv-large-10")
         test_size: Test size used (e.g., 0.001, 0.005)
+        exclude_pgvector: If True, exclude pgvector baselines from results
 
     Returns:
         Dictionary mapping baseline names to result file paths
@@ -358,6 +360,12 @@ def discover_baseline_results(
         "pgvector_hnsw": "Pg-HNSW",
         "pgvector_ivf": "Pg-IVF",
     }
+
+    if exclude_pgvector:
+        algorithm_mapping = {
+            k: v for k, v in algorithm_mapping.items()
+            if k not in {"pgvector_hnsw", "pgvector_ivf"}
+        }
 
     baseline_results = {}
 
@@ -382,6 +390,7 @@ def preprocess_all_baselines(
     percentiles: List[float] = [0.01, 0.25, 0.50, 0.75, 1.00],
     force_reprocess: bool = False,
     pg_ivf_mode: str | None = None,
+    exclude_pgvector: bool = False,
 ) -> Dict[str, str]:
     """Preprocess all available baseline results for plotting
 
@@ -392,6 +401,7 @@ def preprocess_all_baselines(
         labels_per_group: Number of labels per selectivity group
         percentiles: Selectivity percentiles to analyze
         force_reprocess: Whether to force reprocessing even if preprocessed files exist
+        exclude_pgvector: If True, exclude pgvector baselines from results
 
     Returns:
         Dictionary mapping baseline names to preprocessed result file paths
@@ -407,7 +417,9 @@ def preprocess_all_baselines(
             f"Using dataset-specific labels_per_group={labels_per_group} for {dataset_key}"
         )
 
-    baseline_results = discover_baseline_results(results_dir, dataset_key, test_size)
+    baseline_results = discover_baseline_results(
+        results_dir, dataset_key, test_size, exclude_pgvector=exclude_pgvector
+    )
     preprocessed_results = {}
 
     # Check if any preprocessing is needed
@@ -474,6 +486,7 @@ def plot_recall_vs_latency(
     prefilter_model_dir: Union[str, Path] = "output/overall_results2/pre_filtering",
     y_metric: str = "qps",
     pg_ivf_mode: str = "classic",
+    exclude_pgvector: bool = False,
 ):
     """
     Plot recall vs latency across different selectivity levels using results from run_overall_results.sh
@@ -490,6 +503,7 @@ def plot_recall_vs_latency(
         y_metric: Y axis metric: "qps" (default) or "latency" (milliseconds)
         pg_ivf_mode: Which Pg-IVF mode to plot: "classic" (default) or "iter". If the
             selected mode is unavailable in results, falls back to any available mode.
+        exclude_pgvector: If True, exclude pgvector baselines from the plot
     """
 
     # Map dataset names to dataset keys and test sizes
@@ -527,6 +541,7 @@ def plot_recall_vs_latency(
         percentiles=percentiles,
         force_reprocess=force_reprocess,
         pg_ivf_mode=pg_ivf_mode,
+        exclude_pgvector=exclude_pgvector,
     )
 
     if not preprocessed_results:
