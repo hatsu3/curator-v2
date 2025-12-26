@@ -884,14 +884,21 @@ def plot_optimal_results_clean(
         legend_labels = available_algorithms
 
         # Two-row legend, positioned to avoid overlap
-        ncol = min(len(legend_labels), 4)  # Max 4 columns
+        # Use 5 columns for 9-10 baselines (2 rows), 4 columns for fewer
+        n_baselines = len(legend_labels)
+        if n_baselines <= 8:
+            ncol = min(n_baselines, 4)  # Max 4 columns for <=8 baselines
+            legend_fontsize = font_size - 2
+        else:
+            ncol = 5  # 5 columns for 9+ baselines (2 rows of 5)
+            legend_fontsize = font_size - 4  # Smaller font to fit
         legend = fig.legend(
             legend_handles,
             legend_labels,
             loc="upper center",
             bbox_to_anchor=(0.55, 1.45),
             ncol=ncol,
-            fontsize=font_size - 2,
+            fontsize=legend_fontsize,
             columnspacing=1.0,
             handletextpad=0.5,
         )
