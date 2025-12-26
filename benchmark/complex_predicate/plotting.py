@@ -889,14 +889,17 @@ def plot_optimal_results_clean(
         if n_baselines <= 8:
             ncol = min(n_baselines, 4)  # Max 4 columns for <=8 baselines
             legend_fontsize = font_size - 2
+            legend_y = 1.25  # Single row, less vertical space needed
         else:
             ncol = 5  # 5 columns for 9+ baselines (2 rows of 5)
             legend_fontsize = font_size - 4  # Smaller font to fit
+            # 9 baselines (no pgvector) = 2 rows, 11 baselines = 3 rows
+            legend_y = 1.30 if n_baselines <= 10 else 1.45
         legend = fig.legend(
             legend_handles,
             legend_labels,
             loc="upper center",
-            bbox_to_anchor=(0.55, 1.45),
+            bbox_to_anchor=(0.55, legend_y),
             ncol=ncol,
             fontsize=legend_fontsize,
             columnspacing=1.0,
