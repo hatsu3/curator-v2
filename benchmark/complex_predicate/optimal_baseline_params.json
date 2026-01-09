@@ -17,9 +17,7 @@
             512,
             1024
           ]
-        },
-        "approach_used": "recall",
-        "adaptive_recall_threshold": 0.86435
+        }
       }
     }
   },
@@ -41,9 +39,7 @@
             512,
             1024
           ]
-        },
-        "approach_used": "recall",
-        "adaptive_recall_threshold": 0.8431
+        }
       }
     }
   },
@@ -62,9 +58,7 @@
             128,
             256
           ]
-        },
-        "approach_used": "latency",
-        "adaptive_latency_threshold": 0.033233099341392514
+        }
       }
     }
   },
@@ -83,9 +77,7 @@
             128,
             256
           ]
-        },
-        "approach_used": "latency",
-        "adaptive_latency_threshold": 0.00010774493217468261
+        }
       }
     }
   },
@@ -106,9 +98,7 @@
             512,
             1024
           ]
-        },
-        "approach_used": "recall",
-        "adaptive_recall_threshold": 0.9214
+        }
       }
     }
   },
@@ -126,9 +116,7 @@
             8,
             16
           ]
-        },
-        "approach_used": "recall",
-        "adaptive_recall_threshold": 0.86415
+        }
       }
     }
   },
@@ -150,9 +138,7 @@
             64,
             128
           ]
-        },
-        "approach_used": "recall",
-        "adaptive_recall_threshold": 0.987
+        }
       }
     }
   },
@@ -172,13 +158,10 @@
             128,
             256
           ]
-        },
-        "approach_used": "recall",
-        "adaptive_recall_threshold": 0.95
+        }
       }
     }
-  }
-  ,
+  },
   "pgvector HNSW": {
     "yfcc100m": {
       "OR": {

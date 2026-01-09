@@ -738,8 +738,7 @@ if [ "$PLOT_RESULTS" == "true" ]; then
         --dataset_names '["yfcc100m", "arxiv"]' \
         --selectivity_threshold 0.15 \
         --target_recall 0.9 \
-        --output_path "${OUTPUT_DIR}/figs/memory_vs_latency.pdf" \
-        --annotation_config_path "benchmark/overall_results/plotting/annotation_offsets_sample.yaml"
+        --output_path "${OUTPUT_DIR}/figs/memory_vs_latency.pdf"
 
     # Build Time (combined - both datasets)
     echo "Generating build time plot..."

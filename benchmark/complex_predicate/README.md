@@ -48,7 +48,3 @@ Notes
 - `ComplexPredicateDataset` computes and caches ground truth under `--gt_cache_dir` if missing.
 - For reproducibility, keep the dataset and DB schema aligned to 192-D embeddings for YFCC.
 
-A/B Orchestrator (preview)
-- To preview HNSW engine ordering A/B for complex predicates (strict engine vs relaxed engine + post-sort):
-  - `python -m benchmark.pgvector_ab.hnsw_ordering_ab ab_complex --dataset_variant yfcc100m_1m --dataset_key yfcc100m --test_size 0.01 --k 10 --m 32 --ef_construction 64 --ef_search 64 --n_filters_per_template 50 --n_queries_per_filter 100 --dry_run true`
-- The orchestrator prints baseline commands and target paths under `output/pgvector/hnsw_ordering_ab/yfcc100m_1m/{strict_order|relaxed_order}/`.

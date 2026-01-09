@@ -8,7 +8,37 @@ import seaborn as sns
 from matplotlib.axes import Axes
 from matplotlib.ticker import LogFormatter
 
-from benchmark.complex_predicate.extract_optimal_params import select_pareto_front
+
+def select_pareto_front(
+    df: pd.DataFrame,
+    x_key: str = "query_lat_avg",
+    y_key: str = "recall_at_k",
+    min_x: bool = True,  # minimize x
+    min_y: bool = False,  # maximize y
+) -> pd.DataFrame:
+    """Select Pareto front from results DataFrame.
+
+    Args:
+        df: DataFrame with results
+        x_key: Column name for x-axis metric
+        y_key: Column name for y-axis metric
+        min_x: Whether to minimize x-axis metric
+        min_y: Whether to minimize y-axis metric
+
+    Returns:
+        DataFrame containing only Pareto-optimal points
+    """
+
+    def is_dominated(r1, r2):
+        x_worse = r1[x_key] > r2[x_key] if min_x else r1[x_key] < r2[x_key]
+        y_worse = r1[y_key] > r2[y_key] if min_y else r1[y_key] < r2[y_key]
+        return x_worse and y_worse
+
+    pareto_front = [
+        row for _, row in df.iterrows()
+        if not any(is_dominated(row, other) for _, other in df.iterrows())
+    ]
+    return pd.DataFrame(pareto_front) if pareto_front else pd.DataFrame()
 
 
 def plot_skewness_results(

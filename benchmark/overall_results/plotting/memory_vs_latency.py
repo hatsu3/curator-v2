@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
-import yaml
 
 from benchmark.overall_results.plotting.build_time import load_algorithm_build_time
 from benchmark.overall_results.plotting.memory_footprint import (
@@ -454,122 +453,17 @@ BASELINE_COLORS = {
 }
 
 
-def load_annotation_config(config_path: Union[Path, str]) -> dict:
-    """Load annotation offset configuration from YAML file.
-
-    Args:
-        config_path: Path to YAML configuration file
-
-    Returns:
-        Dictionary with annotation offsets per baseline per dataset
-    """
-    config_path = Path(config_path)
-    if not config_path.exists():
-        print(
-            f"Warning: Annotation config file {config_path} not found. Using default offsets."
-        )
-        return {}
-
-    try:
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
-        print(f"Loaded annotation configuration from {config_path}")
-        return config.get("annotation_offsets", {})
-    except Exception as e:
-        print(f"Error loading annotation config from {config_path}: {e}")
-        return {}
-
-
-def generate_sample_annotation_config(
-    dataset_dataframes: dict,
-    config_path: Union[Path, str],
-    default_offset: tuple = (5, 2),
-) -> None:
-    """Generate a sample annotation configuration file based on current data.
-
-    Args:
-        dataset_dataframes: Dictionary of dataset DataFrames with baseline data
-        config_path: Path to save the sample configuration file
-        default_offset: Default (x, y) offset for annotations
-    """
-    config_path = Path(config_path)
-
-    # Create annotation offsets structure
-    annotation_offsets = {}
-
-    for ds_name, df in dataset_dataframes.items():
-        dataset_display_name = DATASET_CONFIG[ds_name]["display_name"]
-        annotation_offsets[dataset_display_name] = {}
-
-        for _, row in df.iterrows():
-            baseline_name = row["baseline"]
-            annotation_offsets[dataset_display_name][baseline_name] = {
-                "x_offset": default_offset[0],
-                "y_offset": default_offset[1],
-                "ha": "left",  # horizontal alignment
-                "va": "bottom",  # vertical alignment
-            }
-
-    # Create full configuration structure
-    config = {
-        "annotation_offsets": annotation_offsets,
-        "description": "Configuration file for annotation offsets in memory vs latency plots",
-        "usage": "Modify x_offset and y_offset values to adjust annotation positions. "
-        "Positive x_offset moves annotations right, positive y_offset moves them up. "
-        "ha (horizontal alignment) can be: left, center, right. "
-        "va (vertical alignment) can be: bottom, center, top.",
-    }
-
-    # Save configuration
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(config_path, "w") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-
-    print(f"Generated sample annotation configuration at {config_path}")
-
-
-def get_annotation_offset(
-    annotation_config: dict,
-    dataset_display_name: str,
-    baseline_name: str,
-    default_offset: tuple = (5, 2),
-) -> dict:
-    """Get annotation offset and alignment for a specific baseline and dataset.
-
-    Args:
-        annotation_config: Loaded annotation configuration
-        dataset_display_name: Display name of the dataset
-        baseline_name: Name of the baseline
-        default_offset: Default (x, y) offset if not configured
-
-    Returns:
-        Dictionary with offset and alignment parameters
-    """
-    if (
-        dataset_display_name in annotation_config
-        and baseline_name in annotation_config[dataset_display_name]
-    ):
-
-        config = annotation_config[dataset_display_name][baseline_name]
-        return {
-            "x_offset": config.get("x_offset", default_offset[0]),
-            "y_offset": config.get("y_offset", default_offset[1]),
-            "ha": config.get("ha", "left"),
-            "va": config.get("va", "bottom"),
-        }
-    else:
-        return {
-            "x_offset": default_offset[0],
-            "y_offset": default_offset[1],
-            "ha": "left",
-            "va": "bottom",
-        }
+DEFAULT_ANNOTATION_OFFSET = {
+    "x_offset": 5,
+    "y_offset": 2,
+    "ha": "left",
+    "va": "bottom",
+}
 
 
 def plot_memory_vs_latency_vs_build_time(
     results_dir: Union[Path, str],
     output_path: Union[Path, str],
-    annotation_config_path: Union[Path, str],
     dataset_names: list[str] | None = None,
     selectivity_threshold: float = 0.15,
     target_recall: float = 0.9,
@@ -586,7 +480,6 @@ def plot_memory_vs_latency_vs_build_time(
     Args:
         results_dir: Root directory containing baseline results
         output_path: Path to save the plot
-        annotation_config_path: Path to YAML configuration file for annotation offsets
         dataset_names: List of dataset names to process (default: ["yfcc100m", "arxiv"])
         selectivity_threshold: Selectivity percentile to analyze (0.0 to 1.0)
         target_recall: Target recall for latency interpolation (default: 0.9)
@@ -647,11 +540,6 @@ def plot_memory_vs_latency_vs_build_time(
 
     if not dataset_dataframes:
         raise ValueError("No valid data found for any dataset")
-
-    # Load annotation configuration
-    annotation_config = {}
-    if annotation_config_path:
-        annotation_config = load_annotation_config(annotation_config_path)
 
     # Create the plot
     plt.rcParams.update({"font.size": font_size})
@@ -730,24 +618,16 @@ def plot_memory_vs_latency_vs_build_time(
             c=colors,
         )
 
-        # Add annotations with configurable offsets
+        # Add annotations with default offsets
         for _, row in df.iterrows():
-            # Get annotation configuration for this baseline and dataset
-            annotation_params = get_annotation_offset(
-                annotation_config,
-                dataset_display_name,
-                row["baseline"],
-                default_offset=(5, 2),
-            )
-
             kwargs = dict(
                 text=row["short_name"],
                 xy=(row["build_time_sec"], row["memory_gb"]),
-                xytext=(annotation_params["x_offset"], annotation_params["y_offset"]),
+                xytext=(DEFAULT_ANNOTATION_OFFSET["x_offset"], DEFAULT_ANNOTATION_OFFSET["y_offset"]),
                 textcoords="offset points",
                 fontsize=font_size - 4,
-                ha=annotation_params["ha"],
-                va=annotation_params["va"],
+                ha=DEFAULT_ANNOTATION_OFFSET["ha"],
+                va=DEFAULT_ANNOTATION_OFFSET["va"],
             )
             if not skip_annotation_lines:
                 kwargs["arrowprops"] = dict(
@@ -851,62 +731,6 @@ def plot_memory_vs_latency_vs_build_time(
                 f"  {row['baseline']}: {row['build_time_sec']:.2f}s build, "
                 f"{row['memory_gb']:.2f}GB overhead, {row['latency_ms']:.2f}ms latency"
             )
-
-
-def generate_annotation_config(
-    results_dir: Union[Path, str],
-    output_path: Union[Path, str],
-    dataset_names: list[str] | None = None,
-    selectivity_threshold: float = 0.15,
-    target_recall: float = 0.9,
-) -> None:
-    """
-    Generate a sample annotation configuration file based on current data.
-
-    Args:
-        results_dir: Root directory containing baseline results
-        output_path: Path to save the sample configuration file
-        dataset_names: List of dataset names to process (default: ["yfcc100m", "arxiv"])
-        selectivity_threshold: Selectivity percentile to analyze (0.0 to 1.0)
-        target_recall: Target recall for latency interpolation (default: 0.9)
-    """
-    # Determine which datasets to process
-    if dataset_names is None:
-        datasets_to_process = ["yfcc100m", "arxiv"]
-    else:
-        if not all(ds_name in DATASET_CONFIG for ds_name in dataset_names):
-            raise ValueError(
-                f"Some datasets are not supported: {dataset_names}. Must be one of {list(DATASET_CONFIG.keys())}"
-            )
-        datasets_to_process = dataset_names
-
-    print(f"=== Generating Annotation Configuration ===")
-    print(f"Results directory: {results_dir}")
-    print(f"Datasets: {datasets_to_process}")
-    print(f"Output path: {output_path}")
-    print()
-
-    # Process data for each dataset
-    dataset_dataframes = {}
-    for ds_name in datasets_to_process:
-        df = process_dataset_data(
-            results_dir=results_dir,
-            dataset_name=ds_name,
-            selectivity_threshold=selectivity_threshold,
-            target_recall=target_recall,
-            dataset_config=DATASET_CONFIG,
-            algorithm_dir_mapping=ALGORITHM_DIR_MAPPING,
-            short_names=SHORT_NAMES,
-        )
-        if not df.empty:
-            dataset_dataframes[ds_name] = df
-        print()
-
-    if not dataset_dataframes:
-        raise ValueError("No valid data found for any dataset")
-
-    # Generate sample configuration
-    generate_sample_annotation_config(dataset_dataframes, output_path)
 
 
 def plot_memory_vs_latency_per_selectivity(

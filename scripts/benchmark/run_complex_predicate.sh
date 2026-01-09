@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # Complex Predicate Optimal Parameters Evaluation Script
-# Uses optimal construction parameters from optimal_complex_predicate_params.json
+# Uses optimal construction parameters from optimal_baseline_params.json
 # Usage: ./run_complex_predicate.sh <baseline_name> [output_dir] [cpu_cores] [params_file]
 #        baseline_name: curator, curator_with_index, shared_hnsw, per_predicate_hnsw,
 #                      shared_ivf, per_predicate_ivf, parlay_ivf, acorn, "all", or "plot"
 #        output_dir: optional output directory (default: output/complex_predicate_optimal)
 #        cpu_cores: optional CPU cores to use with taskset (e.g., "0-3" or "1,3,5", default: no affinity)
-#        params_file: optional path to optimal parameters JSON file (default: benchmark/complex_predicate/optimal_complex_predicate_params.json)
+#        params_file: optional path to optimal parameters JSON file (default: benchmark/complex_predicate/optimal_baseline_params.json)
 
 set -e  # Exit on any error
 
@@ -30,7 +30,7 @@ show_usage() {
     echo ""
     echo "  output_dir       Output directory (default: output/complex_predicate_optimal)"
     echo "  cpu_cores        CPU cores for taskset (e.g., '0-3' or '1,3,5', default: no affinity)"
-    echo "  params_file      Path to optimal parameters JSON (default: benchmark/complex_predicate/optimal_complex_predicate_params.json)"
+    echo "  params_file      Path to optimal parameters JSON (default: benchmark/complex_predicate/optimal_baseline_params.json)"
     echo ""
     echo "Examples:"
     echo "  $0 curator"
