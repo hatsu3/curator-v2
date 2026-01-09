@@ -5,19 +5,19 @@ At its core, Curator constructs a memory-efficient clustering tree that indexes 
 ## Repository Structure
 
 - `3rd_party/faiss`: C++ impl of Curator and baselines
-  
+
   - `MultiTenantIndexIVFHierarchical.cpp`: Curator
-  - `MultiTenantIndexIVFFlat.cpp`: IVF with metadata filtering
-  - `MultiTenantIndexIVFFlatSep.cpp`: IVF with per-tenant indexing
-  - `MultiTenantIndexHNSW.cpp`: HNSW with metadata filtering
+  - `MultiTenantIndexIVFFlat.cpp`: Shared IVF (inline filtering)
+  - `MultiTenantIndexIVFFlatSep.cpp`: Per-label IVF (separate indexes)
+  - `MultiTenantIndexHNSW.cpp`: Shared HNSW (inline filtering)
 
 - `indexes`: Python API for indexes
 
-  - `ivf_hier_faiss.py`: Curator
-  - `ivf_flat_mt_faiss.py`: IVF with metadata filtering
-  - `ivf_flat_sepidx_faiss.py`: IVF with per-tenant indexing
-  - `hnsw_mt_hnswlib.py`: HNSW with metadata filtering
-  - `hnsw_sepidx_hnswlib.py`: HNSW with per-tenant indexing
+  - `curator.py`: Curator
+  - `shared_ivf.py`: Shared IVF (inline filtering)
+  - `per_label_ivf.py`: Per-label IVF (separate indexes)
+  - `shared_hnsw.py`: Shared HNSW (inline filtering)
+  - `per_label_hnsw.py`: Per-label HNSW (separate indexes)
 
 - `dataset`: code for evaluation datasets
 

@@ -8,7 +8,7 @@ import pandas as pd
 from benchmark.config import IndexConfig
 from benchmark.profiler import BatchProfiler, IndexProfiler
 from benchmark.scalability.nlabels.data.dataset import ScalabilityDataset
-from indexes.hnsw_mt_hnswlib import HNSWMultiTenantHnswlib as SharedHNSW
+from indexes.shared_hnsw import SharedHNSW
 
 
 def exp_shared_hnsw_scalability(

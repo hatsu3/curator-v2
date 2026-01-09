@@ -7,7 +7,7 @@ from dataset import Metadata
 from indexes.base import Index
 
 
-class IVFFlatMultiTenantFaiss(Index):
+class SharedIVF(Index):
     """IVF-Flat index with metadata filtering"""
 
     def __init__(self, d: int, nlist: int, nprobe: int = 1) -> None:
@@ -68,7 +68,7 @@ class IVFFlatMultiTenantFaiss(Index):
         self, X: np.ndarray, k: int, access_lists: list[list[int]], num_threads: int = 1
     ) -> list[list[int]]:
         raise NotImplementedError(
-            "Batch querying is not supported for IVFFlatMultiTenantFaiss"
+            "Batch querying is not supported for SharedIVF"
         )
 
     def query_with_complex_predicate(
@@ -80,8 +80,8 @@ class IVFFlatMultiTenantFaiss(Index):
 
 
 if __name__ == "__main__":
-    print("Testing IVFFlatMultiTenantFaiss...")
-    index = IVFFlatMultiTenantFaiss(10, 10)
+    print("Testing SharedIVF...")
+    index = SharedIVF(10, 10)
     index.train(np.random.random((400, 10)))
     index.create(np.random.rand(10), 0)
     index.create(np.random.rand(10), 1)

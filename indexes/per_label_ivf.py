@@ -7,7 +7,7 @@ from dataset import Metadata
 from indexes.base import Index
 
 
-class IVFFlatMultiTenantSepIndexFaiss(Index):
+class PerLabelIVF(Index):
     """IVF-Flat index with per-tenant indexing"""
 
     def __init__(self, d: int, nlist: int, nprobe: int = 5) -> None:
@@ -92,5 +92,5 @@ class IVFFlatMultiTenantSepIndexFaiss(Index):
         self, X: np.ndarray, k: int, access_lists: list[list[int]], num_threads: int = 1
     ) -> list[list[int]]:
         raise NotImplementedError(
-            "Batch querying is not supported for IVFFlatMultiTenantSepIndexFaiss"
+            "Batch querying is not supported for PerLabelIVF"
         )

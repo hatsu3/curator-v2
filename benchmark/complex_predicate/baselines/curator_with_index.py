@@ -11,7 +11,7 @@ from benchmark.complex_predicate.utils import compute_qualified_labels
 from benchmark.config import IndexConfig
 from benchmark.profiler import BatchProfiler
 from benchmark.utils import get_memory_usage
-from indexes.ivf_hier_faiss import IVFFlatMultiTenantBFHierFaiss as CuratorIndex
+from indexes.curator import Curator as CuratorIndex
 
 
 def exp_curator_with_index_complex_predicate(

@@ -10,7 +10,7 @@ from benchmark.complex_predicate.dataset import (
 )
 from benchmark.config import IndexConfig
 from benchmark.profiler import BatchProfiler, IndexProfiler
-from indexes.hnsw_sepidx_hnswlib import HNSWMultiTenantSepIndexHnswlib as PerLabelHNSW
+from indexes.per_label_hnsw import PerLabelHNSW
 
 
 def exp_per_predicate_hnsw_complex_predicate(

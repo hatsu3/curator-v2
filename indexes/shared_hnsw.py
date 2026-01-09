@@ -7,7 +7,7 @@ from dataset import Metadata
 from indexes.base import Index
 
 
-class HNSWMultiTenantHnswlib(Index):
+class SharedHNSW(Index):
     """HNSW index with metadata filtering"""
 
     def __init__(
@@ -99,7 +99,7 @@ class HNSWMultiTenantHnswlib(Index):
 
 
 if __name__ == "__main__":
-    index = HNSWMultiTenantHnswlib()
+    index = SharedHNSW()
     index.create(np.random.rand(10), label=0)
     index.create(np.random.rand(10), label=1)
     index.grant_access(label=0, tenant_id=1)

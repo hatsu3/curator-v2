@@ -7,15 +7,15 @@ import fire
 from benchmark.config import IndexConfig
 from benchmark.profiler import BatchProfiler, IndexProfiler
 from benchmark.selectivity.dataset import SelectivityDataset
-from indexes.ivf_hier_faiss import IVFFlatMultiTenantBFHierFaiss as CuratorIndex
+from indexes.curator import Curator as CuratorIndex
 
 
-def exp_curator_selectivity(
+def exp_curator_opt_selectivity(
     output_path: str,
     nlist: int = 16,
     max_sl_size: int = 256,
-    nprobe_space: list[int] = [2000, 3000, 4000],
-    prune_thres_space: list[float] = [1.2, 1.4, 1.6, 1.8, 2.0],
+    search_ef_space: list[int] = [32, 64, 128, 256, 512, 768, 1024],
+    beam_size_space: list[int] = [1, 2, 4, 8],
     dataset_cache_dir: str = "data/selectivity/random_yfcc100m",
 ):
     profiler = IndexProfiler()
@@ -37,9 +37,9 @@ def exp_curator_selectivity(
             "bf_error_rate": 0.01,
         },
         search_params={
-            "nprobe": nprobe_space[0],
-            "prune_thres": prune_thres_space[0],
             "variance_boost": 0.4,
+            "search_ef": search_ef_space[0],
+            "beam_size": beam_size_space[0],
         },
     )
 
@@ -47,21 +47,28 @@ def exp_curator_selectivity(
         index_config=index_config,
         do_train=True,
         batch_insert=False,
-        track_stats=True,
+        track_stats=False,
     )
 
     results = list()
-    for nprobe, prune_thres in product(nprobe_space, prune_thres_space):
-        print(f"Querying index with nprobe = {nprobe}, prune_thres = {prune_thres} ...")
-        profiler.set_index_search_params({"nprobe": nprobe, "prune_thres": prune_thres})
-        query_res = profiler.do_query(return_verbose=True, return_stats=True)
+    for search_ef, beam_size in product(search_ef_space, beam_size_space):
+        print(
+            f"Querying index with search_ef = {search_ef}, beam_size = {beam_size} ... "
+        )
+        profiler.set_index_search_params(
+            {
+                "search_ef": search_ef,
+                "beam_size": beam_size,
+            }
+        )
+        query_res = profiler.do_query(return_verbose=True, return_stats=False)
         query_res.pop("query_results")  # track per-query recalls and latencies
         results.append(
             {
                 "nlist": nlist,
                 "max_sl_size": max_sl_size,
-                "nprobe": nprobe,
-                "prune_thres": prune_thres,
+                "search_ef": search_ef,
+                "beam_size": beam_size,
                 **query_res,
                 **build_results,
             }
@@ -72,16 +79,16 @@ def exp_curator_selectivity(
     json.dump(results, open(output_path, "w"))
 
 
-def exp_curator_selectivity_param_sweep(
+def exp_curator_opt_selectivity_param_sweep(
     cpu_groups: list[str] = ["0-3", "4-7", "8-11", "12-15"],
-    nlist_space: list[int] = [8, 16, 32],
-    max_sl_size_space: list[int] = [64, 128, 256],
-    nprobe_space: list[int] = [2000, 3000, 4000],
-    prune_thres_space: list[float] = [1.2, 1.4, 1.6, 1.8, 2.0],
+    nlist_space: list[int] = [16, 32],
+    max_sl_size_space: list[int] = [128, 256, 384],
+    search_ef_space: list[int] = [32, 64, 128, 256, 512, 768, 1024],
+    beam_size_space: list[int] = [1, 2, 4, 8],
     dataset_key: str = "yfcc100m",
     test_size: float = 0.01,
     dataset_cache_dir: str = "data/selectivity/random_yfcc100m",
-    output_dir: str | Path = "output/selectivity/curator",
+    output_dir: str | Path = "output/selectivity/curator_opt",
 ):
     params = vars()
 
@@ -94,13 +101,13 @@ def exp_curator_selectivity_param_sweep(
     for nlist, max_sl_size in product(nlist_space, max_sl_size_space):
         task_name = f"nlist{nlist}_maxsl{max_sl_size}"
         command = batch_profiler.build_command(
-            module="benchmark.selectivity.curator",
-            func="exp_curator_selectivity",
+            module="benchmark.selectivity.curator_opt",
+            func="exp_curator_opt_selectivity",
             output_path=str(results_dir / f"{task_name}.json"),
             nlist=nlist,
             max_sl_size=max_sl_size,
-            nprobe_space=nprobe_space,
-            prune_thres_space=prune_thres_space,
+            search_ef_space=search_ef_space,
+            beam_size_space=beam_size_space,
             dataset_cache_dir=dataset_cache_dir,
         )
         batch_profiler.submit(task_name, command)

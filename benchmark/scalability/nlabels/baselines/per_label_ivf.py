@@ -8,7 +8,7 @@ import pandas as pd
 from benchmark.config import IndexConfig
 from benchmark.profiler import BatchProfiler, IndexProfiler
 from benchmark.scalability.nlabels.data.dataset import ScalabilityDataset
-from indexes.ivf_flat_sepidx_faiss import IVFFlatMultiTenantSepIndexFaiss as PerLabelIVF
+from indexes.per_label_ivf import PerLabelIVF
 
 
 def exp_per_label_ivf_scalability(

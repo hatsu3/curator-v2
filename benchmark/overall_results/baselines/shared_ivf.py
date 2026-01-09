@@ -7,7 +7,7 @@ import pandas as pd
 
 from benchmark.config import IndexConfig
 from benchmark.profiler import BatchProfiler, Dataset, IndexProfiler
-from indexes.ivf_flat_mt_faiss import IVFFlatMultiTenantFaiss as SharedIVF
+from indexes.shared_ivf import SharedIVF
 
 
 # in each experiment we test a single nprobe value because the experiment

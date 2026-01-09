@@ -8,7 +8,7 @@ from dataset import Metadata
 from indexes.base import Index
 
 
-class IVFFlatMultiTenantBFHierFaiss(Index):
+class Curator(Index):
     """Curator index"""
 
     def __init__(
@@ -256,7 +256,7 @@ class IVFFlatMultiTenantBFHierFaiss(Index):
         self, X: np.ndarray, k: int, access_lists: list[list[int]], num_threads: int = 1
     ) -> list[list[int]]:
         raise NotImplementedError(
-            "Batch querying is not supported for IVFFlatMultiTenantBFHierFaiss"
+            "Batch querying is not supported for Curator"
         )
 
     def enable_stats_tracking(self, enable: bool = True) -> None:

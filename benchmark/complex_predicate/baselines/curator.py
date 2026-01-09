@@ -9,7 +9,7 @@ from benchmark.complex_predicate.dataset import ComplexPredicateDataset
 from benchmark.complex_predicate.profiler import IndexProfilerForComplexPredicate
 from benchmark.config import IndexConfig
 from benchmark.profiler import BatchProfiler
-from indexes.ivf_hier_faiss import IVFFlatMultiTenantBFHierFaiss as CuratorIndex
+from indexes.curator import Curator as CuratorIndex
 
 
 def exp_curator_complex_predicate(

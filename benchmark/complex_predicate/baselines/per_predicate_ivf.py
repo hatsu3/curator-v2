@@ -9,7 +9,7 @@ from benchmark.complex_predicate.dataset import (
 )
 from benchmark.config import IndexConfig
 from benchmark.profiler import BatchProfiler, IndexProfiler
-from indexes.ivf_flat_sepidx_faiss import IVFFlatMultiTenantSepIndexFaiss as PerLabelIVF
+from indexes.per_label_ivf import PerLabelIVF
 
 
 def exp_per_predicate_ivf_complex_predicate(

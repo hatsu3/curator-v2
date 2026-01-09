@@ -7,7 +7,7 @@ import pandas as pd
 
 from benchmark.config import IndexConfig
 from benchmark.profiler import BatchProfiler, Dataset, IndexProfiler
-from indexes.ivf_hier_faiss import IVFFlatMultiTenantBFHierFaiss as CuratorIndex
+from indexes.curator import Curator as CuratorIndex
 
 
 def exp_curator_opt(

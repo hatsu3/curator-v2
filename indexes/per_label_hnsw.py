@@ -7,7 +7,7 @@ from dataset import Metadata
 from indexes.base import Index
 
 
-class HNSWMultiTenantSepIndexHnswlib(Index):
+class PerLabelHNSW(Index):
     """HNSW index with per-tenant indexing"""
 
     def __init__(
@@ -99,7 +99,7 @@ class HNSWMultiTenantSepIndexHnswlib(Index):
         self, X: np.ndarray, k: int, access_lists: list[list[int]], num_threads: int = 1
     ) -> list[list[int]]:
         raise NotImplementedError(
-            "Batch querying is not supported for HNSWMultiTenantSepIndexHnswlib"
+            "Batch querying is not supported for PerLabelHNSW"
         )
 
     def _create_collection(self, dim: int) -> hnswlib.Index:

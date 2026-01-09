@@ -8,7 +8,7 @@ from benchmark.complex_predicate.dataset import ComplexPredicateDataset
 from benchmark.complex_predicate.profiler import IndexProfilerForComplexPredicate
 from benchmark.config import IndexConfig
 from benchmark.profiler import BatchProfiler
-from indexes.ivf_flat_mt_faiss import IVFFlatMultiTenantFaiss as SharedIVF
+from indexes.shared_ivf import SharedIVF
 
 
 def exp_shared_ivf_complex_predicate(

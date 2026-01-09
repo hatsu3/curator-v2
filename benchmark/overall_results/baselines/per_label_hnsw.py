@@ -7,7 +7,7 @@ import pandas as pd
 
 from benchmark.config import IndexConfig
 from benchmark.profiler import BatchProfiler, Dataset, IndexProfiler
-from indexes.hnsw_sepidx_hnswlib import HNSWMultiTenantSepIndexHnswlib as PerLabelHNSW
+from indexes.per_label_hnsw import PerLabelHNSW
 
 
 def exp_per_label_hnsw(
