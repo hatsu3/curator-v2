@@ -89,10 +89,23 @@ Use the shell scripts in `scripts/benchmark/` to run experiments:
 
 # Generate complex predicate plots
 ./scripts/benchmark/run_complex_predicate.sh plot output/complex_predicate_optimal
+
+# Run scalability experiments (nlabels)
+./scripts/benchmark/run_scalability.sh <baseline|all> [output_dir] [n_labels_list]
+# Example: ./scripts/benchmark/run_scalability.sh curator
+# Example: ./scripts/benchmark/run_scalability.sh all output/scalability 19,38,76
+
+# Generate scalability plots (memory vs nlabels/nvecs)
+./scripts/benchmark/run_scalability.sh plot
+
+# Generate ablation study plots (structural constraint, skewness)
+./scripts/benchmark/run_ablation.sh plot
 ```
+
+Available baselines for scalability: `curator`, `per_label_hnsw`, `per_label_ivf`, `shared_hnsw`, `parlay_ivf`, `filtered_diskann`, `all`, `plot`
 
 Available baselines for overall results: `curator`, `per_label_hnsw`, `per_label_ivf`, `shared_hnsw`, `shared_ivf`, `parlay_ivf`, `filtered_diskann`, `acorn_1`, `acorn_gamma`, `all`, `plot`
 
 Available datasets: `yfcc100m`, `arxiv`
 
-See each script's help for full usage details.
+See each script's help (`./scripts/benchmark/<script>.sh`) for full usage details.

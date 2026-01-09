@@ -362,7 +362,7 @@ def plot_memory_vs_dataset_size_at_ax(
 
 
 def plot_memory_vs_nvec_nlabel_combined(
-    output_path: str = "output/scalability_nvec/figs/resivion_memory_vs_nvec_nlabel_combined.pdf",
+    output_path: str = "output/scalability_nvec/figs/revision_memory_vs_nvec_nlabel_combined.pdf",
     nlabel_index_keys: list[str] = [
         "per_label_hnsw",
         "per_label_ivf",
