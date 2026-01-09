@@ -539,7 +539,7 @@ elif [ "${BASELINE_NAME}" == "plot" ]; then
     # Generate plots from optimal parameter results
     echo "=== Generating Comparison Plots ==="
 
-    PLOT_OUTPUT="${OUTPUT_DIR}/figs/recall_vs_latency_clean.pdf"
+    PLOT_OUTPUT="${OUTPUT_DIR}/figs/complex_predicate.pdf"
     echo "Plot will be saved to: ${PLOT_OUTPUT}"
 
     python -m benchmark.complex_predicate.plotting \

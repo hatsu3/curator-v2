@@ -8,7 +8,7 @@ import seaborn as sns
 from matplotlib.axes import Axes
 from matplotlib.ticker import LogFormatter
 
-from benchmark.overall_results.plotting import select_pareto_front
+from benchmark.complex_predicate.extract_optimal_params import select_pareto_front
 
 
 def plot_skewness_results(

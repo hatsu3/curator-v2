@@ -442,13 +442,15 @@ def plot_update_results(
     ax1.set_ylabel("Latency (ms)")
     ax1.grid(axis="y", which="major", linestyle="-", alpha=0.6)
 
-    # Plot 2: Vector Insertion (insert_lat_avg) - exclude P-* algorithms
+    # Plot 2: Vector Insertion (insert_lat_avg) - exclude P-* and Pg-* algorithms
     vector_insertion_df = df[
-        (~df["index_key"].str.startswith("P-")) & (df["insert_lat_avg"].notna())
+        (~df["index_key"].str.startswith("P-"))
+        & (~df["index_key"].str.startswith("Pg-"))
+        & (df["insert_lat_avg"].notna())
     ].copy()
     assert isinstance(vector_insertion_df, pd.DataFrame)
     if not vector_insertion_df.empty:
-        non_p_algorithms = [k for k in filtered_index_keys if not k.startswith("P-")]
+        non_p_algorithms = [k for k in filtered_index_keys if not k.startswith("P-") and not k.startswith("Pg-")]
         available_non_p = [
             k for k in non_p_algorithms if k in set(vector_insertion_df["index_key"])
         ]
@@ -551,22 +553,21 @@ def plot_update_results(
         add_red_crosses_for_missing_data(
             ax1,
             label_data,
-            filtered_index_keys,
+            available_label_algorithms,
             dataset_display_names,
             "label insertion",
         )
 
-    # Add red crosses for Plot 2: Vector Insertion (non-P algorithms only)
+    # Add red crosses for Plot 2: Vector Insertion (non-P and non-Pg algorithms only)
     if not vector_insertion_df.empty:
         vector_data = [
             (row["index_key"], row["insert_lat_avg"], row["dataset"])
             for _, row in vector_insertion_df.iterrows()
         ]
-        non_p_algorithms = [k for k in filtered_index_keys if not k.startswith("P-")]
         add_red_crosses_for_missing_data(
             ax2,
             vector_data,
-            non_p_algorithms,
+            available_non_p,
             dataset_display_names,
             "vector insertion",
         )

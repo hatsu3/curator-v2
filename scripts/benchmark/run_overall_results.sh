@@ -221,7 +221,7 @@ import os
 from pathlib import Path
 
 config_file = '${CONFIG_FILE}'
-new_config = ${NEW_CONFIG}
+new_config = json.loads('''${NEW_CONFIG}''')
 
 # Load existing configurations or create empty list
 if os.path.exists(config_file):
@@ -392,7 +392,7 @@ run_baseline() {
   "experiment_config": {
     "cpu_cores": "${CPU_CORES}",
     "num_threads": ${NUM_THREADS},
-    "return_verbose": ${RETURN_VERBOSE},
+    "return_verbose": $(echo "${RETURN_VERBOSE}" | tr '[:upper:]' '[:lower:]'),
     "params_source": "${PARAMS_FILE}"
   }
 }
@@ -720,48 +720,50 @@ if [ "$PLOT_RESULTS" == "true" ]; then
 
     mkdir -p "${OUTPUT_DIR}/figs"
 
-    # Recall vs Latency
+    # Recall vs Latency (per-dataset, since this script doesn't support combined)
     echo "Generating recall vs latency plots..."
-    python -m benchmark.overall_results.plotting.recall_vs_latency \
-        plot_recall_vs_latency \
-        --results_dir "${OUTPUT_DIR}" \
-        --dataset_name "${DATASET}" \
-        --output_path "${OUTPUT_DIR}/figs/recall_vs_latency_${DATASET}.pdf"
+    for ds in yfcc100m arxiv; do
+        python -m benchmark.overall_results.plotting.recall_vs_latency \
+            plot_recall_vs_latency \
+            --results_dir "${OUTPUT_DIR}" \
+            --dataset_name "${ds}" \
+            --output_path "${OUTPUT_DIR}/figs/recall_vs_latency_${ds}.pdf"
+    done
 
-    # Memory vs Latency
+    # Memory vs Latency (combined - both datasets)
     echo "Generating memory vs latency plot..."
     python -m benchmark.overall_results.plotting.memory_vs_latency \
         plot_memory_vs_latency_vs_build_time \
         --results_dir "${OUTPUT_DIR}" \
-        --dataset_names "['${DATASET}']" \
+        --dataset_names '["yfcc100m", "arxiv"]' \
         --selectivity_threshold 0.15 \
         --target_recall 0.9 \
-        --output_path "${OUTPUT_DIR}/figs/memory_vs_latency_${DATASET}.pdf" \
+        --output_path "${OUTPUT_DIR}/figs/memory_vs_latency.pdf" \
         --annotation_config_path "benchmark/overall_results/plotting/annotation_offsets_sample.yaml"
 
-    # Build Time
+    # Build Time (combined - both datasets)
     echo "Generating build time plot..."
     python -m benchmark.overall_results.plotting.build_time \
         plot_construction_time \
         --output_dir "${OUTPUT_DIR}" \
-        --datasets "[\"${DATASET}\"]" \
-        --output_path "${OUTPUT_DIR}/figs/build_time_${DATASET}.pdf"
+        --datasets '["yfcc100m", "arxiv"]' \
+        --output_path "${OUTPUT_DIR}/figs/build_time.pdf"
 
-    # Memory Footprint
+    # Memory Footprint (combined - both datasets)
     echo "Generating memory footprint plot..."
     python -m benchmark.overall_results.plotting.memory_footprint \
         plot_memory_footprint \
         --output_dir "${OUTPUT_DIR}" \
-        --datasets "[\"${DATASET}\"]" \
-        --output_path "${OUTPUT_DIR}/figs/memory_footprint_${DATASET}.pdf"
+        --datasets '["yfcc100m", "arxiv"]' \
+        --output_path "${OUTPUT_DIR}/figs/memory_footprint.pdf"
 
-    # Update Performance
+    # Update Performance (combined - both datasets)
     echo "Generating update performance plot..."
     python -m benchmark.overall_results.plotting.update_perf \
         plot_update_results \
         --output_dir "${OUTPUT_DIR}" \
-        --datasets "[\"${DATASET}\"]" \
-        --output_path "${OUTPUT_DIR}/figs/update_perf_${DATASET}.pdf"
+        --datasets '["yfcc100m", "arxiv"]' \
+        --output_path "${OUTPUT_DIR}/figs/update_perf.pdf"
 
     echo "Plots saved to: ${OUTPUT_DIR}/figs/"
 fi
