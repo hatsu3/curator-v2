@@ -71,22 +71,6 @@ python -m dataset.yfcc100m_dataset
 python -m dataset.arxiv_dataset
 ```
 
-### Build Docker Image
-
-Experiments are run inside Docker containers for reproducibility. Build the image:
-
-```bash
-docker build --rm -t ann-bench .
-```
-
 ### Run Benchmarks
 
-Please refer to scripts in `scripts` folder for details. For example, to evaluate Curator on YFCC100M dataset, run the following command:
-
-```bash
-python run_parallel_exp.py run_curator_overall_exp \
-  --dataset yfcc100m \
-  --cpu_limit 0 \
-  --mem_limit 20000000000 \
-  --num_runs 1
-```
+Please refer to scripts in `benchmark/` folder for running experiments. See `benchmark/profiler.py` for the main benchmarking interface.
