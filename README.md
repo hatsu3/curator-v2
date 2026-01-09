@@ -73,12 +73,10 @@ python -m dataset.arxiv_dataset
 
 ### Build Docker Image
 
+Experiments are run inside Docker containers for reproducibility. Build the image:
+
 ```bash
-# Download the cuda-keyring package for updating the CUDA linux GPG repository key
-# https://developer.nvidia.com/blog/updating-the-cuda-linux-gpg-repository-key/
-# Please replace $distro and $arch with your own distro and arch
-wget https://developer.download.nvidia.com/compute/cuda/repos/$distro/$arch/cuda-keyring_1.0-1_all.deb
-sudo docker build --rm -t ann-bench .
+docker build --rm -t ann-bench .
 ```
 
 ### Run Benchmarks
@@ -86,12 +84,9 @@ sudo docker build --rm -t ann-bench .
 Please refer to scripts in `scripts` folder for details. For example, to evaluate Curator on YFCC100M dataset, run the following command:
 
 ```bash
-python=$(which python)  # assuming conda env is activated
-
-sudo ${python} \
-run_parallel_exp.py run_curator_overall_exp \
+python run_parallel_exp.py run_curator_overall_exp \
   --dataset yfcc100m \
-  --cpu-limit 0 \
+  --cpu_limit 0 \
   --mem_limit 20000000000 \
   --num_runs 1
 ```
