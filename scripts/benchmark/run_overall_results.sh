@@ -713,12 +713,57 @@ else
     echo "Results saved to: ${OUTPUT_DIR}/${BASELINE_NAME}/${DATASET_KEY}_test${TEST_SIZE}"
 fi
 
-# Generate plots if requested (to be implemented later)
+# Generate plots if requested
 if [ "$PLOT_RESULTS" == "true" ]; then
     echo
     echo "=== Generating Plots ==="
-    echo "Plot generation functionality will be added later..."
-    echo "Results are available in: ${OUTPUT_DIR}"
+
+    mkdir -p "${OUTPUT_DIR}/figs"
+
+    # Recall vs Latency
+    echo "Generating recall vs latency plots..."
+    python -m benchmark.overall_results.plotting.recall_vs_latency \
+        plot_recall_vs_latency \
+        --results_dir "${OUTPUT_DIR}" \
+        --dataset_name "${DATASET}" \
+        --output_path "${OUTPUT_DIR}/figs/recall_vs_latency_${DATASET}.pdf"
+
+    # Memory vs Latency
+    echo "Generating memory vs latency plot..."
+    python -m benchmark.overall_results.plotting.memory_vs_latency \
+        plot_memory_vs_latency_vs_build_time \
+        --results_dir "${OUTPUT_DIR}" \
+        --dataset_names "['${DATASET}']" \
+        --selectivity_threshold 0.15 \
+        --target_recall 0.9 \
+        --output_path "${OUTPUT_DIR}/figs/memory_vs_latency_${DATASET}.pdf" \
+        --annotation_config_path "benchmark/overall_results/plotting/annotation_offsets_sample.yaml"
+
+    # Build Time
+    echo "Generating build time plot..."
+    python -m benchmark.overall_results.plotting.build_time \
+        plot_construction_time \
+        --output_dir "${OUTPUT_DIR}" \
+        --datasets "[\"${DATASET}\"]" \
+        --output_path "${OUTPUT_DIR}/figs/build_time_${DATASET}.pdf"
+
+    # Memory Footprint
+    echo "Generating memory footprint plot..."
+    python -m benchmark.overall_results.plotting.memory_footprint \
+        plot_memory_footprint \
+        --output_dir "${OUTPUT_DIR}" \
+        --datasets "[\"${DATASET}\"]" \
+        --output_path "${OUTPUT_DIR}/figs/memory_footprint_${DATASET}.pdf"
+
+    # Update Performance
+    echo "Generating update performance plot..."
+    python -m benchmark.overall_results.plotting.update_perf \
+        plot_update_results \
+        --output_dir "${OUTPUT_DIR}" \
+        --datasets "[\"${DATASET}\"]" \
+        --output_path "${OUTPUT_DIR}/figs/update_perf_${DATASET}.pdf"
+
+    echo "Plots saved to: ${OUTPUT_DIR}/figs/"
 fi
 
 echo

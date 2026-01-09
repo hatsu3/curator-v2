@@ -73,4 +73,26 @@ python -m dataset.arxiv_dataset
 
 ### Run Benchmarks
 
-Please refer to scripts in `benchmark/` folder for running experiments. See `benchmark/profiler.py` for the main benchmarking interface.
+Use the shell scripts in `scripts/benchmark/` to run experiments:
+
+```bash
+# Run overall results evaluation
+./scripts/benchmark/run_overall_results.sh <baseline> <dataset> [output_dir] [cpu_cores]
+# Example: ./scripts/benchmark/run_overall_results.sh curator yfcc100m
+
+# Generate plots from existing results
+./scripts/benchmark/run_overall_results.sh plot yfcc100m output/overall_results2
+
+# Run complex predicate evaluation
+./scripts/benchmark/run_complex_predicate.sh <baseline> [output_dir] [cpu_cores]
+# Example: ./scripts/benchmark/run_complex_predicate.sh all
+
+# Generate complex predicate plots
+./scripts/benchmark/run_complex_predicate.sh plot output/complex_predicate_optimal
+```
+
+Available baselines for overall results: `curator`, `per_label_hnsw`, `per_label_ivf`, `shared_hnsw`, `shared_ivf`, `parlay_ivf`, `filtered_diskann`, `acorn_1`, `acorn_gamma`, `all`, `plot`
+
+Available datasets: `yfcc100m`, `arxiv`
+
+See each script's help for full usage details.
